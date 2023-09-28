@@ -1,0 +1,24 @@
+name: 4DCT
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - python
+  - numpy
+  - scipy
+  - scikit-image
+  - pandas
+  - xarray
+  - cudatoolkit=11.3
+  - pytorch::pytorch>=1.12.1
+  - torchvision
+  - matplotlib
+  - seaborn
+  - notebook
+  - ipykernel
+  - ipywidgets
+  - tqdm
+  - parse
+  - hvplot
+  - datashader
+
