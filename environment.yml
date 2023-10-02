@@ -20,5 +20,4 @@ dependencies:
   - tqdm
   - parse
   - hvplot
-  - datashader
 
