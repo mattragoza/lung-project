@@ -1,2 +1,3 @@
-## Lung 4DCT image project
+# CS_2074_Project
+Zack Bowen and Matthew Ragoza
 
