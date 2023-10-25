@@ -13,9 +13,9 @@
 	- Use the commands below:
 
 ```bash
-cd lung-project/data
+cd lung-project
 for i in {1..10};
-	do unzip download/Case${i}Pack.zip -d Emory-4DCT;
+	do unzip data/download/Case${i}Pack.zip -d data/Emory-4DCT;
 done
 ```
 ## Conde environment setep
@@ -24,8 +24,8 @@ Run the following to create the conda environment and register it as jupyter not
 
 ```bash
 mamba env create --file=environment.yml
-mamba activate MRE-PINN
-python -m ipykernel install --user --name=MRE-PINN
+mamba activate 4DCT
+python -m ipykernel install --user --name=4DCT
 ```
 
 ## SimpleElastix installation
@@ -47,3 +47,4 @@ cd SimpleITK-build/Wrapping/Python
 mamba activate 4DCT
 python Packaging/setup.py install --prefix=$CONDA_PREFIX
 ```
+
