@@ -44,11 +44,10 @@ class Registration(object):
             print('Estimated scales: ', self.optimizer_scale)
         print(f'[{self.iteration:4}] {self.metric}')
 
-    def execute(self, fixed: xr.DataArray, moving: xr.DataArray, type='rigid'):
+    def execute(self, fixed, moving, transform):
         fixed_image = image_from_xarray(fixed)
         moving_image = image_from_xarray(moving)
-        initial = getattr(Deformation, type)(fixed_image, moving_image)
-        self.method.SetInitialTransform(initial.transform)
+        self.method.SetInitialTransform(transform)
         final_transform = self.method.Execute(fixed_image, moving_image)
         return Deformation(final_transform)
 
