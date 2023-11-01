@@ -169,20 +169,24 @@ class Emory4DCTCase(object):
         selection.array = self.array.sel(*args, **kwargs, method='nearest')
         return selection
         
-    def view(self, *args, **kwargs):    
-        if ('x' in kwargs and 'y' in kwargs): # view image
-            median = self.array.quantile(0.5)
-            IQR = self.array.quantile(0.75) - self.array.quantile(0.25)
-            image_kws = {
-                'cmap': 'greys_r',
-                'clim': (0, median + 1.5 * IQR),
-                'frame_width': 500,
-                'data_aspect': 1
-            }
-            image_kws.update(**kwargs)
-            kwargs = image_kws
+    def view(self, *args, **kwargs):
+        return view_array(self.array, *args, **kwargs)
 
-        return self.array.hvplot(*args, **kwargs)
+
+def view_array(array, *args, **kwargs):
+    if ('x' in kwargs and 'y' in kwargs): # view image
+        median = array.quantile(0.5)
+        IQR = array.quantile(0.75) - array.quantile(0.25)
+        image_kws = {
+            'cmap': 'greys_r',
+            'clim': (0, median + 1.5 * IQR),
+            'frame_width': 500,
+            'data_aspect': 1
+        }
+        image_kws.update(**kwargs)
+        kwargs = image_kws
+
+    return array.hvplot(*args, **kwargs)
 
 
 def as_list(obj):
