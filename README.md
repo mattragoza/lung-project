@@ -18,7 +18,7 @@ for i in {1..10};
 	do unzip data/download/Case${i}Pack.zip -d data/Emory-4DCT;
 done
 ```
-## Conde environment setep
+## Conda environment setep
 
 Run the following to create the conda environment and register it as jupyter notebook kernel:
 
