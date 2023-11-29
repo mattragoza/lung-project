@@ -5,6 +5,7 @@ import pandas as pd
 import nibabel as nib
 import xarray as xr
 import hvplot.xarray
+from tqdm import tqdm
 
 ALL_CASES = [
     'Case1Pack',
@@ -54,6 +55,17 @@ class Emory4DCTDataset(object):
             shape = (mdata.n_x, mdata.n_y, mdata.n_z)
             resolution = (mdata.xres, mdata.yres, mdata.zres)
             case.load_images(shape, resolution)
+
+    def describe(self):
+        stats = []
+        for case in tqdm(self.cases):
+            case_stats = case.describe()
+            stats.append(case_stats)
+        return pd.concat(stats)
+
+    def normalize(self, loc, scale):
+        for case in self.cases:
+            case.normalize(loc, scale)
 
     def save_niftis(self):
         for case in self.cases:
@@ -186,6 +198,9 @@ class Emory4DCTCase(object):
             self.nifti_dir.mkdir(exist_ok=True)
             print(f'Saving {nifti_file}')
             nib.save(nifti, nifti_file)
+
+    def normalize(self, loc, scale):
+        self.array = (self.array - loc) / scale
 
     def copy(self):
         copy = type(self)(self.data_root, self.case_name, self.phases)
