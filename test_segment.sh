@@ -1,6 +1,6 @@
 data_name=Emory-4DCT
 case_id=1
-phase=50
+phase=00
 
 data_root=data/$data_name
 
@@ -15,7 +15,7 @@ image_file=$image_dir/$image_name.nii.gz
 output_dir=$mask_dir/$image_name
 
 TotalSegmentator -i $image_file -o $output_dir --device gpu --statistics --preview -ta total --roi_subset lung_upper_lobe_right lung_upper_lobe_left lung_middle_lobe_right lung_lower_lobe_right lung_lower_lobe_left
-TotalSegmentator -i $image_file -o $output_dir --device gpu --statistics --preview -ta lung_vessels
-totalseg_combine_masks -i $output_dir -o $output_dir/lung_combined_mask.nii.gz -m lung
+#TotalSegmentator -i $image_file -o $output_dir --device gpu --statistics --preview -ta lung_vessels
+#totalseg_combine_masks -i $output_dir -o $output_dir/lung_combined_mask.nii.gz -m lung
 
 echo Done
