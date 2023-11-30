@@ -28,7 +28,7 @@ mamba activate 4DCT
 python -m ipykernel install --user --name=4DCT
 ```
 
-## SimpleElastix installation
+## SimpleElastix
 
 We have to build this from source code, but it is pretty easy. Follow the commands below:
 
@@ -46,5 +46,22 @@ make -j8
 cd SimpleITK-build/Wrapping/Python
 mamba activate 4DCT
 python Packaging/setup.py install --prefix=$CONDA_PREFIX
+```
+
+## TotalSegmentator
+
+```bash
+#pip install TotalSegmentator
+TotalSegmentator -i $input_image -o $output_dir --device gpu --preview --statistics -ta total --roi_subset lung_upper_lobe_right lung_upper_lobe_left lung_middle_lobe_right lung_lower_lobe_right lung_lower_lobe_left
+TotalSegmentator -i $input_image -o $output_dir --device gpu --preview --statistics -ta lung_vessels
+totalseg_combine_masks -i $output_dir -o $output_dir/lung_combined_mask.nii.gz -m lung
+```
+
+## CorrField
+
+```bash
+git clone git@github.com/multimodallearning/Lung250M-4B.git
+cd Lung250M-4B/corrfield
+python corrfield.py -F {fixed_image} -M {moving_image} -m {fixed_mask} -o {output_path}
 ```
 
