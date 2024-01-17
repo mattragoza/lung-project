@@ -56,6 +56,14 @@ class Emory4DCTDataset(object):
             resolution = (mdata.xres, mdata.yres, mdata.zres)
             case.load_images(shape, resolution)
 
+    def load_masks(self, roi):
+        for case in self.cases:
+            case.load_masks(roi)
+
+    def load_disps(self, fixed_phase):
+        for case in self.cases:
+            case.load_disps(fixed_phase)
+
     def describe(self):
         stats = []
         for case in tqdm(self.cases):
@@ -109,6 +117,10 @@ class Emory4DCTCase(object):
     @property
     def mask_dir(self):
         return self.case_dir / 'TotalSegment'
+
+    @property
+    def disp_dir(self):
+        return self.case_dir / 'CorrField'
         
     def load_images(self, shape, resolution):
         images = []
@@ -174,8 +186,9 @@ class Emory4DCTCase(object):
                 resolution = mask.header.get_zooms()
             mask_data.append(mask.get_fdata())
 
-        assert shape == self.shape
-        assert resolution == self.resolution
+        assert shape == self.shape, f'{shape} vs. {self.shape}'
+        assert np.allclose(resolution, self.resolution), \
+            f'{resolution} vs {self.resolution}'
 
         self.mask = xr.DataArray(
             data=np.stack(mask_data),
@@ -186,7 +199,39 @@ class Emory4DCTCase(object):
                 'y': np.arange(shape[1]) * resolution[1],
                 'z': np.arange(shape[2]) * resolution[2]
             },
-            name=f'mask'
+            name='mask'
+        )
+
+    def load_disps(self, fixed_phase):
+
+        disp_data = []
+        for moving_phase in self.phases:
+            disp_file = self.disp_dir / f'case{self.case_id}_T{moving_phase:02d}_T{fixed_phase:02d}.nii.gz'
+            print(f'Loading {disp_file}')
+            disp = nib.load(disp_file)
+            if disp_data:
+                assert disp.header.get_data_shape() == shape
+                assert disp.header.get_zooms() == resolution
+            else:
+                shape = disp.header.get_data_shape()
+                resolution = disp.header.get_zooms()
+            disp_data.append(disp.get_fdata())
+
+        expected_shape = (1,) + self.shape + (3,)
+        assert shape == expected_shape, f'{shape} vs. {expected_shape}'
+        assert np.allclose(resolution, 1), resolution
+
+        self.disp = xr.DataArray(
+            data=np.concatenate(disp_data),
+            dims=['phase', 'x', 'y', 'z', 'component'],
+            coords={
+                'phase': self.phases,
+                'x': np.arange(self.shape[0]) * self.resolution[0],
+                'y': np.arange(self.shape[1]) * self.resolution[1],
+                'z': np.arange(self.shape[2]) * self.resolution[2],
+                'component': ['x', 'y', 'z']
+            },
+            name='displacement'
         )
 
     def save_niftis(self):
