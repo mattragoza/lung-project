@@ -28,7 +28,7 @@ class Emory4DCTDataset(object):
     def __init__(self, data_root, case_names=ALL_CASES, phases=ALL_PHASES):
         self.data_root = Path(data_root)
         self.cases = []
-        for case_name in as_list(case_names):
+        for case_name in as_iterable(case_names):
             case = Emory4DCTCase(data_root, case_name, phases)
             self.cases.append(case)
 
@@ -60,9 +60,13 @@ class Emory4DCTDataset(object):
         for case in self.cases:
             case.load_masks(roi)
 
-    def load_disps(self, fixed_phase):
+    def load_displacements(self, fixed_phase):
         for case in self.cases:
-            case.load_disps(fixed_phase)
+            case.load_displacements(fixed_phase)
+
+    def load_landmarks(self):
+        for case in self.cases:
+            case.load_landmarks()
 
     def describe(self):
         stats = []
@@ -89,7 +93,8 @@ class Emory4DCTCase(object):
     def __init__(self, data_root, case_name, phases):
         self.data_root = Path(data_root)
         self.case_name = str(case_name)
-        self.phases = as_list(phases)
+        self.phases = as_iterable(phases)
+        self.phase_index = {p: i for i, p in enumerate(self.phases)}
 
     def __repr__(self):
         class_name = type(self).__name__
@@ -109,6 +114,10 @@ class Emory4DCTCase(object):
     @property
     def image_dir(self):
         return self.case_dir / 'Images'
+
+    @property
+    def landmark_dir(self):
+        return self.case_dir / 'Sampled4D'
 
     @property
     def nifti_dir(self):
@@ -202,7 +211,7 @@ class Emory4DCTCase(object):
             name='mask'
         )
 
-    def load_disps(self, fixed_phase):
+    def load_displacements(self, fixed_phase):
 
         disp_data = []
         for moving_phase in self.phases:
@@ -233,6 +242,29 @@ class Emory4DCTCase(object):
             },
             name='displacement'
         )
+
+    def load_landmarks(self):
+        self.landmarks = []
+        for phase in self.phases:
+            if phase > 50:
+                self.landmarks.append(None)
+                continue
+            try:
+                txt_pattern = f'case{self.case_id}_*_T{phase:02d}*.txt'
+                txt_glob = self.landmark_dir.glob(txt_pattern)
+                txt_file = next(txt_glob)
+            except StopIteration:
+                txt_pattern = f'Case{self.case_id}_*_T{phase:02d}*.txt'
+                txt_glob = self.landmark_dir.glob(txt_pattern)
+                txt_file = next(txt_glob)
+
+            points = load_xyz_file(txt_file)
+            points[:,2] = (self.shape[2] - 1 - points[:,2]) # flip z index
+            self.landmarks.append(points)
+
+    def get_landmark_points(self, phase):
+        index = self.phase_index[phase]
+        return self.landmarks[index] * self.resolution
 
     def save_niftis(self):
         for phase in self.phases:
@@ -282,8 +314,12 @@ def view_array(array, *args, **kwargs):
     return array.hvplot(*args, **kwargs)
 
 
-def as_list(obj):
-    return obj if isinstance(obj, list) else [obj]
+def is_iterable(obj):
+    return hasattr(obj, '__iter__') and not isinstance(obj, str)
+
+
+def as_iterable(obj):
+    return obj if is_iterable(obj) else [obj]
 
 
 def load_yaml_file(yaml_file):
@@ -295,13 +331,14 @@ def load_yaml_file(yaml_file):
         return yaml.safe_load(f)
 
 
-def load_xyz_file(xyz_file):
+def load_xyz_file(xyz_file, dtype=float):
     '''
     Read landmark xyz coordinates from text file.
     '''
+    print(f'Loading {xyz_file}')
     with open(xyz_file) as f:
         data = [line.strip().split() for line in f]
-    return np.array(data, dtype=np.uint8)
+    return np.array(data, dtype=dtype)
 
 
 def load_img_file(img_file, shape, dtype, verbose=True):
