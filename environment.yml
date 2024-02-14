@@ -27,4 +27,5 @@ dependencies:
   - pip
   - pip:
     - TotalSegmentator
+    - git+https://github.com/barkm/torch-fenics.git@master
 
