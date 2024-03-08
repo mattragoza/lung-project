@@ -1,3 +1,8 @@
+import numpy as np
+import torch
+import torch.nn.functional as F
+import torch_fenics
+
 # functions for converting between image-like arrays 
 #   and vectors of dofs for a finite element basis
 

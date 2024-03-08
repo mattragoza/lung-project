@@ -13,7 +13,7 @@ class PDESolver(torch_fenics.FEniCSModule):
         # create mesh and function space
         n_elements = n_nodes - 1
         self.mesh = fe.UnitIntervalMesh(n_elements)
-        self.V = fe.FunctionSpace(mesh, 'P', 1)
+        self.V = fe.FunctionSpace(self.mesh, 'P', 1)
         
         # create trial and test functions
         self.u = fe.TrialFunction(self.V)

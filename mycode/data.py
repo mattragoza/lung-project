@@ -66,10 +66,10 @@ class PDEDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         return (
-            torch.as_tensor(self.a[idx]).to(self.device,  dtype=torch.float32),
-            torch.as_tensor(self.mu[idx]).to(self.device, dtype=torch.float32),
-            torch.as_tensor(self.u[idx]).to(self.device,  dtype=torch.float32),
-            torch.as_tensor(self.ub[idx]).to(self.device, dtype=torch.float32)
+            torch.as_tensor(self.a[idx]).to(self.device,  dtype=torch.float64),
+            torch.as_tensor(self.mu[idx]).to(self.device, dtype=torch.float64),
+            torch.as_tensor(self.u[idx]).to(self.device,  dtype=torch.float64),
+            torch.as_tensor(self.ub[idx]).to(self.device, dtype=torch.float64)
         )
     
     def select(self, inds):
@@ -98,3 +98,16 @@ class PDEDataset(torch.utils.data.Dataset):
 
 def as_index(n, length):
     return int(n * length) if isinstance(n, float) else n
+
+
+def wavelet(x, f, width, phase):
+    '''
+    Args:
+        x, f, width, phase
+    Returns:
+        e^[-4 (x / width)^2] sin(2 pi (f x + phase))
+    '''
+    gaussian = np.exp(-4 * (x / width)**2)
+    sine = np.sin(2 * np.pi * (f * x + phase))
+    return gaussian * sine
+

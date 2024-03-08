@@ -29,7 +29,7 @@ class PDENet(torch.nn.Module):
         u_dofs = self.pde_solver.forward(
             mu_dofs.to('cpu', dtype=torch.float64),
             ub.to('cpu', dtype=torch.float64)
-        ).cuda()
+        ).to('cuda', dtype=torch.float64)
 
         return mu, u_dofs
 
