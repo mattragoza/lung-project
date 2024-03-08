@@ -76,3 +76,14 @@ class TrainingPlot(object):
         self.test_mu_loss_line.set_ydata(test.mu_loss)
         
         self.draw()
+
+
+def plot1d(x, **kwargs):
+    n_plots = len(kwargs)
+    fig, ax = plt.subplots(n_plots, 1, figsize=(8, 2*n_plots), squeeze=False)
+    for i, (k, v) in enumerate(kwargs.items()):
+        for y_ in v:
+            ax[i,0].plot(x, y_)
+            ax[i,0].set_ylabel(k)
+    ax[i,0].set_xlabel('x')
+    return fig

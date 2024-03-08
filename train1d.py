@@ -1,9 +1,11 @@
 import sys, os, argparse, time
 from tqdm import tqdm
+import numpy as np
 import torch
 import torch.nn.functional as F
 
 import mycode as code
+
 
 
 def train(out_name, pde_name, image_size, n_nodes):
@@ -16,7 +18,7 @@ def train(out_name, pde_name, image_size, n_nodes):
     activ_fn = 'leaky_relu'
     learning_rate = 1e-5
     batch_size = 128
-    n_epochs = 10
+    n_epochs = 2
     device = 'cuda'
 
     print('Initialize PDE solver')
@@ -70,6 +72,14 @@ def train(out_name, pde_name, image_size, n_nodes):
                 )
 
         plot.write()
+
+        code.output.plot1d(
+            np.linspace(0, 1, image_size),
+            mu=mu[:4].detach().cpu().numpy(),
+            mu_hat=mu_hat[:4].detach().cpu().numpy(),
+            u=u[:4].detach().cpu().numpy(),
+            u_hat=u_hat[:4].detach().cpu().numpy()
+        ).savefig(out_name + f'_epoch_{epoch}.png', bbox_inches='tight')
 
     print('Done')
 
