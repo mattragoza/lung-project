@@ -7,18 +7,22 @@ import torch.nn.functional as F
 import mycode as code
 
 
-
-def train(out_name, pde_name, image_size, n_nodes):
-
+@code.utils.main
+def train(
+    out_name='ASDF',
+    pde_name='poisson',
+    image_size=128,
+    n_nodes=128,
+    n_epochs=100,
+    batch_size=128,
+    learning_rate=1e-5,
+):
     # configuration
     n_samples = 10000
     n_freqs = 32
     n_filters = 16
     kernel_size = 5
     activ_fn = 'leaky_relu'
-    learning_rate = 1e-5
-    batch_size = 128
-    n_epochs = 2
     device = 'cuda'
 
     print('Initialize PDE solver')
@@ -82,13 +86,3 @@ def train(out_name, pde_name, image_size, n_nodes):
         ).savefig(out_name + f'_epoch_{epoch}.png', bbox_inches='tight')
 
     print('Done')
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--out_name', type=str, default='ASDF')
-    parser.add_argument('--pde_name', type=str, default='Poisson')
-    parser.add_argument('--image_size', type=int, default=128)
-    parser.add_argument('--n_nodes', type=int, default=128)
-    args = parser.parse_args()
-    train(args.out_name, args.pde_name, args.image_size, args.n_nodes)
