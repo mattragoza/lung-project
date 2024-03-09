@@ -24,6 +24,7 @@ def train(
     kernel_size = 5
     activ_fn = 'leaky_relu'
     device = 'cuda'
+    benchmark = True
 
     print('Initialize PDE solver')
     assert pde_name.lower() == 'poisson'
@@ -53,12 +54,25 @@ def train(
         model.train()
         train_progress = tqdm(train_loader, file=sys.stdout)
         for i, (a, mu, u, ub) in enumerate(train_progress):
+
+            t0 = code.utils.timer(benchmark)
             mu_hat, u_hat = model.forward(a, ub)
+            t1 = code.utils.timer(benchmark)
             mu_loss = loss_fn(mu_hat, mu)
             u_loss  = loss_fn(u_hat, u)
+            t2 = code.utils.timer(benchmark)
             u_loss.backward()
+            t3 = code.utils.timer(benchmark)
             optim.step()
-            plot.update_train(epoch + i/len(train_loader), u_loss, mu_loss)
+            t4 = code.utils.timer(benchmark)
+
+            times = {
+                't_model': t1 - t0,
+                't_loss':  t2 - t1,
+                't_grad':  t3 - t2,
+                't_optim': t4 - t3,
+            }
+            plot.update_train(epoch + i/len(train_loader), u_loss, mu_loss, **times)
             train_progress.set_description(
                 f'[Epoch {epoch + 1}/{n_epochs}|train] u_loss = {u_loss.item():.4f}, mu_loss = {mu_loss.item():.4f}'
             )
@@ -66,11 +80,19 @@ def train(
         model.eval()
         val_progress = tqdm(val_loader, file=sys.stdout)
         for i, (a, mu, u, ub) in enumerate(val_progress):
+
             with torch.no_grad():
+                t0 = code.utils.timer(benchmark)
                 mu_hat, u_hat = model.forward(a, ub)
+                t1 = code.utils.timer(benchmark)
                 mu_loss = loss_fn(mu_hat, mu)
                 u_loss  = loss_fn(u_hat, u)
-                plot.update_test(epoch + 1, u_loss, mu_loss)
+                t2 = code.utils.timer(benchmark)
+                times = {
+                    't_model': t1 - t0,
+                    't_loss':  t2 - t1
+                }
+                plot.update_test(epoch + 1, u_loss, mu_loss, **times)
                 val_progress.set_description(
                     f'[Epoch {epoch + 1}/{n_epochs}|eval] u_loss = {u_loss.item():.4f}, mu_loss = {mu_loss.item():.4f}'
                 )

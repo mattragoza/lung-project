@@ -30,9 +30,6 @@ class TrainingPlot(object):
 
         self.out_name = out_name
 
-    def __len__(self):
-        return len(self.data)
-
     def write(self):
         self.data.to_csv(self.out_name + '_metrics.csv', sep='\t', index=False)
         self.fig.savefig(self.out_name + '_training.png', bbox_inches='tight')
@@ -45,8 +42,13 @@ class TrainingPlot(object):
         ax[1].set_ylim(0, self.data.mu_loss.max() * 1.1 + pad)
         self.fig.canvas.draw()
         
-    def update_train(self, epoch, u_loss, mu_loss):
-        self.data.loc[len(self)] = [epoch, 'train', u_loss.item(), mu_loss.item()]
+    def update_train(self, epoch, u_loss, mu_loss, **kwargs):
+        idx = len(self.data)
+        cols = ['epoch', 'phase', 'u_loss', 'mu_loss']
+        self.data.loc[idx, cols] = [epoch, 'train', u_loss.item(), mu_loss.item()]
+
+        for k, v in kwargs.items():
+            self.data.loc[idx, k] = v
         
         data = self.data.groupby(['phase', 'epoch']).mean()
         train = data.loc['train'].reset_index()
@@ -61,8 +63,13 @@ class TrainingPlot(object):
 
         self.draw()
         
-    def update_test(self, epoch, u_loss, mu_loss):
-        self.data.loc[len(self)] = [epoch, 'test', u_loss.item(), mu_loss.item()]
+    def update_test(self, epoch, u_loss, mu_loss, **kwargs):
+        idx = len(self.data)
+        cols = ['epoch', 'phase', 'u_loss', 'mu_loss']
+        self.data.loc[idx, cols] = [epoch, 'test', u_loss.item(), mu_loss.item()]
+
+        for k, v in kwargs.items():
+            self.data.loc[idx, k] = v
         
         data = self.data.groupby(['phase', 'epoch']).mean()
         test = data.loc['test'].reset_index()

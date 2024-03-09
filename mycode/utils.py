@@ -1,4 +1,4 @@
-import sys, inspect, argparse
+import sys, inspect, argparse, time
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -53,6 +53,12 @@ def dofs_to_image(dofs, V, image_size):
             func.eval(image[i,j,None], x[j,None])
 
     return torch.as_tensor(image, device=dofs.device)
+
+
+def timer(sync):
+    if sync:
+        torch.cuda.synchronize()
+    return time.time()
 
 
 def as_bool(s):
