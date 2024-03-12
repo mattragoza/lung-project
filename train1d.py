@@ -99,12 +99,17 @@ def train(
 
         plot.write()
 
+        x = np.linspace(0, 1, image_size)
+        u = code.utils.dofs_to_image(u, pde_solver.V, image_size)
+        u_hat = code.utils.dofs_to_image(u_hat, pde_solver.V, image_size)
+
         code.output.plot1d(
-            np.linspace(0, 1, image_size),
+            x,
             mu=mu[:4].detach().cpu().numpy(),
             mu_hat=mu_hat[:4].detach().cpu().numpy(),
             u=u[:4].detach().cpu().numpy(),
             u_hat=u_hat[:4].detach().cpu().numpy()
-        ).savefig(out_name + f'_epoch_{epoch}.png', bbox_inches='tight')
+        ).savefig(out_name + f'_mu_epoch_{epoch}.png', bbox_inches='tight')
+
 
     print('Done')

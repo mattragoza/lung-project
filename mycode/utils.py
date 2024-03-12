@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch_fenics
+import fenics as fe
 
 # functions for converting between image-like arrays 
 #   and vectors of dofs for a finite element basis
@@ -50,7 +51,7 @@ def dofs_to_image(dofs, V, image_size):
             dofs[i].detach().cpu().numpy(), fe.Function(V)
         )
         for j in range(image_size):
-            func.eval(image[i,j,None], x[j,None])
+            func.eval(image[i,j,None], coords[j,None])
 
     return torch.as_tensor(image, device=dofs.device)
 
