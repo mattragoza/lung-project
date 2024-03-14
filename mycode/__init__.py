@@ -1,1 +1,1 @@
-from . import data, model, output, pde, utils
+from . import data, model, output, pde, utils, visual
