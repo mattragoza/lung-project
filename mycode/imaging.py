@@ -276,6 +276,49 @@ class Emory4DCTCase(object):
             print(f'Saving {nifti_file}')
             nib.save(nifti, nifti_file)
 
+    def register(self, fixed_phase):
+        import torch, corrfield
+        import torch.nn.functional as F
+
+        disp_data = []
+        for moving_phase in self.phases:
+
+            img_fix = torch.from_numpy(
+                self.array.sel(phase=fixed_phase).data.copy()
+            ).unsqueeze(0).unsqueeze(0).to('cuda', torch.float32)
+            img_mov = torch.from_numpy(
+                self.array.sel(phase=moving_phase).data.copy()
+            ).unsqueeze(0).unsqueeze(0).to('cuda', torch.float32)
+            mask_fix = torch.from_numpy(
+                self.mask.sel(phase=fixed_phase).data.copy()
+            ).unsqueeze(0).unsqueeze(0).to('cuda', torch.float32)
+
+            disp, kpts_fix, kpts_mov = corrfield.corrfield.corrfield(
+                img_fix, mask_fix, img_mov
+            )
+            if disp_data:
+                assert disp.shape == shape
+            else:
+                shape = disp.shape
+
+            disp_data.append(disp.cpu().numpy())
+
+        expected_shape = (1,) + self.shape + (3,)
+        assert shape == expected_shape, f'{shape} vs. {expected_shape}'
+
+        self.disp = xr.DataArray(
+            data=np.concatenate(disp_data),
+            dims=['phase', 'x', 'y', 'z', 'component'],
+            coords={
+                'phase': self.phases,
+                'x': np.arange(self.shape[0]) * self.resolution[0],
+                'y': np.arange(self.shape[1]) * self.resolution[1],
+                'z': np.arange(self.shape[2]) * self.resolution[2],
+                'component': ['x', 'y', 'z']
+            },
+            name='displacement'
+        )
+
     def normalize(self, loc, scale):
         self.array = (self.array - loc) / scale
 
