@@ -1,4 +1,4 @@
-name: 4DCT
+name: lung-project
 channels:
   - pytorch
   - nvidia
@@ -21,11 +21,15 @@ dependencies:
   - parse
   - hvplot
   - nibabel
+  - eigen
+  - cgal
   - fenics
   - vedo
+  - meshplot
   - requests>=2.31
   - pip
   - pip:
     - TotalSegmentator
+    - pygalmesh
     - git+https://github.com/barkm/torch-fenics.git@master
 
