@@ -184,16 +184,19 @@ class Emory4DCTCase(object):
     def load_masks(self, roi='lung_combined_mask'):
         mask_data = []
         for phase in self.phases:
-            mask_file = self.mask_dir / f'case{self.case_id}_T{phase:02d}/{roi}.nii.gz'
-            print(f'Loading {mask_file}')
-            mask = nib.load(mask_file)
-            if mask_data:
-                assert mask.header.get_data_shape() == shape
-                assert mask.header.get_zooms() == resolution
-            else:
-                shape = mask.header.get_data_shape()
-                resolution = mask.header.get_zooms()
-            mask_data.append(mask.get_fdata())
+            phase_mask_data = []
+            for r in as_iterable(roi):
+                mask_file = self.mask_dir / f'case{self.case_id}_T{phase:02d}/{r}.nii.gz'
+                print(f'Loading {mask_file}')
+                mask = nib.load(mask_file)
+                if mask_data:
+                    assert mask.header.get_data_shape() == shape
+                    assert mask.header.get_zooms() == resolution
+                else:
+                    shape = mask.header.get_data_shape()
+                    resolution = mask.header.get_zooms()
+                phase_mask_data.append(mask.get_fdata())
+            mask_data.append(np.stack(phase_mask_data, axis=-1))
 
         assert shape == self.shape, f'{shape} vs. {self.shape}'
         assert np.allclose(resolution, self.resolution), \
@@ -201,12 +204,13 @@ class Emory4DCTCase(object):
 
         self.mask = xr.DataArray(
             data=np.stack(mask_data),
-            dims=['phase', 'x', 'y', 'z'],
+            dims=['phase', 'x', 'y', 'z', 'roi'],
             coords={
                 'phase': self.phases,
                 'x': np.arange(shape[0]) * resolution[0],
                 'y': np.arange(shape[1]) * resolution[1],
-                'z': np.arange(shape[2]) * resolution[2]
+                'z': np.arange(shape[2]) * resolution[2],
+                'roi': as_iterable(roi)
             },
             name='mask'
         )

@@ -59,6 +59,7 @@ class XArrayViewer(Viewer):
 
         default_kws = get_color_kws(xarray)
         default_kws['ax_height'] = 4
+        default_kws['ax_width'] = 4
         default_kws.update(**kwargs)
 
         self.set_array_internals(xarray)
