@@ -24,8 +24,8 @@ dependencies:
   - eigen
   - cgal
   - fenics
-  - vedo
-  - meshplot
+  - meshio
+  - h5py
   - requests>=2.31
   - pip
   - pip:

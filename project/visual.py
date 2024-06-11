@@ -33,6 +33,10 @@ def as_iterable(obj, length=1, string_ok=False):
     return obj
 
 
+def view(*args, **kwargs):
+    return XArrayViewer(*args, **kwargs)
+
+
 class Viewer(object):
 
     def to_png(self, png_file):
@@ -646,26 +650,28 @@ def get_color_kws(array, pct=99, scale=1.1):
     Get a dictionary of colormap arguments
     for visualizing the provided xarray.
     '''
-    if array.name in {'sr', 'region', 'spatial_region'}:
-            cmap = region_color_map(n_colors=6, has_background=True)
-            return dict(cmap=cmap, vmin=-0.5, vmax=5.5)
-    elif array.name in {'a', 'A', 'anat', 'anatomy', 'anatomic', 'mre_raw', 'dwi'} or array.name.startswith('t1') or array.name.startswith('t2'):
+    if array.name in {'a', 'anat', 'anatomy', 'anatomic', 'mre_raw', 'dwi', 'CT'} or array.name and (array.name.startswith('t1') or array.name.startswith('t2')):
         cmap = grayscale_color_map()
         vmin = 0
         vmax = np.percentile(np.abs(array), pct) * scale
         return dict(cmap=cmap, vmin=vmin, vmax=vmax)
-    elif array.name in {'mre', 'mu', 'Mu', 'elast', 'elastogram', 'baseline', 'mre', 'Mwave', 'fem', 'FEM', 'direct', 'PDE'}:
+
+    elif array.name in {'u', 'disp', 'displacement', 'wave'}:
+        cmap = wave_color_map()
+        vmax = np.percentile(np.abs(array), pct) * scale
+
+    elif array.name in {'mu', 'elast', 'elasticity', 'elastogram', 'mre'}:
         cmap = mre_color_map()
         vmax = np.percentile(np.abs(array), pct) * scale #2e4
-    elif array.name == 'compare':
-        cmap = grayscale_color_map(symmetric=True)
-        vmax = np.percentile(np.abs(array), pct) * scale #2e4
+
     elif array.name == 'mask':
         cmap = grayscale_color_map()
         return dict(cmap=cmap, vmin=0, vmax=1)
+
     else:
         cmap = wave_color_map()
         vmax = np.percentile(np.abs(array), pct) * scale
+
     return dict(cmap=cmap, vmax=vmax)
 
 
