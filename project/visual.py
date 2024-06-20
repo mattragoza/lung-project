@@ -795,6 +795,7 @@ def plot_image_2d(
     n_x, n_y = a.shape
     x0, y0 = origin
     x_res, y_res = resolution
+    x0, y0 = (x0 - x_res/2, y0 - y_res/2)
     extent = (x0, x0 + n_x * x_res, y0, y0 + n_y * y_res)
     ax.autoscale(enable=True, tight=True)
     if 'vmax' in kwargs and 'vmin' not in kwargs:
