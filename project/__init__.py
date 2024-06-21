@@ -1,1 +1,3 @@
-from . import data, imaging, meshing, model, output, pde, utils, visual
+from . import (
+	data, imaging, interpolate, meshing, model, output, pde, utils, visual
+)
