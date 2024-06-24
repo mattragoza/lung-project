@@ -1,6 +1,7 @@
 import numpy as np
-import fenics as fe
 import torch
+import torch.nn.functional as F
+import fenics as fe
 import torch_fenics
 
 
@@ -64,7 +65,6 @@ def dofs_to_image(dofs, V, image_shape, resolution):
     z = np.arange(n_z) * resolution[2]
 
     grid = np.stack(np.meshgrid(x, y, z, indexing='ij'), axis=-1)
-    print(image_shape, grid.shape)
 
     func = torch_fenics.numpy_fenics.numpy_to_fenics(
         dofs.detach().cpu().numpy(), fe.Function(V)
