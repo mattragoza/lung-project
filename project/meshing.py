@@ -1,6 +1,7 @@
 from collections import defaultdict
 from itertools import permutations
 import numpy as np
+import meshio
 import pygalmesh
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -94,3 +95,41 @@ def smooth_facet_values(vertices, facets, facet_values, func, order=1):
         new_facet_values[i] = func(neighbor_values)
             
     return new_facet_values
+
+
+def check_used_points(mesh):
+    point_inds = np.arange(mesh.points.shape[0])
+    point_used = np.zeros_like(point_inds, dtype=bool)
+    for cells in mesh.cells:
+        used_in_cells = np.unique(cells.data)
+        point_used |= np.isin(point_inds, used_in_cells)
+        
+    return point_used
+
+
+def remove_unused_points(mesh):
+
+    points = mesh.points
+    tri_cells = mesh.cells[0].data
+    tet_cells = mesh.cells[1].data
+    
+    # identify the used points
+    points_used = np.unique(np.concatenate([
+        tri_cells.flatten(), tet_cells.flatten()
+    ]))
+    
+    # mapping from old indices to new indices
+    new_indices = np.zeros(points.shape[0], dtype=int)
+    new_indices[points_used] = np.arange(len(points_used))
+    
+    # filter points to keep only the used points
+    new_points = points[points_used]
+    
+    # update the cell indices
+    new_tri_cells = new_indices[tri_cells]
+    new_tet_cells = new_indices[tet_cells]
+    
+    return meshio.Mesh(
+        points=new_points,
+        cells=[('triangle', new_tri_cells), ('tetra', new_tet_cells)]
+    )
