@@ -6,6 +6,7 @@ import nibabel as nib
 import xarray as xr
 import hvplot.xarray
 from tqdm import tqdm
+import torch
 
 ALL_CASES = [
     'Case1Pack',
@@ -22,47 +23,45 @@ ALL_CASES = [
 ALL_PHASES = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]
 CASE_NAME_RE = re.compile(r'Case(\d+)(Pack|Deploy)')
 
+CASE_METADATA = [ # shape, resolution, num_features
+    ((256, 256,  94), (0.97, 0.97, 2.50), 1280),
+    ((256, 256, 112), (1.16, 1.16, 2.50), 1487),
+    ((256, 256, 104), (1.15, 1.15, 2.50), 1561),
+    ((256, 256,  99), (1.13, 1.13, 2.50), 1166),
+    ((256, 256, 106), (1.10, 1.10, 2.50), 1268),
+    ((512, 512, 128), (0.97, 0.97, 2.50),  419),
+    ((512, 512, 136), (0.97, 0.97, 2.50),  398),
+    ((512, 512, 128), (0.97, 0.97, 2.50),  476),
+    ((512, 512, 128), (0.97, 0.97, 2.50),  342),
+    ((512, 512, 120), (0.97, 0.97, 2.50),  435),
+]
 
-class Emory4DCTDataset(object):
+
+class Emory4DCT(object):
 
     def __init__(self, data_root, case_names=ALL_CASES, phases=ALL_PHASES):
         self.data_root = Path(data_root)
+        self.case_names = as_iterable(case_names)
+        self.phases = as_iterable(phases)
         self.cases = []
+        self.case_index = {c: i for i, c in enumerate(self.case_names)}
+
         for case_name in as_iterable(case_names):
             case = Emory4DCTCase(data_root, case_name, phases)
             self.cases.append(case)
 
-    def __repr__(self):
-        class_name = type(self).__name__
-        case_reprs = [repr(case) for case in self.cases]
-        return f'{class_name}([\n  ' + ',\n  '.join(case_reprs) + '\n])'
-
-    def __getitem__(self, idx):
-        return self.cases[idx]
-
-    @property
-    def metadata_file(self):
-        return self.data_root / 'metadata.tsv'
-
-    def load_metadata(self):
-        return pd.read_csv(self.metadata_file, sep='\t')
-
     def load_images(self):
-        metadata = self.load_metadata()
-        metadata.set_index('case_id', inplace=True)
-        for case in self.cases:
-            mdata = metadata.loc[case.case_id]
-            shape = (mdata.n_x, mdata.n_y, mdata.n_z)
-            resolution = (mdata.xres, mdata.yres, mdata.zres)
+        for i, case in enumerate(self.cases):
+            shape, resolution, _ = CASE_METADATA[i]
             case.load_images(shape, resolution)
 
     def load_masks(self, roi):
         for case in self.cases:
             case.load_masks(roi)
 
-    def load_displacements(self, fixed_phase):
+    def load_displacements(self, fixed_phase, relative):
         for case in self.cases:
-            case.load_displacements(fixed_phase)
+            case.load_displacements(fixed_phase, relative)
 
     def load_landmarks(self):
         for case in self.cases:
@@ -86,6 +85,9 @@ class Emory4DCTDataset(object):
     def load_niftis(self):
         for case in self.cases:
             case.load_niftis()
+
+    def __getitem__(self, idx):
+        return self.cases[idx]
 
 
 class Emory4DCTCase(object):
@@ -154,23 +156,23 @@ class Emory4DCTCase(object):
         )
 
     def load_niftis(self):
-        nifti_data = []
+        all_data = []
         for phase in self.phases:
             nifti_file = self.nifti_dir / f'case{self.case_id}_T{phase:02d}.nii.gz'
             print(f'Loading {nifti_file}')
             nifti = nib.load(nifti_file)
-            if nifti_data:
+            if all_data:
                 assert nifti.header.get_data_shape() == shape
                 assert nifti.header.get_zooms() == resolution
             else:
                 shape = nifti.header.get_data_shape()
                 resolution = nifti.header.get_zooms()
-            nifti_data.append(nifti.get_fdata())
+            all_data.append(nifti.get_fdata())
 
         self.shape = shape
         self.resolution = resolution
         self.array = xr.DataArray(
-            data=np.stack(nifti_data),
+            data=np.stack(all_data),
             dims=['phase', 'x', 'y', 'z'],
             coords={
                 'phase': self.phases,
@@ -182,29 +184,30 @@ class Emory4DCTCase(object):
         )
 
     def load_masks(self, roi='lung_combined_mask'):
-        mask_data = []
+        all_data = []
         for phase in self.phases:
-            phase_mask_data = []
+            phase_data = []
             for r in as_iterable(roi):
-                mask_file = self.mask_dir / f'case{self.case_id}_T{phase:02d}/{r}.nii.gz'
+                mask_file = self.mask_dir/f'case{self.case_id}_T{phase:02d}/{r}.nii.gz'
                 print(f'Loading {mask_file}')
                 mask = nib.load(mask_file)
-                if mask_data:
+                if all_data:
                     assert mask.header.get_data_shape() == shape
                     assert mask.header.get_zooms() == resolution
                 else:
                     shape = mask.header.get_data_shape()
                     resolution = mask.header.get_zooms()
-                phase_mask_data.append(mask.get_fdata())
-            mask_data.append(np.stack(phase_mask_data, axis=-1))
+
+                phase_data.append(mask.get_fdata())
+            all_data.append(np.stack(phase_data))
 
         assert shape == self.shape, f'{shape} vs. {self.shape}'
         assert np.allclose(resolution, self.resolution), \
             f'{resolution} vs {self.resolution}'
 
         self.mask = xr.DataArray(
-            data=np.stack(mask_data),
-            dims=['phase', 'x', 'y', 'z', 'roi'],
+            data=np.stack(all_data),
+            dims=['phase', 'roi', 'x', 'y', 'z'],
             coords={
                 'phase': self.phases,
                 'x': np.arange(shape[0]) * resolution[0],
@@ -215,34 +218,40 @@ class Emory4DCTCase(object):
             name='mask'
         )
 
-    def load_displacements(self, fixed_phase):
+    def load_displacements(self, fixed_phase, relative):
+        all_data = []
+        for m in self.phases:
+            phase_data = []
+            for f in as_iterable(fixed_phase):
+                if relative:
+                    f = m + f
+                disp_file = self.disp_dir/f'case{self.case_id}_T{m:02d}_T{f:02d}.nii.gz'
+                print(f'Loading {disp_file}')
+                disp = nib.load(disp_file)
+                if all_data:
+                    assert disp.header.get_data_shape() == shape
+                    assert disp.header.get_zooms() == resolution
+                else:
+                    shape = disp.header.get_data_shape()
+                    resolution = disp.header.get_zooms()
 
-        disp_data = []
-        for moving_phase in self.phases:
-            disp_file = self.disp_dir / f'case{self.case_id}_T{moving_phase:02d}_T{fixed_phase:02d}.nii.gz'
-            print(f'Loading {disp_file}')
-            disp = nib.load(disp_file)
-            if disp_data:
-                assert disp.header.get_data_shape() == shape
-                assert disp.header.get_zooms() == resolution
-            else:
-                shape = disp.header.get_data_shape()
-                resolution = disp.header.get_zooms()
-            disp_data.append(disp.get_fdata())
+                phase_data.append(disp.get_fdata())
+            all_data.append(np.stack(phase_data))
 
         expected_shape = (1,) + self.shape + (3,)
         assert shape == expected_shape, f'{shape} vs. {expected_shape}'
-        assert np.allclose(resolution, 1), resolution
+        assert np.allclose(resolution, 1.0), resolution
 
         self.disp = xr.DataArray(
-            data=np.concatenate(disp_data),
-            dims=['phase', 'x', 'y', 'z', 'component'],
+            data=np.stack(all_data, axis=0),
+            dims=['phase', 'fixed_phase', 'x', 'y', 'z', 'component'],
             coords={
                 'phase': self.phases,
                 'x': np.arange(self.shape[0]) * self.resolution[0],
                 'y': np.arange(self.shape[1]) * self.resolution[1],
                 'z': np.arange(self.shape[2]) * self.resolution[2],
-                'component': ['x', 'y', 'z']
+                'component': ['x', 'y', 'z'],
+                'fixed_phase': as_iterable(fixed_phase)
             },
             name='displacement'
         )
