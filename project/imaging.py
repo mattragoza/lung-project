@@ -50,10 +50,17 @@ class Emory4DCT(object):
             case = Emory4DCTCase(data_root, case_name, phases)
             self.cases.append(case)
 
-    def load_images(self):
+    def __len__(self):
+        return len(self.cases)
+
+    def __getitem__(self, idx):
+        return self.cases[idx]
+
+    def load_images(self, *args, **kwargs):
         for i, case in enumerate(self.cases):
-            shape, resolution, _ = CASE_METADATA[i]
-            case.load_images(shape, resolution)
+            case_idx = ALL_CASES.index(case.case_name)
+            shape, resolution, _ = CASE_METADATA[case_idx]
+            case.load_images(shape, resolution, *args, **kwargs)
 
     def load_masks(self, roi):
         for case in self.cases:
@@ -74,10 +81,6 @@ class Emory4DCT(object):
             stats.append(case_stats)
         return pd.concat(stats)
 
-    def normalize(self, loc, scale):
-        for case in self.cases:
-            case.normalize(loc, scale)
-
     def save_niftis(self):
         for case in self.cases:
             case.save_niftis()
@@ -86,8 +89,10 @@ class Emory4DCT(object):
         for case in self.cases:
             case.load_niftis()
 
-    def __getitem__(self, idx):
-        return self.cases[idx]
+    def register_all(self, fixed_case=0):
+        fixed_case = self.cases[fixed_case]
+        for case in self.cases:
+            case.register_cases(fixed_case)
 
 
 class Emory4DCTCase(object):
@@ -133,7 +138,8 @@ class Emory4DCTCase(object):
     def disp_dir(self):
         return self.case_dir / 'CorrField'
         
-    def load_images(self, shape, resolution):
+    def load_images(self, shape, resolution, shift=-1000, flip_z=True):
+
         images = []
         for phase in self.phases:
             img_glob = self.image_dir.glob(f'case{self.case_id}_T{phase:02d}*.img')
@@ -141,10 +147,16 @@ class Emory4DCTCase(object):
             image = load_img_file(img_file, shape, dtype=np.int16)
             images.append(image)
 
+        # stack images and apply shift
+        images = np.stack(images) + shift
+
+        if flip_z: # flip z orientation
+            images = images[...,::-1] 
+
         self.shape = shape
         self.resolution = resolution
         self.array = xr.DataArray(
-            data=np.stack(images)[...,::-1], # flip z orientation
+            data=images,
             dims=['phase', 'x', 'y', 'z'],
             coords={
                 'phase': self.phases,
@@ -152,10 +164,11 @@ class Emory4DCTCase(object):
                 'y': np.arange(shape[1]) * resolution[1],
                 'z': np.arange(shape[2]) * resolution[2]
             },
-            name=f'case{self.case_id}'
+            name=f'CT'
         )
 
     def load_niftis(self):
+
         all_data = []
         for phase in self.phases:
             nifti_file = self.nifti_dir / f'case{self.case_id}_T{phase:02d}.nii.gz'
@@ -288,52 +301,6 @@ class Emory4DCTCase(object):
             self.nifti_dir.mkdir(exist_ok=True)
             print(f'Saving {nifti_file}')
             nib.save(nifti, nifti_file)
-
-    def register(self, fixed_phase):
-        import torch, corrfield
-        import torch.nn.functional as F
-
-        disp_data = []
-        for moving_phase in self.phases:
-
-            img_fix = torch.from_numpy(
-                self.array.sel(phase=fixed_phase).data.copy()
-            ).unsqueeze(0).unsqueeze(0).to('cuda', torch.float32)
-            img_mov = torch.from_numpy(
-                self.array.sel(phase=moving_phase).data.copy()
-            ).unsqueeze(0).unsqueeze(0).to('cuda', torch.float32)
-            mask_fix = torch.from_numpy(
-                self.mask.sel(phase=fixed_phase).data.copy()
-            ).unsqueeze(0).unsqueeze(0).to('cuda', torch.float32)
-
-            disp, kpts_fix, kpts_mov = corrfield.corrfield.corrfield(
-                img_fix, mask_fix, img_mov
-            )
-            if disp_data:
-                assert disp.shape == shape
-            else:
-                shape = disp.shape
-
-            disp_data.append(disp.cpu().numpy())
-
-        expected_shape = (1,) + self.shape + (3,)
-        assert shape == expected_shape, f'{shape} vs. {expected_shape}'
-
-        self.disp = xr.DataArray(
-            data=np.concatenate(disp_data),
-            dims=['phase', 'x', 'y', 'z', 'component'],
-            coords={
-                'phase': self.phases,
-                'x': np.arange(self.shape[0]) * self.resolution[0],
-                'y': np.arange(self.shape[1]) * self.resolution[1],
-                'z': np.arange(self.shape[2]) * self.resolution[2],
-                'component': ['x', 'y', 'z']
-            },
-            name='displacement'
-        )
-
-    def normalize(self, loc, scale):
-        self.array = (self.array - loc) / scale
 
     def copy(self):
         copy = type(self)(self.data_root, self.case_name, self.phases)

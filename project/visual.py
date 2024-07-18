@@ -650,7 +650,13 @@ def get_color_kws(array, pct=99, scale=1.1):
     Get a dictionary of colormap arguments
     for visualizing the provided xarray.
     '''
-    if array.name in {'a', 'anat', 'anatomy', 'anatomic', 'mre_raw', 'dwi', 'CT'} or array.name and (array.name.startswith('t1') or array.name.startswith('t2')):
+    if array.name in {'CT'}:
+        cmap = grayscale_color_map()
+        vmin = -1000
+        vmax =  1000
+        return dict(cmap=cmap, vmin=vmin, vmax=vmax)
+
+    elif array.name in {'a', 'anat', 'anatomy', 'anatomic', 'mre_raw', 'dwi', 'CT'} or array.name and (array.name.startswith('t1') or array.name.startswith('t2')):
         cmap = grayscale_color_map()
         vmin = 0
         vmax = np.percentile(np.abs(array), pct) * scale
