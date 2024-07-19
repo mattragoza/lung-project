@@ -137,13 +137,26 @@ class Emory4DCTCase(object):
     @property
     def disp_dir(self):
         return self.case_dir / 'CorrField'
+
+    def image_file(self, phase):
+        img_glob = self.image_dir.glob(f'case{self.case_id}_T{phase:02d}*.img')
+        return next(img_glob) # assume exactly one match
+
+    def nifti_file(self, phase):
+        return self.nifti_dir / f'case{self.case_id}_T{phase:02d}.nii.gz'
+
+    def mask_file(self, phase, roi):
+        return self.mask_dir  /f'case{self.case_id}_T{phase:02d}/{roi}.nii.gz'
+
+    def disp_file(self, moving_phase, fixed_phase):
+        return self.disp_dir / \
+            f'case{self.case_id}_T{moving_phase:02d}_T{fixed_phase:02d}.nii.gz' 
         
     def load_images(self, shape, resolution, shift=-1000, flip_z=True):
 
         images = []
         for phase in self.phases:
-            img_glob = self.image_dir.glob(f'case{self.case_id}_T{phase:02d}*.img')
-            img_file = next(img_glob) # assumes exactly one match
+            img_file = self.image_file(phase)
             image = load_img_file(img_file, shape, dtype=np.int16)
             images.append(image)
 
@@ -171,7 +184,7 @@ class Emory4DCTCase(object):
 
         all_data = []
         for phase in self.phases:
-            nifti_file = self.nifti_dir / f'case{self.case_id}_T{phase:02d}.nii.gz'
+            nifti_file = self.nifti_file(phase)
             print(f'Loading {nifti_file}')
             nifti = nib.load(nifti_file)
             if all_data:
@@ -201,7 +214,7 @@ class Emory4DCTCase(object):
         for phase in self.phases:
             phase_data = []
             for r in as_iterable(roi):
-                mask_file = self.mask_dir/f'case{self.case_id}_T{phase:02d}/{r}.nii.gz'
+                mask_file = self.mask_file(phase, roi=r)
                 print(f'Loading {mask_file}')
                 mask = nib.load(mask_file)
                 if all_data:
@@ -238,7 +251,7 @@ class Emory4DCTCase(object):
             for f in as_iterable(fixed_phase):
                 if relative:
                     f = m + f
-                disp_file = self.disp_dir/f'case{self.case_id}_T{m:02d}_T{f:02d}.nii.gz'
+                disp_file = self.disp_file(moving_phase=m, fixed_phase=f)
                 print(f'Loading {disp_file}')
                 disp = nib.load(disp_file)
                 if all_data:
