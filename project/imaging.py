@@ -50,6 +50,12 @@ class Emory4DCT(object):
             case = Emory4DCTCase(data_root, case_name, phases)
             self.cases.append(case)
 
+    def __repr__(self):
+        class_name = type(self).__name__
+        data_root = repr(str(self.data_root))
+        n_cases = len(self.cases)
+        return f'{class_name}({data_root}, {n_cases} cases)'
+
     def __len__(self):
         return len(self.cases)
 
@@ -168,7 +174,7 @@ class Emory4DCTCase(object):
 
         self.shape = shape
         self.resolution = resolution
-        self.array = xr.DataArray(
+        self.anat = xr.DataArray(
             data=images,
             dims=['phase', 'x', 'y', 'z'],
             coords={
@@ -197,7 +203,7 @@ class Emory4DCTCase(object):
 
         self.shape = shape
         self.resolution = resolution
-        self.array = xr.DataArray(
+        self.anat = xr.DataArray(
             data=np.stack(all_data),
             dims=['phase', 'x', 'y', 'z'],
             coords={
@@ -307,7 +313,7 @@ class Emory4DCTCase(object):
 
     def save_niftis(self):
         for phase in self.phases:
-            data = self.array.sel(phase=phase).data
+            data = self.anat.sel(phase=phase).data
             affine = np.diag(list(self.resolution) + [1])
             nifti = nib.nifti1.Nifti1Image(data, affine)
             nifti_file = self.nifti_dir / f'case{self.case_id}_T{phase:02d}.nii.gz'
@@ -317,37 +323,18 @@ class Emory4DCTCase(object):
 
     def copy(self):
         copy = type(self)(self.data_root, self.case_name, self.phases)
-        copy.array = self.array
+        copy.anat = self.anat
         copy.shape = self.shape
         copy.resolution = self.resolution
         return copy
         
     def describe(self):
-        return self.array.to_dataframe().describe().T
+        return self.anat.to_dataframe().describe().T
     
     def select(self, *args, **kwargs):
         selection = self.copy()
-        selection.array = self.array.sel(*args, **kwargs, method='nearest')
+        selection.anat = self.anat.sel(*args, **kwargs, method='nearest')
         return selection
-        
-    def view(self, *args, **kwargs):
-        return view_array(self.array, *args, **kwargs)
-
-
-def view_array(array, *args, **kwargs):
-    if ('x' in kwargs and 'y' in kwargs): # view image
-        median = array.quantile(0.5)
-        IQR = array.quantile(0.75) - array.quantile(0.25)
-        image_kws = {
-            'cmap': 'greys_r',
-            'clim': (0, median + 1.5 * IQR),
-            'frame_width': 500,
-            'data_aspect': 1
-        }
-        image_kws.update(**kwargs)
-        kwargs = image_kws
-
-    return array.hvplot(*args, **kwargs)
 
 
 def is_iterable(obj):
