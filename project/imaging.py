@@ -72,6 +72,10 @@ class Emory4DCT(object):
         for case in self.cases:
             case.load_masks(roi)
 
+    def save_masks(self, roi):
+        for case in self.cases:
+            case.save_masks(roi)
+
     def load_displacements(self, fixed_phase, relative):
         for case in self.cases:
             case.load_displacements(fixed_phase, relative)
@@ -144,6 +148,10 @@ class Emory4DCTCase(object):
     def disp_dir(self):
         return self.case_dir / 'CorrField'
 
+    @property
+    def mesh_dir(self):
+        return self.case_dir / 'pygalmesh'
+
     def image_file(self, phase):
         img_glob = self.image_dir.glob(f'case{self.case_id}_T{phase:02d}*.img')
         return next(img_glob) # assume exactly one match
@@ -157,6 +165,10 @@ class Emory4DCTCase(object):
     def disp_file(self, moving_phase, fixed_phase):
         return self.disp_dir / \
             f'case{self.case_id}_T{moving_phase:02d}_T{fixed_phase:02d}.nii.gz' 
+
+    def mesh_file(self, phase, radius):
+        return self.mesh_dir / \
+            f'case{self.case_id}_T{phase:02d}_{radius}.xdmf'
         
     def load_images(self, shape, resolution, shift=-1000, flip_z=True):
 
@@ -270,9 +282,12 @@ class Emory4DCTCase(object):
                 phase_data.append(disp.get_fdata())
             all_data.append(np.stack(phase_data))
 
-        expected_shape = (1,) + self.shape + (3,)
+        expected_shape = self.shape + (3,)
+        expected_resolution = self.resolution + (1.0,)
+
         assert shape == expected_shape, f'{shape} vs. {expected_shape}'
-        assert np.allclose(resolution, 1.0), resolution
+        assert np.allclose(resolution, expected_resolution), \
+            f'{resolution} vs. {expected_resolution}'
 
         self.disp = xr.DataArray(
             data=np.stack(all_data, axis=0),
