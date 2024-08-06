@@ -8,16 +8,13 @@ import torch_fenics
 def image_to_dofs(image, resolution, V):
     '''
     Args:
-        image: (n_x, n_y, n_z, n_c) torch.Tensor
+        image: (n_c, n_x, n_y, n_z) torch.Tensor
         V: fenics.FunctionSpace
             defined on (mesh_size, 3) coordinates
     Returns:
         dofs: (batch_size, mesh_size, n_channels) torch.Tensor
-    '''    
-    if V.num_sub_spaces() == 0:
-        image = image.unsqueeze(-1)
-
-    n_x, n_y, n_z, n_c = image.shape
+    '''
+    n_c, n_x, n_y, n_z = image.shape
     
     coords = V.tabulate_dof_coordinates()
     if V.num_sub_spaces() > 0:
@@ -32,10 +29,11 @@ def image_to_dofs(image, resolution, V):
     extent = (shape - 1) * resolution
 
     dofs = F.grid_sample(
-        input=image[None,...].permute(0,4,3,2,1), # xyzc -> bczyx
+        input=image[None,...].permute(0,1,4,3,2), # cxyz -> bczyx
         grid=(coords[None,None,None,...] / extent) * 2 - 1,
         align_corners=True
-    )
+    ).to(torch.float64)
+
     if V.num_sub_spaces() > 0:
         return dofs.view(n_c, mesh_size).permute(1,0)
     else:
