@@ -5,7 +5,7 @@ import fenics as fe
 import torch_fenics
 
 
-def interpolate_image(image, points, radius=1, resolution=1.0, sigma=1.0):
+def interpolate_image(image, points, resolution=1.0, radius=1, sigma=None):
     '''
     Image interpolation method that takes a weighted sum
     of the image values in the neighborhood of each point.
@@ -19,9 +19,14 @@ def interpolate_image(image, points, radius=1, resolution=1.0, sigma=1.0):
     '''
     C, X, Y, Z = image.shape
     N, D = points.shape
+    assert D == 3, 'points must be 3D'
     
     if isinstance(radius, int):
         radius = [radius] * D
+    assert len(radius) == D
+
+    if sigma is None:
+        sigma = [r/2 for r in radius]
     
     zeros = torch.zeros(D, device=image.device)
     shape = torch.as_tensor([X, Y, Z], device=image.device)
@@ -52,11 +57,12 @@ def interpolate_image(image, points, radius=1, resolution=1.0, sigma=1.0):
         neighbor_points = neighbor_voxels * resolution.unsqueeze(0)
         distance = torch.norm(neighbor_points - point.unsqueeze(0), dim=1)
         
-        weights = torch.exp(-(distance**2) / (2*sigma**2))
+        #weights = torch.exp(-(distance**2) / (2*sigma**2))
+        weights = torch.clamp(1 - torch.abs(distance / (2*sigma)), 0)
         weighted_sum = (weights.unsqueeze(1) * neighbor_values).sum(dim=0) 
 
         interpolated_values[i] = weighted_sum / weights.sum()
-        
+    
     return interpolated_values
 
 
@@ -99,24 +105,24 @@ def image_to_dofs(image, resolution, V, radius, sigma):
 def dofs_to_image(dofs, V, image_shape, resolution):
     '''
     Args:
-        dofs: (mesh_size, n_c) torch.Tensor
+        dofs: (N, C) torch.Tensor
         V: fenics.FunctionSpace
-            defined on (mesh_size, 3) coordinates
-        image_shape: (n_x, n_y, n_z)
+            defined on (N, 3) coordinates
+        image_shape: (X, Y, Z)
     Returns:
-        image: (n_x, n_y, n_z, n_c) torch.Tensor
+        image: (C, X, Y, Z) torch.Tensor
     '''
     if V.num_sub_spaces() > 0:
-        mesh_size, n_c = dofs.shape
+        N, C = dofs.shape
     else:
-        mesh_size, = dofs.shape
-        n_c = 1
+        N, = dofs.shape
+        C = 1
 
-    n_x, n_y, n_z = image_shape
+    X, Y, Z = image_shape
 
-    x = np.arange(n_x) * resolution[0]
-    y = np.arange(n_y) * resolution[1]
-    z = np.arange(n_z) * resolution[2]
+    x = np.arange(X) * resolution[0]
+    y = np.arange(Y) * resolution[1]
+    z = np.arange(Z) * resolution[2]
 
     grid = np.stack(np.meshgrid(x, y, z, indexing='ij'), axis=-1)
 
@@ -125,14 +131,11 @@ def dofs_to_image(dofs, V, image_shape, resolution):
     )
     func.set_allow_extrapolation(True)
 
-    image = np.zeros((n_x, n_y, n_z, n_c))
+    image = np.zeros((X, Y, Z, C))
 
-    for i in range(n_x):
-        for j in range(n_y):
-            for k in range(n_z):
+    for i in range(X):
+        for j in range(Y):
+            for k in range(Z):
                 func.eval(image[i,j,k], grid[i,j,k])
 
-    if V.num_sub_spaces() == 0:
-        return image.squeeze(-1)
-    else:
-        return image
+    return torch.as_tensor(image).permute(3,0,1,2)

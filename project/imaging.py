@@ -104,6 +104,23 @@ class Emory4DCT(object):
         for case in self.cases:
             case.register_cases(fixed_case)
 
+    def get_examples(self, mask_roi='lung_combined_mask', mesh_radius=20):
+        examples = []
+        for case in self.cases:
+            for fixed_phase in self.phases:
+                moving_phase = (fixed_phase + 10) % 100
+
+                anat_file = case.nifti_file(fixed_phase)
+                disp_file = case.disp_file(moving_phase, fixed_phase)
+                mask_file = case.mask_file(fixed_phase, mask_roi)
+                mesh_file = case.mesh_file(fixed_phase, mesh_radius)
+
+                examples.append(
+                    (anat_file, disp_file, mask_file, mesh_file, mesh_radius)
+                )
+
+        return examples
+
 
 class Emory4DCTCase(object):
     
