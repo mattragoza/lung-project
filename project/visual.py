@@ -1,5 +1,6 @@
 import numpy as np
 import xarray as xr
+import pandas as pd
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -31,6 +32,14 @@ def as_iterable(obj, length=1, string_ok=False):
     if not is_iterable(obj, string_ok):
         return [obj] * length
     return obj
+
+
+def estimate_limit(x, pad=0.1):
+    x_min = x.min()
+    x_max = x.max()
+    x_range = x_max - x_min
+    pad = pad * x_range
+    return x_min - pad/2, x_max + pad/2
 
 
 def view(*args, **kwargs):
@@ -286,11 +295,11 @@ class DataViewer(Viewer):
     XArrayViewer but for a pd.DataFrame.
     '''
     def __init__(
-        self, data, x, y, hue=None, row=None, col=None, **kwargs
+        self, data, x, y, hue=None, row=None, col=None, levels=None, **kwargs
     ):
         data = data.reset_index()
         self.establish_variables(x, y, hue, row, col)
-        self.set_data_internals(data)
+        self.set_data_internals(data, levels)
         self.initialize_subplots(**kwargs)
 
     def establish_variables(self, x, y, hue, row, col):
@@ -311,20 +320,23 @@ class DataViewer(Viewer):
 
         self.variable_map = variable_map
         self.index_vars = index_vars
+        print(variable_map)
 
-    def set_data_internals(self, data):
+    def set_data_internals(self, data, levels):
 
         # set internal data frame and index levels
         if self.index_vars:
-            levels = {
-                v: data[v].unique() for v in self.index_vars
-            }
             data = data.set_index(self.index_vars)
+            if not levels:
+                levels = {
+                    v: data[v].unique() for v in self.index_vars
+                }
         else:
             levels = {}
 
         self.data = data.sort_index()
         self.levels = levels
+        print(levels)
 
     def get_index_and_labels(self, i, j):
         '''
@@ -347,7 +359,13 @@ class DataViewer(Viewer):
         return index, row_label, col_label
 
     def initialize_subplots(
-        self, ax_height=2, ax_width=1.5, lgd_width=0.75, palette=None, **kwargs
+        self,
+        ax_height=2,
+        ax_width=2,
+        lgd_width=0.75,
+        palette=None,
+        ylabel_var='both',
+        **kwargs
     ):
         n_rows, n_cols = (1, 1)
         row_var = self.variable_map.get('row')
@@ -365,8 +383,8 @@ class DataViewer(Viewer):
         x_var = self.variable_map.get('x')
         y_var = self.variable_map.get('y')
         hue_var = self.variable_map.get('hue')
-        hue_order = self.levels.get(hue_var)
-        n_hues = len(hue_order) if hue_var else None
+        hue_levels = self.levels.get(hue_var)
+        n_hues = len(hue_levels) if hue_var else None
         colors = sns.color_palette(palette, n_hues)
 
         # create subplot grid
@@ -376,42 +394,51 @@ class DataViewer(Viewer):
             ax_height=ax_height,
             ax_width=ax_width,
             cbar_width=lgd_width * bool(hue_var),
-            space=[0.30, 0.50],
+            space=[0.3, 0.5],
             pad=[1.00, 0.45, 0.65, 0.45]
         )
 
         # plot the data and store the artists
-        self.artists = {}
+        self.lines = {}
+        self.polys = {}
         for i in range(n_rows):
             for j in range(n_cols):
-
                 index, row_label, col_label = self.get_index_and_labels(i, j)
                 columns = [x_var, y_var]
-                data = self.data.loc[index][columns].dropna().reset_index()
+                try:
+                    data = self.data.loc[index][columns].dropna().reset_index()
+                except KeyError:
+                    data = pd.DataFrame()
 
                 ax = self.axes[i,j]
                 ax.set_title(col_label)
                 ax.grid(linestyle=':')
 
-                lines = line_plot(
+                lines, polys = line_plot(
                     data=data,
                     x=x_var,
                     y=y_var,
                     hue=hue_var,
-                    hue_order=hue_order,
+                    hue_order=hue_levels,
                     colors=colors,
                     ax=ax,
                     **kwargs
                 )
 
-                for hue_level, line in zip(hue_order, lines):
-                    self.artists[index + (hue_level,)] = line
+                for k, hue_level in enumerate(hue_levels):
+                    self.lines[index + (hue_level,)] = lines[k]
+                    self.polys[index + (hue_level,)] = polys[k]
 
                 if ax.legend_:
                     ax.legend_.remove()
 
                 if j == 0: # first column
-                    ax.set_ylabel(row_label + y_var)
+                    if ylabel_var == 'both':
+                        ax.set_ylabel(row_label + y_var)
+                    elif ylabel_var == 'row':
+                        ax.set_ylabel(row_label)
+                    elif ylabel_var == 'y':
+                        ax.set_ylabel(y_var)
                 else:
                     ax.set_ylabel(None)
                 if i + 1 >= len(self.levels.get(row_var, [])): # last row
@@ -425,8 +452,8 @@ class DataViewer(Viewer):
             lgd = self.lgd_ax.legend(
                 *ax.get_legend_handles_labels(),
                 title=hue_var,
-                loc='upper left',
-                bbox_to_anchor=[-0.5,1.15],
+                loc='upper right',
+                bbox_to_anchor=[1.0,1.0],
                 frameon=False
             )
             lgd._legend_box.align = 'left'
@@ -450,16 +477,39 @@ class DataViewer(Viewer):
         hue_order = self.levels.get(hue_var)
         for i in range(self.n_rows):
             for j in range(self.n_cols):
+
                 index, row_label, col_label = self.get_index_and_labels(i, j)
                 columns = [x_var, y_var]
                 data = self.data.loc[index][columns].dropna()
+
                 for hue_level in hue_order:
-                    if hue_level not in data.index:
-                        continue
-                    artist = self.artists[index + (hue_level,)]
-                    hue_data = data.loc[hue_level]
-                    artist.set_xdata(hue_data[x_var].values)
-                    artist.set_ydata(hue_data[y_var].values)
+
+                    if hue_level in data.index and len(data.loc[hue_level]) > 1:
+                        # indexing this way ensures return value is a dataframe
+                        hue_data = data.loc[[hue_level]]
+
+                        mean_data = hue_data.groupby(x_var).mean()
+                        error_data = hue_data.groupby(x_var).sem()
+
+                        x_data = mean_data.index
+                        y_data = mean_data[y_var]
+                        error = error_data[y_var]
+                    else:
+                        x_data = np.empty(0)
+                        y_data = np.empty(0)
+                        error = np.empty(0)
+
+                    line = self.lines[index + (hue_level,)]
+                    line.set_xdata(x_data)
+                    line.set_ydata(y_data)
+
+                    poly = self.polys[index + (hue_level,)]
+                    verts = np.concatenate([
+                        np.stack([x_data, y_data + error]).T,
+                        np.stack([x_data, y_data - error]).T[::-1]
+                    ])
+                    poly.set_verts([verts])
+
                 self.axes[i,j].relim()
                 self.axes[i,j].autoscale_view()
 
@@ -467,17 +517,36 @@ class DataViewer(Viewer):
 
 
 def line_plot(data, x, y, hue, hue_order, colors, ax, yscale='linear'):
-    lines = []
-    data = data.set_index(hue).sort_values(x)
+    if hue in data:
+        data = data.set_index(hue).sort_index()
+
+    lines, polys = [], []
     for hue_level, color in zip(hue_order, colors):
-        if hue_level not in data.index:
-            lines.append(None)
-            continue
-        hue_data = data.loc[hue_level]
-        line, = ax.plot(hue_data[x], hue_data[y], color=color, label=hue_level)
+
+        if hue_level in data.index:
+            # indexing this way ensures that return value is a dataframe
+            hue_data = data.loc[[hue_level]]
+            mean_data = hue_data.groupby(x).mean()
+            error_data = hue_data.groupby(x).sem().fillna(0)
+
+            x_data = mean_data.index.astype(float).values
+            y_data = mean_data[y].astype(float).values
+            error = error_data[y].astype(float).values
+        else:
+            x_data = np.empty(0)
+            y_data = np.empty(0)
+            error = np.empty(0)
+
+        line = ax.plot(x_data, y_data, color=color, label=hue_level)[0]
+        poly = ax.fill_between(
+            x_data, y_data - error, y_data + error, color=color, alpha=0.2
+        )
+
         lines.append(line)
+        polys.append(poly)
+
     ax.set_yscale(yscale)
-    return lines
+    return lines, polys
 
 
 class Player(FuncAnimation):

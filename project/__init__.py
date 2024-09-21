@@ -1,12 +1,13 @@
 from . import (
 	data,
+	evaluation,
 	imaging,
-	interpolate,
+	interpolation,
 	meshing,
 	model,
 	output,
 	pde,
-	register,
+	registration,
 	training,
 	utils,
 	visual
