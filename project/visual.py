@@ -270,7 +270,6 @@ class XArrayViewer(Viewer):
         self.update_artists()
 
     def update_array(self, xarray):
-        xarray = self.preprocess_array(xarray, polar=self.polar)
         xarray = xarray.transpose(*(self.index_dims + self.value_dims))
         self.array = xarray.to_numpy()
         self.update_artists()
@@ -320,7 +319,6 @@ class DataViewer(Viewer):
 
         self.variable_map = variable_map
         self.index_vars = index_vars
-        print(variable_map)
 
     def set_data_internals(self, data, levels):
 
@@ -336,7 +334,6 @@ class DataViewer(Viewer):
 
         self.data = data.sort_index()
         self.levels = levels
-        print(levels)
 
     def get_index_and_labels(self, i, j):
         '''
@@ -694,7 +691,7 @@ def mre_color_map(n_colors=255, symmetric=True):
     )
 
 
-def region_color_map(n_colors=255, has_background=False):
+def region_color_map(n_colors=255, has_background=True):
     '''
     Create a colormap for segmentation regions
     from white, red, yellow, green, to blue.
@@ -714,40 +711,56 @@ def region_color_map(n_colors=255, has_background=False):
     )
 
 
+def threshold_color_map(n_colors=255, has_background=True):
+
+    colors = [
+        COLORS['white'],
+        COLORS['red'],
+    ]
+    if has_background:
+        colors.insert(0, COLORS['black'])
+
+    return mpl.colors.LinearSegmentedColormap.from_list(
+        name='threshold', colors=colors, N=n_colors
+    )
+
+
+def contains_any(x, keys):
+    return any([key in x for key in keys])
+
+
 def get_color_kws(array, pct=99, scale=1.1):
     '''
     Get a dictionary of colormap arguments
     for visualizing the provided xarray.
     '''
-    if array.name in {'CT'}:
+    print(array.name)
+    if contains_any(array.name, ['CT', 'anat', 'a_']):
         cmap = grayscale_color_map()
-        vmin = -1000
-        vmax =  1000
-        return dict(cmap=cmap, vmin=vmin, vmax=vmax)
+        vmin, vmax = (-1000, 1000)
 
-    elif array.name in {'a', 'anat', 'anatomy', 'anatomic', 'mre_raw', 'dwi', 'CT'} or array.name and (array.name.startswith('t1') or array.name.startswith('t2')):
-        cmap = grayscale_color_map()
-        vmin = 0
-        vmax = np.percentile(np.abs(array), pct) * scale
-        return dict(cmap=cmap, vmin=vmin, vmax=vmax)
-
-    elif array.name in {'u', 'disp', 'displacement', 'wave'}:
-        cmap = wave_color_map()
-        vmax = np.percentile(np.abs(array), pct) * scale
-
-    elif array.name in {'mu', 'elast', 'elasticity', 'elastogram', 'mre'}:
+    elif contains_any(array.name, ['elast', 'mu_']):
         cmap = mre_color_map()
-        vmax = np.percentile(np.abs(array), pct) * scale #2e4
+        vmin, vmax = (-1e4, 1e4)
 
-    elif array.name == 'mask':
+    elif contains_any(array.name, ['disp', 'u_']):
+        cmap = wave_color_map()
+        vmin, vmax = (-1, 1)
+
+    elif contains_any(array.name, ['mask']):
         cmap = grayscale_color_map()
-        return dict(cmap=cmap, vmin=0, vmax=1)
+        vmin, vmax = (0, 1)
+
+    elif contains_any(array.name, ['emph']):
+        cmap = threshold_color_map(7, has_background=True)
+        vmin, vmax = (-3, 3)
 
     else:
-        cmap = wave_color_map()
+        cmap = 'seismic'
         vmax = np.percentile(np.abs(array), pct) * scale
+        vmin = -vmax
 
-    return dict(cmap=cmap, vmax=vmax)
+    return dict(cmap=cmap, vmin=vmin, vmax=vmax)
 
 
 class Colorbar(matplotlib.colorbar.Colorbar):

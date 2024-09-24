@@ -79,7 +79,7 @@ class Trainer(object):
 
         # predict elasticity from anatomical image
         mu_pred_image = self.model.forward(anat_image)
-        mu_pred_image = torch.nn.functional.softplus(mu_pred_image) * 1000
+        mu_pred_image = torch.exp(mu_pred_image) * 1000
 
         # physical FEM simulation
         total_loss = 0
@@ -138,11 +138,20 @@ class Trainer(object):
                     mask[k,0].to(dtype=int),
                     index=(epoch, batch_num, example[k], phase, 'image')
                 )
+                alpha = 0.5
+                alpha_mask = (1 - alpha * (1 - mask[k]))
+                emph = (
+                    mask[k] +
+                    (anat_image[k] < -850) +
+                    (anat_image[k] < -900) +
+                    (anat_image[k] < -950)
+                )
                 self.update_viewers(
-                    anat=anat_image[k],
-                    mu_pred=mu_pred_image[k],
-                    u_pred=u_pred_image,
-                    u_true=u_true_image[k]
+                    anat=anat_image[k] * alpha_mask,
+                    emph=emph * mask[k] - 1,
+                    mu_pred=mu_pred_image[k] * alpha_mask,
+                    u_pred=u_pred_image * alpha_mask,
+                    u_true=u_true_image[k] * alpha_mask
                 )
 
         loss = total_loss / batch_size
@@ -176,6 +185,12 @@ class Trainer(object):
                 self.array_viewers[key] = visual.XArrayViewer(array)
             else:
                 self.array_viewers[key].update_array(array)
+
+    def save_state(self, prefix):
+        pass
+
+    def load_state(self, prefix):
+        pass
 
 
 def collate_fn(batch):

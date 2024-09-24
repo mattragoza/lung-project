@@ -11,7 +11,14 @@ class Evaluator(object):
     def __init__(self, index_cols):
         self.index_cols = index_cols
         self.metric_cols = [
-            'loss', 'u_pred_norm', 'u_true_norm', 'mu_pred_norm', 'mu_anat_corr'
+            'loss',
+            'u_pred_norm',
+            'u_true_norm', 
+            'mu_pred_norm',
+            'mu_anat_corr',
+            'mu_950_corr',
+            'mu_900_corr',
+            'mu_850_corr',
         ]
         self.metrics = pd.DataFrame(columns=index_cols + self.metric_cols)
         self.metrics.set_index(index_cols, inplace=True)
@@ -28,8 +35,17 @@ class Evaluator(object):
         self.metrics.loc[index, 'u_true_norm'] = compute_norm(u_true, mask).item()
         self.metrics.loc[index, 'mu_pred_norm'] = compute_norm(mu_pred, mask).item()
 
-        corr_mat = compute_corr_mat([mu_pred, anat], mask)
+        corr_mat = compute_corr_mat([
+            mu_pred,
+            anat,
+            (anat < -950),
+            (anat < -900),
+            (anat < -850),
+        ], mask)
         self.metrics.loc[index, 'mu_anat_corr'] = corr_mat[0,1].item()
+        self.metrics.loc[index, 'mu_950_corr'] = corr_mat[0,2].item()
+        self.metrics.loc[index, 'mu_900_corr'] = corr_mat[0,3].item()
+        self.metrics.loc[index, 'mu_850_corr'] = corr_mat[0,4].item()
 
         return loss
 
