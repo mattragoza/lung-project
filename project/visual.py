@@ -149,6 +149,8 @@ class XArrayViewer(Viewer):
         space=[0.25, 0.50],
         pad=[0.95, 0.75, 0.65, 0.45],
         interact=True,
+        label_rows=True,
+        label_cols=True,
         **kwargs
     ):
         # determine number of axes
@@ -220,8 +222,8 @@ class XArrayViewer(Viewer):
                         self.array[index],
                         resolution=x_res,
                         xlabel=x_dim,
-                        ylabel=row_label,
-                        title=col_label,
+                        ylabel=row_label if label_rows else None,
+                        title=col_label if label_cols else None,
                         **kwargs
                     )
                     if len(lines) > 1:
@@ -237,8 +239,8 @@ class XArrayViewer(Viewer):
                         origin=[x0, y0],
                         resolution=[x_res, y_res],
                         xlabel=x_dim,
-                        ylabel=row_label + y_dim,
-                        title=col_label,
+                        ylabel=row_label + y_dim if label_rows else y_dim,
+                        title=col_label if label_cols else None,
                         interpolation_stage='rgba',
                         **kwargs
                     )
@@ -265,7 +267,7 @@ class XArrayViewer(Viewer):
             )
 
     def update_index(self, **kwargs):
-        coords = {d: self.coords[d][i] for d, i in kwargs.items()}
+        #coords = {d: self.coords[d][i] for d, i in kwargs.items()}
         self.index = tuple([kwargs[d] for d in self.index_dims])
         self.update_artists()
 

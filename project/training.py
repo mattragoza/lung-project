@@ -10,15 +10,27 @@ from . import pde, interpolation, evaluation, visual, utils
 class Trainer(object):
 
     def __init__(
-        self, model, train_data, test_data, batch_size, learning_rate
+        self,
+        model,
+        train_data,
+        test_data,
+        batch_size,
+        learning_rate,
+        save_every,
+        save_prefix,
+        sync_cuda,
     ):
-        self._model = model
+        self.model = model
+
         self.train_loader = torch.utils.data.DataLoader(
             train_data, batch_size, shuffle=True, collate_fn=collate_fn
         )
         self.test_loader = torch.utils.data.DataLoader(
-            test_data, batch_size, shuffle=True, collate_fn=collate_fn
+            test_data, batch_size=1, shuffle=True, collate_fn=collate_fn
         )
+        self.train_iterator = iter(enumerate(self.train_loader))
+        self.test_iterator = iter(enumerate(self.test_loader))
+
         self.pde_class = pde.LinearElasticPDE
         self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
         self.epoch = 0
@@ -26,28 +38,15 @@ class Trainer(object):
         self.evaluator = evaluation.Evaluator(
             index_cols=['epoch', 'batch', 'example', 'phase', 'rep']
         )
+        self.timer = evaluation.Timer(
+            index_cols=['epoch', 'batch', 'example', 'phase', 'event'],
+            sync_cuda=sync_cuda
+        )
         self.array_viewers = {}
         self.metric_viewer = None
 
-    @property
-    def model(self):
-        return self._model
-    
-    @property
-    def train_dataset(self):
-        return self.train_loader.dataset
-
-    @property
-    def test_dataset(self):
-        return self.test_loader.dataset
-        
-    @property
-    def batch_size(self):
-        return self.train_loader.batch_sampler.batch_size
-    
-    @property
-    def learning_rate(self):
-        return self.optimizer.param_groups[0]['lr']
+        self.save_every = save_every
+        self.save_prefix = save_prefix
 
     def __repr__(self):
         return f'{type(self).__name__}(epoch={self.epoch})'
@@ -58,6 +57,25 @@ class Trainer(object):
         elif phase == 'test':
             return self.test_loader
 
+    def get_data_iterator(self, phase):
+        if phase == 'train':
+            return self.train_iterator
+        elif phase == 'test':
+            return self.test_iterator
+
+    def reset_data_iterator(self, phase):
+        if phase == 'train':
+            self.train_iterator = iter(enumerate(self.train_loader))
+        elif phase == 'test':
+            self.test_iterator = iter(enumerate(self.test_loader))
+
+    def get_next_batch(self, phase):
+        try:
+            return next(self.get_data_iterator(phase))
+        except StopIteration:
+            self.reset_data_iterator(phase)
+            return next(self.get_data_iterator(phase))
+
     def train(self, num_epochs):
         print('Training...')
         start_epoch = self.epoch
@@ -65,13 +83,27 @@ class Trainer(object):
         for i in range(start_epoch, stop_epoch):
             print(f'Epoch {i+1}/{stop_epoch}')
             self.run_epoch(phase='train', epoch=i+1)
-            self.run_epoch(phase='test', epoch=i+1)
+            self.run_next_batch(phase='test', epoch=i+1)
             self.epoch += 1
+            if (self.epoch % self.save_every) == 0:
+                self.save_metrics()
+                self.save_viewers()
+                self.save_state()
+            self.timer.tick((i+1, -1, -1, 'test', 'save_state'))
 
     def run_epoch(self, phase, epoch):
         print(f'Running {phase} phase')
-        for j, batch in enumerate(self.get_data_loader(phase)):
-            self.run_batch(batch, phase, epoch, batch_num=j+1)
+        for j, batch in self.get_data_iterator(phase):
+            batch_num = j + 1
+            self.timer.tick((epoch, batch_num, -1, phase, 'get_next_batch'))
+            self.run_batch(batch, phase, epoch, batch_num)
+        self.reset_data_iterator(phase)
+
+    def run_next_batch(self, phase, epoch):
+        j, batch = self.get_next_batch(phase)
+        batch_num = j + 1
+        self.timer.tick((epoch, batch_num, -1, phase, 'get_next_batch'))
+        self.run_batch(batch, phase, epoch, batch_num)
     
     def run_batch(self, batch, phase, epoch, batch_num):
         anat_image, u_true_image, mask, resolution, mesh, radius, example = batch
@@ -80,6 +112,7 @@ class Trainer(object):
         # predict elasticity from anatomical image
         mu_pred_image = self.model.forward(anat_image)
         mu_pred_image = torch.exp(mu_pred_image) * 1000
+        self.timer.tick((epoch, batch_num, -1, phase, 'model_forward'))
 
         # physical FEM simulation
         total_loss = 0
@@ -87,6 +120,7 @@ class Trainer(object):
         for k in range(batch_size):
             print('.', end='', flush=True)
             pde = self.pde_class(mesh[k])
+            exam_num = k + 1
 
             # convert tensors to FEM basis coefficients
             u_true_dofs = interpolation.image_to_dofs(
@@ -105,6 +139,7 @@ class Trainer(object):
                 sigma=radius[k]/2
             ).cpu()
             rho_dofs = (1 + anat_dofs/1000) * 1000
+            self.timer.tick((epoch, batch_num, exam_num, phase, 'image_to_dofs'))
 
             # solve FEM for simulated displacement coefficients
             u_pred_dofs = pde.forward(
@@ -112,6 +147,7 @@ class Trainer(object):
                 mu_pred_dofs.unsqueeze(0),
                 rho_dofs.unsqueeze(0),
             )[0]
+            self.timer.tick((epoch, batch_num, exam_num, phase, 'pde_forward'))
 
             # compute loss and evaluation metrics
             loss = self.evaluator.evaluate(
@@ -123,12 +159,14 @@ class Trainer(object):
                 index=(epoch, batch_num, example[k], phase, 'dofs')
             )
             total_loss += loss
+            self.timer.tick((epoch, batch_num, exam_num, phase, 'dof_metrics'))
 
             if phase == 'test': # evaluate in image domain     
                 u_pred_image = interpolation.dofs_to_image(
                     u_pred_dofs, pde.V, u_true_image[k].shape[-3:], resolution[k]
                 )
                 u_pred_image = torch.as_tensor(u_pred_image).cuda()
+                self.timer.tick((epoch, batch_num, exam_num, phase, 'dofs_to_image'))
 
                 self.evaluator.evaluate(
                     anat_image[k].permute(1,2,3,0),
@@ -138,6 +176,8 @@ class Trainer(object):
                     mask[k,0].to(dtype=int),
                     index=(epoch, batch_num, example[k], phase, 'image')
                 )
+                self.timer.tick((epoch, batch_num, exam_num, phase, 'image_metrics'))
+
                 alpha = 0.5
                 alpha_mask = (1 - alpha * (1 - mask[k]))
                 emph = (
@@ -153,14 +193,18 @@ class Trainer(object):
                     u_pred=u_pred_image * alpha_mask,
                     u_true=u_true_image[k] * alpha_mask
                 )
+                self.timer.tick((epoch, batch_num, exam_num, phase, 'update_viewers'))
 
         loss = total_loss / batch_size
         print(f'{loss:.4f}', flush=True)
 
         if phase == 'train': # update parameters
             loss.backward()
+            self.timer.tick((epoch, batch_num, -1, phase, 'loss_backward'))
+
             self.optimizer.step()
             self.optimizer.zero_grad()
+            self.timer.tick((epoch, batch_num, -1, phase, 'optimizer_step'))
 
     def update_viewers(self, **kwargs):
 
@@ -182,15 +226,44 @@ class Trainer(object):
         for key, value in kwargs.items():
             array = utils.as_xarray(value, dims=['c', 'x', 'y', 'z'], name=key)
             if key not in self.array_viewers:
-                self.array_viewers[key] = visual.XArrayViewer(array)
+                z_mid = array.z.median().values.astype(int)
+                self.array_viewers[key] = visual.XArrayViewer(
+                    array, x='x', y='y', col='c', label_cols=False
+                )
+                self.array_viewers[key].update_index(z=z_mid)
             else:
                 self.array_viewers[key].update_array(array)
 
-    def save_state(self, prefix):
-        pass
+    def get_save_path(self, epoch, suffix):
+        return f'{self.save_prefix}_{epoch}{suffix}'
 
-    def load_state(self, prefix):
-        pass
+    def save_metrics(self):
+        csv_path = self.get_save_path('', '_metrics.csv')
+        self.evaluator.save_metrics(csv_path)
+
+    def save_viewers(self):
+        viewer_path = self.get_save_path(self.epoch, '_metrics.png')
+        self.metric_viewer.fig.savefig(viewer_path)
+        for key, array_viewer in self.array_viewers.items():
+            viewer_path = self.get_save_path(self.epoch, f'_{key}.png')
+            array_viewer.fig.savefig(viewer_path)
+
+    def save_state(self):
+        model_path = self.get_save_path(self.epoch, '_model.pt')
+        optim_path = self.get_save_path(self.epoch, '_optim.pt')
+        model_state = self.model.state_dict()
+        optim_state = self.optimizer.state_dict()
+        torch.save(model_state, model_path)
+        torch.save(optim_state, optim_path)
+
+    def load_state(self, epoch):
+        model_path = self.get_save_path(epoch, '_model.pt')
+        optim_path = self.get_save_path(epoch, '_optim.pt')
+        model_state = torch.load(model_path)
+        optim_state = torch.load(optim_path)
+        self.model.load_state_dict(model_state)
+        self.optimizer.load_state_dict(optim_state)
+        self.epoch = epoch
 
 
 def collate_fn(batch):

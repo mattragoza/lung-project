@@ -1,3 +1,4 @@
+import os, time, psutil
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -49,6 +50,9 @@ class Evaluator(object):
 
         return loss
 
+    def save_metrics(self, path):
+        self.metrics.to_csv(path)
+
 
 def squared_norm(x, dim=-1):
     return torch.sum(x**2, dim=dim)
@@ -77,3 +81,33 @@ def compute_corr_mat(xs, mask):
     x = x.reshape(-1, x.shape[-1])
     x = x[mask.flatten().bool(),:]
     return torch.corrcoef(x.T)
+
+
+class Timer(object):
+
+    def __init__(self, index_cols, sync_cuda=False):
+        self.index_cols = index_cols
+        self.usage = pd.DataFrame(columns=index_cols)
+        self.usage.set_index(index_cols, inplace=True)
+        self.sync_cuda = sync_cuda
+
+    def start(self):
+        self.t_prev = time.time()
+
+    def tick(self, index):
+        if self.sync_cuda:
+            torch.cuda.synchronize()
+
+        t_curr, t_prev = time.time(), self.t_prev
+        self.usage.loc[index, 'time'] = (t_curr - t_prev)
+        self.t_prev = t_curr
+
+        device_props = torch.cuda.get_device_properties(0)
+        self.usage.loc[index, 'gpu_mem_total'] = device_props.total_memory
+        self.usage.loc[index, 'gpu_mem_reserved'] = torch.cuda.memory_reserved()
+        self.usage.loc[index, 'gpu_mem_allocated'] = torch.cuda.memory_allocated()
+
+        process = psutil.Process(os.getpid())
+        self.usage.loc[index, 'mem_total'] = psutil.virtual_memory().total
+        self.usage.loc[index, 'mem_used'] = process.memory_info().rss
+
