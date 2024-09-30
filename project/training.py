@@ -1,4 +1,4 @@
-import time
+import sys, os, time
 import numpy as np
 import torch
 import pandas as pd
@@ -18,7 +18,9 @@ class Trainer(object):
         learning_rate,
         save_every,
         save_prefix,
-        sync_cuda,
+        interp_radius=None,
+        interp_sigma=None,
+        sync_cuda=False
     ):
         self.model = model
 
@@ -45,8 +47,31 @@ class Trainer(object):
         self.array_viewers = {}
         self.metric_viewer = None
 
+        self.interp_radius = interp_radius
+        self.interp_sigma = interp_sigma
+
         self.save_every = save_every
         self.save_prefix = save_prefix
+
+        if save_prefix:
+            os.makedirs(self.viewer_dir, exist_ok=True)
+            os.makedirs(self.state_dir, exist_ok=True)
+
+    @property
+    def save_dir(self):
+        return os.path.split(self.save_prefix)[0]
+
+    @property
+    def save_name(self):
+        return os.path.split(self.save_prefix)[1]
+
+    @property
+    def viewer_dir(self):
+        return os.path.join(self.save_dir, 'viewers')
+
+    @property
+    def state_dir(self):
+        return os.path.join(self.save_dir, 'state')
 
     def __repr__(self):
         return f'{type(self).__name__}(epoch={self.epoch})'
@@ -80,6 +105,7 @@ class Trainer(object):
         print('Training...')
         start_epoch = self.epoch
         stop_epoch = self.epoch + num_epochs
+        self.timer.start()
         for i in range(start_epoch, stop_epoch):
             print(f'Epoch {i+1}/{stop_epoch}')
             self.run_epoch(phase='train', epoch=i+1)
@@ -110,8 +136,7 @@ class Trainer(object):
         print(f'{example}', end='', flush=True)
 
         # predict elasticity from anatomical image
-        mu_pred_image = self.model.forward(anat_image)
-        mu_pred_image = torch.exp(mu_pred_image) * 1000
+        mu_pred_image = self.model.forward(anat_image) * 1000
         self.timer.tick((epoch, batch_num, -1, phase, 'model_forward'))
 
         # physical FEM simulation
@@ -125,18 +150,18 @@ class Trainer(object):
             # convert tensors to FEM basis coefficients
             u_true_dofs = interpolation.image_to_dofs(
                 u_true_image[k], resolution[k], pde.V,
-                radius=radius[k],
-                sigma=radius[k]/2
+                radius=self.interp_radius or radius[k],
+                sigma=self.interp_sigma or radius[k]/2
             ).cpu()
             mu_pred_dofs = interpolation.image_to_dofs(
                 mu_pred_image[k], resolution[k], pde.S,
-                radius=radius[k],
-                sigma=radius[k]/2
+                radius=self.interp_radius or radius[k],
+                sigma=self.interp_sigma or radius[k]/2
             ).cpu()
             anat_dofs = interpolation.image_to_dofs(
                 anat_image[k], resolution[k], pde.S,
-                radius=radius[k], 
-                sigma=radius[k]/2
+                radius=self.interp_radius or radius[k],
+                sigma=self.interp_sigma or radius[k]/2
             ).cpu()
             rho_dofs = (1 + anat_dofs/1000) * 1000
             self.timer.tick((epoch, batch_num, exam_num, phase, 'image_to_dofs'))
@@ -234,31 +259,28 @@ class Trainer(object):
             else:
                 self.array_viewers[key].update_array(array)
 
-    def get_save_path(self, epoch, suffix):
-        return f'{self.save_prefix}_{epoch}{suffix}'
-
     def save_metrics(self):
-        csv_path = self.get_save_path('', '_metrics.csv')
+        csv_path = f'{self.save_prefix}_metrics.csv'
+        png_path = f'{self.save_prefix}_metrics.png'
         self.evaluator.save_metrics(csv_path)
+        self.metric_viewer.fig.savefig(png_path)
 
     def save_viewers(self):
-        viewer_path = self.get_save_path(self.epoch, '_metrics.png')
-        self.metric_viewer.fig.savefig(viewer_path)
         for key, array_viewer in self.array_viewers.items():
-            viewer_path = self.get_save_path(self.epoch, f'_{key}.png')
+            viewer_path = os.path.join(self.viewer_dir, f'{key}_{self.epoch}.png')
             array_viewer.fig.savefig(viewer_path)
 
     def save_state(self):
-        model_path = self.get_save_path(self.epoch, '_model.pt')
-        optim_path = self.get_save_path(self.epoch, '_optim.pt')
+        model_path = os.path.join(self.state_dir, f'model_{self.epoch}.pt')
+        optim_path = os.path.join(self.state_dir, f'optim_{self.epoch}.pt')
         model_state = self.model.state_dict()
         optim_state = self.optimizer.state_dict()
         torch.save(model_state, model_path)
         torch.save(optim_state, optim_path)
 
     def load_state(self, epoch):
-        model_path = self.get_save_path(epoch, '_model.pt')
-        optim_path = self.get_save_path(epoch, '_optim.pt')
+        model_path = os.path.join(self.state_dir, f'model_{epoch}.pt')
+        optim_path = os.path.join(self.state_dir, f'optim_{epoch}.pt')
         model_state = torch.load(model_path)
         optim_state = torch.load(optim_path)
         self.model.load_state_dict(model_state)

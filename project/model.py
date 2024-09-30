@@ -3,6 +3,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def get_func_by_name(name):
+    if name == 'id':
+        return lambda x: x
+    elif name == 'exp':
+        return torch.exp
+    elif name == 'relu':
+        return F.relu
+    elif name == 'splus':
+        return F.softplus
+
+
+
 class ConvUnit(torch.nn.Module):
     
     def __init__(self, in_channels, out_channels, kernel_size):
@@ -132,6 +144,7 @@ class UNet3D(torch.nn.Module):
         pool_kernel_size=2,
         pool_type='max',
         upsample_mode='trilinear',
+        output_func='exp'
     ):
         super().__init__()
         assert num_levels > 0
@@ -174,6 +187,7 @@ class UNet3D(torch.nn.Module):
             next_channels = curr_channels // 2
         
         self.final_conv = torch.nn.Conv3d(curr_channels, out_channels, kernel_size=1)
+        self.output_func = get_func_by_name(output_func)
 
     def forward(self, x):
         
@@ -190,4 +204,4 @@ class UNet3D(torch.nn.Module):
         for i, decoder in enumerate(self.decoder):
             x = decoder(x, encoder_feats[i+1])
 
-        return self.final_conv(x)
+        return self.output_func(self.final_conv(x))
