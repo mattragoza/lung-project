@@ -9,7 +9,7 @@ from . import utils
 
 class Dataset(torch.utils.data.Dataset):
 
-    def __init__(self, examples, dtype=torch.float32, device='cuda'):
+    def __init__(self, examples, dtype=torch.float32, device='cpu'):
         super().__init__()
 
         self.examples = examples

@@ -135,6 +135,11 @@ class Trainer(object):
         anat_image, u_true_image, mask, resolution, mesh, radius, example = batch
         print(f'{example}', end='', flush=True)
 
+        # move tensors to GPU
+        anat_image = anat_image.to('cuda')
+        u_true_image = u_true_image.to('cuda')
+        mask = mask.to('cuda')
+
         # predict elasticity from anatomical image
         mu_pred_image = self.model.forward(anat_image) * 1000
         self.timer.tick((epoch, batch_num, -1, phase, 'model_forward'))
@@ -189,8 +194,8 @@ class Trainer(object):
             if phase == 'test': # evaluate in image domain     
                 u_pred_image = interpolation.dofs_to_image(
                     u_pred_dofs, pde.V, u_true_image[k].shape[-3:], resolution[k]
-                )
-                u_pred_image = torch.as_tensor(u_pred_image).cuda()
+                ).to('cuda')
+                u_pred_image = torch.as_tensor(u_pred_image)
                 self.timer.tick((epoch, batch_num, exam_num, phase, 'dofs_to_image'))
 
                 self.evaluator.evaluate(
