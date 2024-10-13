@@ -10,26 +10,33 @@ dependencies:
   - scikit-image
   - pandas
   - xarray
-  - pytorch::pytorch-cuda=11.8
+  - nibabel
+  - h5py
+  - eigen
+  - cgal
+  - meshio
+  - pytorch
+  - cudatoolkit=11.7
   - torchvision
+  - fenics
+  - trame
+  - trame-vtk
+  - trame-vuetify
+  - xvfbwrapper
   - matplotlib
   - seaborn
+  - hvplot
   - notebook
+  - ipython
   - ipykernel
   - ipywidgets
   - tqdm
   - parse
-  - hvplot
-  - nibabel
-  - eigen
-  - cgal
-  - fenics
-  - meshio
-  - h5py
   - requests>=2.31
   - pip
   - pip:
     - TotalSegmentator
     - pygalmesh
     - git+https://github.com/barkm/torch-fenics.git@master
+    - torch-fem
 
