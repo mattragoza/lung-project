@@ -198,7 +198,8 @@ class Trainer(object):
             total_loss += loss
             self.timer.tick((epoch, batch_num, exam_num, phase, 'dof_metrics'))
 
-            if phase == 'test': # evaluate in image domain     
+            if phase == 'test': # evaluate in image domain
+                mask_k = (mask[k,0] > 0).to(dtype=int)
                 u_pred_image = interpolation.dofs_to_image(
                     u_pred_dofs, pde.V, u_image[k].shape[-3:], resolution[k]
                 ).to('cuda')
@@ -211,22 +212,22 @@ class Trainer(object):
                     mu_image[k].permute(1,2,3,0),
                     u_pred_image.permute(1,2,3,0),
                     u_image[k].permute(1,2,3,0),
-                    (mask[k,0] > 0).to(dtype=int),
+                    mask_k,
                     index=(epoch, batch_num, example[k], phase, 'image')
                 )
                 self.timer.tick((epoch, batch_num, exam_num, phase, 'image_metrics'))
 
                 alpha = 0.5
-                alpha_mask = (1 - alpha * (1 - mask[k]))
+                alpha_mask = (1 - alpha * (1 - mask_k))
                 emph = (
-                    mask[k] +
+                    mask_k +
                     (anat_image[k] < -850) +
                     (anat_image[k] < -900) +
                     (anat_image[k] < -950)
                 )
                 self.update_viewers(
                     anat=anat_image[k] * alpha_mask,
-                    emph=emph * mask[k] - 1,
+                    emph=emph * mask_k - 1,
                     mu_pred=mu_pred_image[k] * alpha_mask,
                     mu_true=mu_image[k] * alpha_mask,
                     u_pred=u_pred_image * alpha_mask,
