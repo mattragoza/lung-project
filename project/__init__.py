@@ -7,6 +7,7 @@ from . import (
 	model,
 	output,
 	pde,
+	phantom,
 	registration,
 	training,
 	utils,

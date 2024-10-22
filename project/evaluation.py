@@ -28,25 +28,34 @@ class Evaluator(object):
     def long_format_metrics(self):
         return self.metrics.melt(var_name='metric', ignore_index=False)
 
-    def evaluate(self, anat, mu_pred, u_pred, u_true, mask, index):
+    def evaluate(self, anat, mu_pred, mu_true, u_pred, u_true, mask, index):
         loss = compute_loss(u_pred, u_true, mask)
         self.metrics.loc[index, 'loss'] = loss.item()
 
         self.metrics.loc[index, 'u_pred_norm'] = compute_norm(u_pred, mask).item()
         self.metrics.loc[index, 'u_true_norm'] = compute_norm(u_true, mask).item()
         self.metrics.loc[index, 'mu_pred_norm'] = compute_norm(mu_pred, mask).item()
+        self.metrics.loc[index, 'mu_true_norm'] = compute_norm(mu_true, mask).item()
 
         corr_mat = compute_corr_mat([
             mu_pred,
+            mu_true,
             anat,
             (anat < -950),
             (anat < -900),
             (anat < -850),
         ], mask)
-        self.metrics.loc[index, 'mu_anat_corr'] = corr_mat[0,1].item()
-        self.metrics.loc[index, 'mu_950_corr'] = corr_mat[0,2].item()
-        self.metrics.loc[index, 'mu_900_corr'] = corr_mat[0,3].item()
-        self.metrics.loc[index, 'mu_850_corr'] = corr_mat[0,4].item()
+        self.metrics.loc[index, 'mu_true_corr'] = corr_mat[0,1].item()
+
+        self.metrics.loc[index, 'mu_anat_corr'] = corr_mat[0,2].item()
+        self.metrics.loc[index, 'mu_950_corr'] = corr_mat[0,3].item()
+        self.metrics.loc[index, 'mu_900_corr'] = corr_mat[0,4].item()
+        self.metrics.loc[index, 'mu_850_corr'] = corr_mat[0,5].item()
+
+        self.metrics.loc[index, 'true_anat_corr'] = corr_mat[1,2].item()
+        self.metrics.loc[index, 'true_950_corr'] = corr_mat[1,3].item()
+        self.metrics.loc[index, 'true_900_corr'] = corr_mat[1,4].item()
+        self.metrics.loc[index, 'true_850_corr'] = corr_mat[1,5].item()
 
         return loss
 
