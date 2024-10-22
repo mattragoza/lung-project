@@ -189,7 +189,7 @@ class Trainer(object):
             loss = self.evaluator.evaluate(
                 anat_dofs.unsqueeze(1),
                 mu_pred_dofs.unsqueeze(1),
-                mu_true_ofs.unsqueeze(1),
+                mu_true_dofs.unsqueeze(1),
                 u_pred_dofs,
                 u_true_dofs,
                 mask=torch.ones_like(anat_dofs, dtype=int),
@@ -200,7 +200,7 @@ class Trainer(object):
 
             if phase == 'test': # evaluate in image domain     
                 u_pred_image = interpolation.dofs_to_image(
-                    u_pred_dofs, pde.V, u_true_image[k].shape[-3:], resolution[k]
+                    u_pred_dofs, pde.V, u_image[k].shape[-3:], resolution[k]
                 ).to('cuda')
                 u_pred_image = torch.as_tensor(u_pred_image)
                 self.timer.tick((epoch, batch_num, exam_num, phase, 'dofs_to_image'))
@@ -208,9 +208,9 @@ class Trainer(object):
                 self.evaluator.evaluate(
                     anat_image[k].permute(1,2,3,0),
                     mu_pred_image[k].permute(1,2,3,0),
-                    mu_true_image[k].permute(1,2,3,0),
+                    mu_image[k].permute(1,2,3,0),
                     u_pred_image.permute(1,2,3,0),
-                    u_true_image[k].permute(1,2,3,0),
+                    u_image[k].permute(1,2,3,0),
                     (mask[k,0] > 0).to(dtype=int),
                     index=(epoch, batch_num, example[k], phase, 'image')
                 )
@@ -228,8 +228,9 @@ class Trainer(object):
                     anat=anat_image[k] * alpha_mask,
                     emph=emph * mask[k] - 1,
                     mu_pred=mu_pred_image[k] * alpha_mask,
+                    mu_true=mu_image[k] * alpha_mask,
                     u_pred=u_pred_image * alpha_mask,
-                    u_true=u_true_image[k] * alpha_mask
+                    u_true=u_image[k] * alpha_mask
                 )
                 self.timer.tick((epoch, batch_num, exam_num, phase, 'update_viewers'))
 

@@ -3,8 +3,10 @@ import numpy as np
 import xarray as xr
 import nibabel as nib
 import pygalmesh
+import meshio
+import torch
 
-from . import meshing, interpolation, pde
+from . import data, meshing, interpolation, pde, utils
 
 
 class PhantomSet(object):
@@ -19,6 +21,7 @@ class PhantomSet(object):
     def generate(self, *args, **kwargs):
         self.data_root.mkdir(exist_ok=True)
         for i, phantom in enumerate(self.phantoms):
+            print(f'Generating phantom {i}')
             phantom.generate(*args, **kwargs)
             
     def get_examples(self, mesh_radius):
@@ -27,12 +30,16 @@ class PhantomSet(object):
             examples.append({
                 'name': phantom.phantom_name,
                 'anat_file': phantom.anat_file(),
+                'elast_file': phantom.elast_file(),
                 'disp_file': phantom.disp_file(),
                 'mask_file': phantom.mask_file(),
                 'mesh_file': phantom.mesh_file(mesh_radius),
                 'mesh_radius': mesh_radius
             })
         return examples
+
+    def __getitem__(self, idx):
+        return self.phantoms[idx]
 
 
 class Phantom(object):
@@ -63,6 +70,48 @@ class Phantom(object):
     
     def mesh_file(self, mesh_radius):
         return self.phantom_dir / f'{self.phantom_name}_mesh{mesh_radius}.xdmf'
+
+    def load_niftis(self):
+
+        print(f'Loading {self.anat_file()}')
+        nifti = nib.load(self.anat_file())
+        shape = nifti.header.get_data_shape()
+        resolution = nifti.header.get_zooms()
+
+        x = np.arange(shape[0]) * resolution[0]
+        y = np.arange(shape[1]) * resolution[1]
+        z = np.arange(shape[2]) * resolution[2]
+
+        self.anat = xr.DataArray(
+            data=nifti.get_fdata(),
+            dims=['x', 'y', 'z'],
+            coords=dict(x=x, y=y, z=z),
+            name='CT'
+        )
+        print(f'Loading {self.elast_file()}')
+        nifti = nib.load(self.elast_file())
+        self.elast = xr.DataArray(
+            data=nifti.get_fdata(),
+            dims=['x', 'y', 'z'],
+            coords=dict(x=x, y=y, z=z),
+            name='elasticity'
+        )
+        print(f'Loading {self.disp_file()}')
+        nifti = nib.load(self.disp_file())
+        self.disp = xr.DataArray(
+            data=nifti.get_fdata(),
+            dims=['x', 'y', 'z', 'component'],
+            coords=dict(x=x, y=y, z=z, component=['x', 'y', 'z']),
+            name='displacement'
+        )
+        print(f'Loading {self.mask_file()}')
+        nifti = nib.load(self.mask_file())
+        self.mask = xr.DataArray(
+            data=nifti.get_fdata(),
+            dims=['x', 'y', 'z'],
+            coords=dict(x=x, y=y, z=z),
+            name='mask'
+        )
     
     def generate(self, shape, resolution, mesh_radius, **kwargs):
         self.phantom_dir.mkdir(exist_ok=True)
@@ -74,7 +123,7 @@ class Phantom(object):
             mesh_file=self.mesh_file(mesh_radius),
             **kwargs
         )
-        self.elast = project.utils.as_xarray(
+        self.elast = utils.as_xarray(
             elast, dims=['x', 'y', 'z'], name='elasticity'
         )
 
@@ -175,6 +224,7 @@ def random_texture(filter):
 
 
 def generate_phantom(
+    random_seed=None,
     shape=(256, 256, 64),
     resolution=(1.0, 1.0, 2.0),
     target_type='disk',
@@ -190,6 +240,9 @@ def generate_phantom(
     mesh_radius=10,
     mesh_file='phantom.xdmf'
 ):
+    print(f'Setting random seed to {random_seed}')
+    np.random.seed(random_seed)
+    
     # define coordinates over spatial domain
     print('Defining spatial domain...')
     coords = spatial_coordinates(shape, resolution)
@@ -230,6 +283,7 @@ def generate_phantom(
     cutoff0 = 10**log_cutoff0
     cutoff1 = 10**log_cutoff1
 
+    freqs = frequency_coordinates(shape)
     filter0 = bandpass_filter(freqs, cutoff0/2, cutoff0, power=2)
     filter1 = bandpass_filter(freqs, cutoff1/2, cutoff1, power=2)
 
@@ -242,6 +296,7 @@ def generate_phantom(
     anat = region0 * anat0 + region1 * anat1
     
     # generate random displacement boundary condition
+    print('Generating displacement BC...')
     phase = np.random.normal(0, phase_sigma, (3, 3))
     extent = np.max(shape) * np.array(resolution)
     disp_bc = np.sin(2 * np.pi * (coords/extent) @ phase)
@@ -254,33 +309,33 @@ def generate_phantom(
         max_cell_circumradius=float(mesh_radius),
         odt=True
     )
-    mesh = project.meshing.remove_unused_points(mesh)
+    mesh = meshing.remove_unused_points(mesh)
     
     # save mesh using meshio, then read with fenics
     mesh_cells = [(mesh.cells[1].type, mesh.cells[1].data)]
     meshio.write_points_cells(mesh_file, mesh.points, mesh_cells)
-    mesh = project.data.load_mesh_file(mesh_file)
+    mesh = data.load_mesh_file(mesh_file)
     
     # convert to FEM basis coefficients
     device = 'cpu'
     dtype = torch.float32
-    pde = project.pde.LinearElasticPDE(mesh)
+    pde_ = pde.LinearElasticPDE(mesh)
     print('Interpolating FEM coefficients...')
-    u_dofs = project.interpolation.image_to_dofs(
+    u_dofs = interpolation.image_to_dofs(
         torch.as_tensor(disp_bc, dtype=dtype, device=device).permute(3, 0, 1, 2),
-        resolution, pde.V,
+        resolution, pde_.V,
         radius=int(mesh_radius),
         sigma=mesh_radius/2
     )
-    mu_dofs = project.interpolation.image_to_dofs(
+    mu_dofs = interpolation.image_to_dofs(
         torch.as_tensor(mu, dtype=dtype, device=device),
-        resolution, pde.S,
+        resolution, pde_.S,
         radius=int(mesh_radius),
         sigma=mesh_radius/2
     )
-    anat_dofs = project.interpolation.image_to_dofs(
+    anat_dofs = interpolation.image_to_dofs(
         torch.as_tensor(anat, dtype=dtype, device=device),
-        resolution, pde.S,
+        resolution, pde_.S,
         radius=int(mesh_radius),
         sigma=mesh_radius/2
     )
@@ -288,16 +343,16 @@ def generate_phantom(
     
     # solve FEM for simulated displacement dofs
     print('Solving FEM model...')
-    u_sim_dofs = pde.forward(
+    u_sim_dofs = pde_.forward(
         u_dofs.unsqueeze(0),
         mu_dofs.unsqueeze(0),
         rho_dofs.unsqueeze(0),
     )[0]
     
     # convert to displacement image
-    print('Converting to image...')
-    disp_sim = project.interpolation.dofs_to_image(
-        u_sim_dofs, pde.V, disp_bc.shape[:3], resolution
+    print('Converting displacement to image...')
+    disp_sim = interpolation.dofs_to_image(
+        u_sim_dofs, pde_.V, disp_bc.shape[:3], resolution
     ).permute(1,2,3,0)
     
-    return mu, anat, disp_bc, disp_sim
+    return mu, anat, disp_bc, disp_sim, mask, mesh

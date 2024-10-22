@@ -110,7 +110,7 @@ class Emory4DCT(object):
             for fixed_phase in self.phases:
                 moving_phase = (fixed_phase + 10) % 100
                 examples.append({
-                    'example_name': case.nifti_file(fixed_phase).stem,
+                    'name': case.nifti_file(fixed_phase).stem,
                     'anat_file': case.nifti_file(fixed_phase),
                     'disp_file': case.disp_file(moving_phase, fixed_phase),
                     'mask_file': case.mask_file(fixed_phase, mask_roi),
