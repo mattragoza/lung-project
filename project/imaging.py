@@ -114,7 +114,7 @@ class Emory4DCT(object):
                     'anat_file': case.nifti_file(fixed_phase),
                     'disp_file': case.disp_file(moving_phase, fixed_phase),
                     'mask_file': case.mask_file(fixed_phase, mask_roi),
-                    'mesh_file': case.mesh_file(fixed_phase, mesh_radius),
+                    'mesh_file': case.mesh_file(fixed_phase, mask_roi, mesh_radius),
                     'mesh_radius': mesh_radius
                 })
         return examples
@@ -181,9 +181,9 @@ class Emory4DCTCase(object):
         return self.disp_dir / \
             f'case{self.case_id}_T{moving_phase:02d}_T{fixed_phase:02d}.nii.gz' 
 
-    def mesh_file(self, phase, radius):
+    def mesh_file(self, phase, roi, radius):
         return self.mesh_dir / \
-            f'case{self.case_id}_T{phase:02d}_{radius}.xdmf'
+            f'case{self.case_id}_T{phase:02d}_{roi}_{radius}.xdmf'
         
     def load_images(self, shape, resolution, shift=-1000, flip_z=True):
 
@@ -277,13 +277,15 @@ class Emory4DCTCase(object):
             name='mask'
         )
 
-    def load_displacements(self, fixed_phase, relative):
+    def load_displacements(self, moving_phase, relative):
         all_data = []
-        for m in self.phases:
-            phase_data = []
-            for f in as_iterable(fixed_phase):
+        fixed_phase_coords = self.phases
+        for f in fixed_phase_coords:
+            fixed_phase_data = []
+            moving_phase_coords = []
+            for m in as_iterable(moving_phase):
                 if relative:
-                    f = m + f
+                    m = (f + m) % 100
                 disp_file = self.disp_file(moving_phase=m, fixed_phase=f)
                 print(f'Loading {disp_file}')
                 disp = nib.load(disp_file)
@@ -294,8 +296,9 @@ class Emory4DCTCase(object):
                     shape = disp.header.get_data_shape()
                     resolution = disp.header.get_zooms()
 
-                phase_data.append(disp.get_fdata())
-            all_data.append(np.stack(phase_data))
+                fixed_phase_data.append(disp.get_fdata())
+                moving_phase_coords.append(m)
+            all_data.append(np.stack(fixed_phase_data))
 
         expected_shape = self.shape + (3,)
         expected_resolution = self.resolution + (1.0,)
@@ -304,16 +307,18 @@ class Emory4DCTCase(object):
         assert np.allclose(resolution, expected_resolution), \
             f'{resolution} vs. {expected_resolution}'
 
+        print(np.stack(all_data, axis=0).shape)
+
         self.disp = xr.DataArray(
             data=np.stack(all_data, axis=0),
-            dims=['phase', 'fixed_phase', 'x', 'y', 'z', 'component'],
+            dims=['fixed_phase', 'moving_phase', 'x', 'y', 'z', 'component'],
             coords={
-                'phase': self.phases,
+                'fixed_phase': fixed_phase_coords,
+                'moving_phase': moving_phase_coords,
                 'x': np.arange(self.shape[0]) * self.resolution[0],
                 'y': np.arange(self.shape[1]) * self.resolution[1],
                 'z': np.arange(self.shape[2]) * self.resolution[2],
                 'component': ['x', 'y', 'z'],
-                'fixed_phase': as_iterable(fixed_phase)
             },
             name='displacement'
         )
@@ -346,10 +351,20 @@ class Emory4DCTCase(object):
             data = self.anat.sel(phase=phase).data
             affine = np.diag(list(self.resolution) + [1])
             nifti = nib.nifti1.Nifti1Image(data, affine)
-            nifti_file = self.nifti_dir / f'case{self.case_id}_T{phase:02d}.nii.gz'
+            nifti_file = self.nifti_file(phase)
             self.nifti_dir.mkdir(exist_ok=True)
             print(f'Saving {nifti_file}')
             nib.save(nifti, nifti_file)
+
+    def save_masks(self, roi):
+        for phase in self.phases:
+            data = self.mask.sel(phase=phase).data
+            affine = np.diag(list(self.resolution) + [1])
+            nifti = nib.nifti1.Nifti1Image(data, affine)
+            mask_file = self.mask_file(phase, roi)
+            self.mask_dir.mkdir(exist_ok=True)
+            print(f'Saving {mask_file}')
+            nib.save(nifti, mask_file)
 
     def copy(self):
         copy = type(self)(self.data_root, self.case_name, self.phases)

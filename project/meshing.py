@@ -8,6 +8,23 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+import fenics as fe
+from mpi4py import MPI
+
+
+def save_mesh_meshio(mesh_file, mesh, cell_blocks):
+    mesh_cells = [(mesh.cells[i].type, mesh.cells[i].data) for i in cell_blocks]
+    meshio.write_points_cells(mesh_file, mesh.points, mesh_cells)
+
+
+def load_mesh_fenics(mesh_file):
+    print(f'Loading {mesh_file}...', end=' ')
+    mesh = fe.Mesh()
+    with fe.XDMFFile(MPI.COMM_WORLD, str(mesh_file)) as f:
+        f.read(mesh)
+    print(mesh.num_vertices())
+    return mesh
+
 
 def estimate_limit(x, expand=0.1):
     x_min, x_max = np.min(x), np.max(x)

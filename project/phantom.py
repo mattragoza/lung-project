@@ -2,6 +2,7 @@ import pathlib
 import numpy as np
 import xarray as xr
 import nibabel as nib
+import scipy.stats
 import pygalmesh
 import meshio
 import torch
@@ -17,11 +18,16 @@ class PhantomSet(object):
         for i in range(num_phantoms):
             phantom = Phantom(data_root, phantom_id=i)
             self.phantoms.append(phantom)
+
+    def __len__(self):
+        return len(self.phantoms)
+
+    def __getitem__(self, idx):
+        return self.phantoms[idx]
             
     def generate(self, *args, **kwargs):
         self.data_root.mkdir(exist_ok=True)
         for i, phantom in enumerate(self.phantoms):
-            print(f'Generating phantom {i}')
             phantom.generate(*args, **kwargs)
             
     def get_examples(self, mesh_radius):
@@ -37,9 +43,6 @@ class PhantomSet(object):
                 'mesh_radius': mesh_radius
             })
         return examples
-
-    def __getitem__(self, idx):
-        return self.phantoms[idx]
 
 
 class Phantom(object):
@@ -70,7 +73,7 @@ class Phantom(object):
     
     def mesh_file(self, mesh_radius):
         return self.phantom_dir / f'{self.phantom_name}_mesh{mesh_radius}.xdmf'
-
+    
     def load_niftis(self):
 
         print(f'Loading {self.anat_file()}')
@@ -112,21 +115,30 @@ class Phantom(object):
             coords=dict(x=x, y=y, z=z),
             name='mask'
         )
-    
-    def generate(self, shape, resolution, mesh_radius, **kwargs):
+
+    def load_mesh(self, mesh_radius):
+        mesh_file = self.mesh_file(mesh_radius)
+        print(f'Loading {mesh_file}')
+        self.mesh = meshing.load_mesh_fenics(mesh_file)
+
+    def generate(self, mask_file, mesh_radius, **kwargs):
         self.phantom_dir.mkdir(exist_ok=True)
+        
+        nifti = nib.load(mask_file)
+        shape = nifti.header.get_data_shape()
+        resolution = nifti.header.get_zooms()
+        input_mask = (nifti.get_fdata() > 0).astype(int)
+        
         elast, anat, disp_bc, disp, mask, mesh = generate_phantom(
-            random_seed=self.phantom_id,
-            shape=shape,
+            input_mask=input_mask,
             resolution=resolution,
             mesh_radius=mesh_radius,
             mesh_file=self.mesh_file(mesh_radius),
-            **kwargs
-        )
-        self.elast = utils.as_xarray(
-            elast, dims=['x', 'y', 'z'], name='elasticity'
+            random_seed=self.phantom_id,
+            **kwargs 
         )
 
+        # convert to xarrays
         x = np.arange(shape[0]) * resolution[0]
         y = np.arange(shape[1]) * resolution[1]
         z = np.arange(shape[2]) * resolution[2]
@@ -167,7 +179,7 @@ class Phantom(object):
         nib.save(nib.Nifti1Image(self.disp.data, affine), self.disp_file())
               
         print(f'Saving {self.mask_file()}')
-        nib.save(nib.Nifti1Image(self.mask.data, affine), self.mask_file())  
+        nib.save(nib.Nifti1Image(self.mask.data, affine), self.mask_file()) 
 
 
 
@@ -185,20 +197,40 @@ def frequency_coordinates(shape):
     return np.stack(np.meshgrid(x, y, z, indexing='ij'), axis=-1)
 
 
-def draw_target(coords, center, radius, type_):
-    assert type_ in {'disk', 'sphere', 'cube'}
-    if type_ == 'disk':
-        component = (0,1)
-        order = 2
-    elif type_ == 'sphere':
-        component = (0,1,2)
-        order = 2
-    elif type_ == 'cube':
-        component = (0,1,2)
-        order = np.inf
-    displacement = (coords - center)[...,component]
-    distance = np.linalg.norm(displacement, ord=order, axis=-1)
-    return (distance < radius).astype(int)
+def draw_target(coords, center, radius, rotation):
+    displacement = ((coords - center) @ rotation) / radius
+    distance = np.linalg.norm(displacement, ord=2, axis=-1)
+    return (distance <= 1).astype(int)
+
+
+def draw_random_target(coords, radius_min, radius_max, pad=0.2, iso=False):
+    coords_min = coords.min(axis=(0,1,2))
+    coords_max = coords.max(axis=(0,1,2))
+    coords_range = coords_max - coords_min
+    center_min = coords_min + coords_range * pad
+    center_max = coords_max - coords_range * pad
+    center = np.random.uniform(center_min, center_max)
+    radius = np.random.uniform(radius_min, radius_max, (1 if iso else 3))
+    rotation = scipy.stats.ortho_group.rvs(3)
+    return draw_target(coords, center, radius, rotation)
+
+
+def add_non_overlapping_targets(
+    regions, resolution, max_targets, radius_min, radius_max
+):
+    coords = spatial_coordinates(regions.shape, resolution)
+    regions = np.array(regions)
+    target_count = 0
+    attempt_count = 0
+    while (target_count < max_targets) and (attempt_count < max_targets * 10):
+        target = draw_random_target(coords, radius_min, radius_max)
+        collisions = np.logical_and(target, (regions != 1))
+        if not np.any(collisions):
+            target_count += 1
+            regions += target * target_count
+        attempt_count += 1
+    print(target_count, attempt_count)
+    return regions
 
 
 def butterworth_filter(freqs, cutoff, power):
@@ -224,13 +256,13 @@ def random_texture(filter):
 
 
 def generate_phantom(
-    random_seed=None,
-    shape=(256, 256, 64),
-    resolution=(1.0, 1.0, 2.0),
-    target_type='disk',
-    target_radius=50,
-    min_log_kpa=-1,
-    max_log_kpa=1,
+    input_mask,
+    resolution,
+    max_targets=5,
+    radius_min=5,
+    radius_max=25,
+    log_kpa_min=-1,
+    log_kpa_max=1,
     bias_midpoint=0,
     bias_range=500,
     anat_range=2000,
@@ -238,62 +270,61 @@ def generate_phantom(
     log_cutoff_max=0,
     phase_sigma=1.0,
     mesh_radius=10,
-    mesh_file='phantom.xdmf'
+    mesh_file='phantom.xdmf',
+    random_seed=None
 ):
     print(f'Setting random seed to {random_seed}')
     np.random.seed(random_seed)
     
     # define coordinates over spatial domain
     print('Defining spatial domain...')
+    shape = input_mask.shape
     coords = spatial_coordinates(shape, resolution)
-    center = coords.mean(axis=(0,1,2), keepdims=True)
 
     # define spatial regions for target and background
-    target = draw_target(coords, center, target_radius, target_type)
-    region0 = (target == 0).astype(np.uint16)
-    region1 = (target == 1).astype(np.uint16)
+    regions = add_non_overlapping_targets(
+        input_mask, resolution, max_targets, radius_min, radius_max
+    )
+    n_regions = 1 + int(regions.max())
+    region_id = np.arange(n_regions)
+    region_indicator = (regions[None,...] == region_id[:,None,None,None])
 
     # sample latent variables for each region
     print('Sampling latent variables...')
-    latent0 = np.random.rand()
-    latent1 = np.random.rand()
-    print(latent0, latent1)
+    latent = np.random.rand(n_regions)
 
     # map latent variables to stiffness values
     print('Generating stiffness map..')
-    log_kpa_range = (max_log_kpa - min_log_kpa)
-    log_kpa0 = latent0 * log_kpa_range + min_log_kpa
-    log_kpa1 = latent1 * log_kpa_range + min_log_kpa
+    log_kpa_range = (log_kpa_max - log_kpa_min)
+    log_kpa = latent * log_kpa_range + log_kpa_min
+    mu = np.power(10, log_kpa) * 1000 # log kPa -> Pa
+    mu[0] = 0 # background stiffness
 
     # assign stiffness to each spatial region
-    mu0 = 10**log_kpa0 * 1000
-    mu1 = 10**log_kpa1 * 1000
-    mu = region0 * mu0 + region1 * mu1
+    mu = (region_indicator * mu[:,None,None,None]).sum(axis=0)
 
-    # map latent variables to anatomical texture and bias
+    # map latent variables to anatomical texture parameters
     print('Generating anatomical image...')
     bias_min = bias_midpoint - bias_range/2
-    bias0 = latent0 * bias_range + bias_min
-    bias1 = latent1 * bias_range + bias_min
+    bias = latent * bias_range + bias_min
 
     log_cutoff_range = (log_cutoff_max - log_cutoff_min)
-    log_cutoff0 = latent0 * log_cutoff_range + log_cutoff_min
-    log_cutoff1 = latent1 * log_cutoff_range + log_cutoff_min
+    log_cutoff = latent * log_cutoff_range + log_cutoff_min
+    cutoff = np.power(10, log_cutoff)
 
-    cutoff0 = 10**log_cutoff0
-    cutoff1 = 10**log_cutoff1
+    freq_coords = frequency_coordinates(shape)
+    texture = np.zeros_like(region_indicator, dtype=float)
+    for i in range(n_regions):
+        filter_ = bandpass_filter(freq_coords, cutoff[i]/2, cutoff[i], power=2)
+        texture[i] = random_texture(filter_)
 
-    freqs = frequency_coordinates(shape)
-    filter0 = bandpass_filter(freqs, cutoff0/2, cutoff0, power=2)
-    filter1 = bandpass_filter(freqs, cutoff1/2, cutoff1, power=2)
-
-    texture0 = random_texture(filter0)
-    texture1 = random_texture(filter1)
     texture_range = (anat_range - bias_range)
+    anat = texture * texture_range/2 + bias[:,None,None,None]
+    anat_min = bias_midpoint - anat_range/2
+    anat[0] = anat_min
 
-    anat0 = texture0 * texture_range/2 + bias0
-    anat1 = texture1 * texture_range/2 + bias1
-    anat = region0 * anat0 + region1 * anat1
+    # assign anatomical textures to each region
+    anat = (region_indicator * anat).sum(axis=0)
     
     # generate random displacement boundary condition
     print('Generating displacement BC...')
@@ -302,25 +333,26 @@ def generate_phantom(
     disp_bc = np.sin(2 * np.pi * (coords/extent) @ phase)
 
     # generate mesh using pygalmesh
-    mask = (target + 1).astype(np.uint16)
     print('Generating mesh...')
+    mask = regions.astype(np.uint16)
     mesh = pygalmesh.generate_from_array(
         mask, resolution,
         max_cell_circumradius=float(mesh_radius),
-        odt=True
+        min_facet_angle=15,
+        max_facet_distance=1.0,
+        odt=True, lloyd=True
     )
     mesh = meshing.remove_unused_points(mesh)
     
     # save mesh using meshio, then read with fenics
-    mesh_cells = [(mesh.cells[1].type, mesh.cells[1].data)]
-    meshio.write_points_cells(mesh_file, mesh.points, mesh_cells)
-    mesh = data.load_mesh_file(mesh_file)
+    meshing.save_mesh_meshio(mesh_file, mesh, cell_blocks=[1])
+    mesh = meshing.load_mesh_fenics(mesh_file)
     
     # convert to FEM basis coefficients
+    print('Interpolating FEM coefficients...')
+    pde_ = pde.LinearElasticPDE(mesh)
     device = 'cpu'
     dtype = torch.float32
-    pde_ = pde.LinearElasticPDE(mesh)
-    print('Interpolating FEM coefficients...')
     u_dofs = interpolation.image_to_dofs(
         torch.as_tensor(disp_bc, dtype=dtype, device=device).permute(3, 0, 1, 2),
         resolution, pde_.V,
@@ -341,7 +373,7 @@ def generate_phantom(
     )
     rho_dofs = (1 + anat_dofs/1000) * 1000
     
-    # solve FEM for simulated displacement dofs
+    # solve for simulated displacement dofs
     print('Solving FEM model...')
     u_sim_dofs = pde_.forward(
         u_dofs.unsqueeze(0),
@@ -350,7 +382,7 @@ def generate_phantom(
     )[0]
     
     # convert to displacement image
-    print('Converting displacement to image...')
+    print('Converting displacement field to image...')
     disp_sim = interpolation.dofs_to_image(
         u_sim_dofs, pde_.V, disp_bc.shape[:3], resolution
     ).permute(1,2,3,0)

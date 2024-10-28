@@ -637,12 +637,11 @@ COLORS = {
     'black':  (0.0, 0.0, 0.0),
     'white':  (1.0, 1.0, 1.0),
     'red':    (1.0, 0.0, 0.0),
-    'orange': (1.0, 0.5, 0.0),
+    'orange': (1.0, 0.6, 0.0),
     'yellow': (1.0, 1.0, 0.0),
     'green':  (0.0, 0.8, 0.0),
-    'cyan':   (0.0, 1.0, 1.0),
+    'cyan':   (0.0, 0.8, 1.0),
     'blue':   (0.0, 0.0, 1.0),
-    'purple': (1.0, 0.0, 1.0),
 }
 
 
@@ -695,14 +694,15 @@ def mre_color_map(n_colors=255, symmetric=True):
 
 def region_color_map(n_colors=255, has_background=True):
     '''
-    Create a colormap for segmentation regions
-    from white, red, yellow, green, to blue.
+    Create a colormap for lung segmentation regions
     '''
     colors = [
         COLORS['white'],
         COLORS['red'],
+        COLORS['orange'],
         COLORS['yellow'],
         COLORS['green'],
+        COLORS['cyan'],
         COLORS['blue'],
     ]
     if has_background:
@@ -752,6 +752,10 @@ def get_color_kws(array, pct=99, scale=1.1):
     elif contains_any(array.name, ['mask']):
         cmap = grayscale_color_map()
         vmin, vmax = (0, 1)
+
+    elif contains_any(array.name, ['region']):
+        cmap = region_color_map(8, has_background=True)
+        vmin, vmax = (0, 7)
 
     elif contains_any(array.name, ['emph']):
         cmap = threshold_color_map(7, has_background=True)
