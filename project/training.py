@@ -135,8 +135,6 @@ class Trainer(object):
         mu_image = mu_image.to('cuda')
         u_image = u_image.to('cuda')
         mask = mask.to('cuda')
-        points = points.to('cuda')
-        radius = radius.to('cuda')
 
         # predict elasticity from anatomical image
         mu_pred_image = self.model.forward(anat_image) * 1000
@@ -147,36 +145,38 @@ class Trainer(object):
         batch_size = len(example)
         for k in range(batch_size):
             print('.', end='', flush=True)
+            points_k = points[k].to('cuda')
+            radius_k = radius[k].to('cuda')
 
             # convert tensors to FEM basis coefficients
             anat_dofs = interpolation.interpolate_image(
-                anat_image[k], resolution[k], points[k], radius[k],
+                anat_image[k], resolution[k], points_k, radius_k,
                 kernel_size=7
-            ).cpu()
+            ).to(dtype=torch.float64, device='cpu')
             rho_dofs = (1 + anat_dofs/1000) * 1000
 
             mu_pred_dofs = interpolation.interpolate_image(
-                mu_pred_image[k], resolution[k], points[k], radius[k],
+                mu_pred_image[k], resolution[k], points_k, radius_k,
                 kernel_size=7
-            ).cpu()
+            ).to(dtype=torch.float64, device='cpu')
 
             mu_true_dofs = interpolation.interpolate_image(
-                mu_image[k], resolution[k], points[k], radius[k],
+                mu_image[k], resolution[k], points_k, radius_k,
                 kernel_size=7
-            ).cpu()
+            ).to(dtype=torch.float64, device='cpu')
 
             u_true_dofs = interpolation.interpolate_image(
-                u_image[k], resolution[k], points[k], radius[k],
+                u_image[k], resolution[k], points_k, radius_k,
                 kernel_size=7
-            ).cpu()
+            ).to(dtype=torch.float64, device='cpu')
 
             self.timer.tick((epoch, batch_num, k+1, phase, 'image_to_dofs'))
 
             # solve FEM for simulated displacement coefficients
-            u_pred_dofs = pde.forward(
-                u_true_dofs.unsqueeze(0),
-                mu_pred_dofs.unsqueeze(0),
-                rho_dofs.unsqueeze(0),
+            u_pred_dofs = pde[k].forward(
+                u_true_dofs[None,:,:],
+                mu_pred_dofs[None,:,0],
+                rho_dofs[None,:,0],
             )[0]
             self.timer.tick((epoch, batch_num, k+1, phase, 'pde_forward'))
 
@@ -191,15 +191,15 @@ class Trainer(object):
                 index=(epoch, batch_num, example[k], phase, 'dofs')
             )
             total_loss += loss
-            self.timer.tick((epoch, batch_num, exam_num, phase, 'dof_metrics'))
+            self.timer.tick((epoch, batch_num, k+1, phase, 'dof_metrics'))
 
             if phase == 'test': # evaluate in image domain
                 mask_k = (mask[k,0] > 0).to(dtype=int)
                 u_pred_image = interpolation.dofs_to_image(
-                    u_pred_dofs, pde.V, u_image[k].shape[-3:], resolution[k]
+                    u_pred_dofs, pde[k].V, u_image[k].shape[-3:], resolution[k]
                 ).to('cuda')
                 u_pred_image = torch.as_tensor(u_pred_image)
-                self.timer.tick((epoch, batch_num, exam_num, phase, 'dofs_to_image'))
+                self.timer.tick((epoch, batch_num, k+1, phase, 'dofs_to_image'))
 
                 self.evaluator.evaluate(
                     anat_image[k].permute(1,2,3,0),
@@ -210,7 +210,7 @@ class Trainer(object):
                     mask_k,
                     index=(epoch, batch_num, example[k], phase, 'image')
                 )
-                self.timer.tick((epoch, batch_num, exam_num, phase, 'image_metrics'))
+                self.timer.tick((epoch, batch_num, k+1, phase, 'image_metrics'))
 
                 alpha = 0.5
                 alpha_mask = (1 - alpha * (1 - mask_k))
@@ -228,7 +228,7 @@ class Trainer(object):
                     u_pred=u_pred_image * alpha_mask,
                     u_true=u_image[k] * alpha_mask
                 )
-                self.timer.tick((epoch, batch_num, exam_num, phase, 'update_viewers'))
+                self.timer.tick((epoch, batch_num, k+1, phase, 'update_viewers'))
 
         loss = total_loss / batch_size
         print(f'{loss:.4f}', flush=True)
@@ -306,7 +306,7 @@ def collate_fn(batch):
     mask = torch.stack([ex[3] for ex in batch])
     resolution = [ex[4] for ex in batch]
     pde = [ex[5] for ex in batch]
-    points = torch.stack([ex[6] for ex in batch])
-    radius = torch.stack([ex[7] for ex in batch])
+    points = [ex[6] for ex in batch]
+    radius = [ex[7] for ex in batch]
     example = [ex[8] for ex in batch]
     return anat, elast, disp, mask, resolution, pde, points, radius, example
