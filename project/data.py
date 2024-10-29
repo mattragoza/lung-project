@@ -1,10 +1,11 @@
+import numpy as np
 import torch
 import nibabel as nib
 import fenics as fe
 from mpi4py import MPI
 
-from . import imaging
-from . import utils
+from . import imaging, utils
+from .pde import LinearElasticPDE
 
 
 class Dataset(torch.utils.data.Dataset):
@@ -35,18 +36,25 @@ class Dataset(torch.utils.data.Dataset):
         anat = load_nii_file(example['anat_file'])
         disp = load_nii_file(example['disp_file'])
         mask = load_nii_file(example['mask_file'])        
-        
+
         # get image spatial resolution
         resolution = anat.header.get_zooms()
-
-        # load mesh from xdmf file
-        mesh = load_mesh_file(example['mesh_file'])
-
+        
         # convert arrays to tensors with shape (c,x,y,z)
         kwargs = dict(dtype=self.dtype, device=self.device)
         anat = torch.as_tensor(anat.get_fdata(), **kwargs).unsqueeze(0)
         disp = torch.as_tensor(disp.get_fdata(), **kwargs).permute(3,0,1,2)
         mask = torch.as_tensor(mask.get_fdata(), **kwargs).unsqueeze(0)
+
+        # load mesh from xdmf file
+        mesh = load_mesh_file(example['mesh_file'])
+
+        # initialize biomechanical pde model
+        pde = LinearElasticPDE(mesh)
+
+        # compute dof coords and kernel radius for interpolation
+        points = torch.as_tensor(pde.S.tabulate_dof_coordinates())
+        radius = compute_point_radius(points, resolution)
 
         if 'elast_file' in example: # has ground truth
             elast = load_nii_file(example['elast_file'])
@@ -54,7 +62,7 @@ class Dataset(torch.utils.data.Dataset):
         else:
             elast = torch.zeros_like(anat)
 
-        return anat, elast, disp, mask, resolution, mesh, mesh_radius, example_name
+        return anat, elast, disp, mask, resolution, pde, points, radius, example_name
 
 
 def load_nii_file(nii_file):
@@ -71,3 +79,11 @@ def load_mesh_file(mesh_file):
         f.read(mesh)
     print(mesh.num_vertices())
     return mesh
+
+
+def compute_point_radius(points, resolution):
+    min_radius = np.linalg.norm(resolution) / 2
+    distance = torch.norm(points[:,None,:] - points[None,:,:], dim=-1)
+    distance[distance == 0] = 1e3
+    distance[distance < min_radius] = min_radius
+    return distance.min(dim=-1, keepdims=True).values

@@ -8,6 +8,8 @@ import hvplot.xarray
 from tqdm import tqdm
 import torch
 
+from . import data, meshing
+
 ALL_CASES = [
     'Case1Pack',
     'Case2Pack',
@@ -104,7 +106,7 @@ class Emory4DCT(object):
         for case in self.cases:
             case.register_cases(fixed_case)
 
-    def get_examples(self, mask_roi='lung_combined_mask', mesh_radius=20):
+    def get_examples(self, mask_roi='lung_regions', mesh_radius=20):
         examples = []
         for case in self.cases:
             for fixed_phase in self.phases:
@@ -242,7 +244,7 @@ class Emory4DCTCase(object):
             name=f'CT'
         )
 
-    def load_masks(self, roi='lung_combined_mask'):
+    def load_masks(self, roi='lung_regions'):
         all_data = []
         for phase in self.phases:
             phase_data = []
@@ -307,8 +309,6 @@ class Emory4DCTCase(object):
         assert np.allclose(resolution, expected_resolution), \
             f'{resolution} vs. {expected_resolution}'
 
-        print(np.stack(all_data, axis=0).shape)
-
         self.disp = xr.DataArray(
             data=np.stack(all_data, axis=0),
             dims=['fixed_phase', 'moving_phase', 'x', 'y', 'z', 'component'],
@@ -322,6 +322,13 @@ class Emory4DCTCase(object):
             },
             name='displacement'
         )
+
+    def load_meshes(self, roi, mesh_radius):
+        self.meshes = []
+        for phase in self.phases:
+            mesh_file = self.mesh_file(phase, roi, mesh_radius)
+            mesh = meshing.load_mesh_fenics(mesh_file)
+            self.meshes.append(mesh)
 
     def load_landmarks(self):
         self.landmarks = []

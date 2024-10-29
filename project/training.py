@@ -18,8 +18,6 @@ class Trainer(object):
         learning_rate,
         save_every,
         save_prefix,
-        interp_radius=None,
-        interp_sigma=None,
         sync_cuda=False
     ):
         self.model = model
@@ -46,9 +44,6 @@ class Trainer(object):
         )
         self.array_viewers = {}
         self.metric_viewer = None
-
-        self.interp_radius = interp_radius
-        self.interp_sigma = interp_sigma
 
         self.save_every = save_every
         self.save_prefix = save_prefix
@@ -132,7 +127,7 @@ class Trainer(object):
         self.run_batch(batch, phase, epoch, batch_num)
     
     def run_batch(self, batch, phase, epoch, batch_num):
-        anat_image, mu_image, u_image, mask, resolution, mesh, radius, example = batch
+        anat_image, mu_image, u_image, mask, resolution, pde, points, radius, example = batch
         print(f'{example}', end='', flush=True)
 
         # move tensors to GPU
@@ -140,6 +135,8 @@ class Trainer(object):
         mu_image = mu_image.to('cuda')
         u_image = u_image.to('cuda')
         mask = mask.to('cuda')
+        points = points.to('cuda')
+        radius = radius.to('cuda')
 
         # predict elasticity from anatomical image
         mu_pred_image = self.model.forward(anat_image) * 1000
@@ -150,32 +147,30 @@ class Trainer(object):
         batch_size = len(example)
         for k in range(batch_size):
             print('.', end='', flush=True)
-            pde = self.pde_class(mesh[k])
-            exam_num = k + 1
 
             # convert tensors to FEM basis coefficients
-            anat_dofs = interpolation.image_to_dofs(
-                anat_image[k], resolution[k], pde.S,
-                radius=self.interp_radius or radius[k],
-                sigma=self.interp_sigma or radius[k]/2
+            anat_dofs = interpolation.interpolate_image(
+                anat_image[k], resolution[k], points[k], radius[k],
+                kernel_size=7
             ).cpu()
             rho_dofs = (1 + anat_dofs/1000) * 1000
-            mu_pred_dofs = interpolation.image_to_dofs(
-                mu_pred_image[k], resolution[k], pde.S,
-                radius=self.interp_radius or radius[k],
-                sigma=self.interp_sigma or radius[k]/2
+
+            mu_pred_dofs = interpolation.interpolate_image(
+                mu_pred_image[k], resolution[k], points[k], radius[k],
+                kernel_size=7
             ).cpu()
-            mu_true_dofs = interpolation.image_to_dofs(
-                mu_image[k], resolution[k], pde.S,
-                radius=self.interp_radius or radius[k],
-                sigma=self.interp_sigma or radius[k]/2
+
+            mu_true_dofs = interpolation.interpolate_image(
+                mu_image[k], resolution[k], points[k], radius[k],
+                kernel_size=7
             ).cpu()
-            u_true_dofs = interpolation.image_to_dofs(
-                u_image[k], resolution[k], pde.V,
-                radius=self.interp_radius or radius[k],
-                sigma=self.interp_sigma or radius[k]/2
+
+            u_true_dofs = interpolation.interpolate_image(
+                u_image[k], resolution[k], points[k], radius[k],
+                kernel_size=7
             ).cpu()
-            self.timer.tick((epoch, batch_num, exam_num, phase, 'image_to_dofs'))
+
+            self.timer.tick((epoch, batch_num, k+1, phase, 'image_to_dofs'))
 
             # solve FEM for simulated displacement coefficients
             u_pred_dofs = pde.forward(
@@ -183,7 +178,7 @@ class Trainer(object):
                 mu_pred_dofs.unsqueeze(0),
                 rho_dofs.unsqueeze(0),
             )[0]
-            self.timer.tick((epoch, batch_num, exam_num, phase, 'pde_forward'))
+            self.timer.tick((epoch, batch_num, k+1, phase, 'pde_forward'))
 
             # compute loss and evaluation metrics
             loss = self.evaluator.evaluate(
@@ -310,7 +305,8 @@ def collate_fn(batch):
     disp = torch.stack([ex[2] for ex in batch])
     mask = torch.stack([ex[3] for ex in batch])
     resolution = [ex[4] for ex in batch]
-    mesh = [ex[5] for ex in batch]
-    radius = [ex[6] for ex in batch]
-    example = [ex[7] for ex in batch]
-    return anat, elast, disp, mask, resolution, mesh, radius, example
+    pde = [ex[5] for ex in batch]
+    points = torch.stack([ex[6] for ex in batch])
+    radius = torch.stack([ex[7] for ex in batch])
+    example = [ex[8] for ex in batch]
+    return anat, elast, disp, mask, resolution, pde, points, radius, example
