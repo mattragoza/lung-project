@@ -4,13 +4,19 @@ import xarray as xr
 import torch
 
 
-def as_xarray(a, dims=None, coords=None, name=None):
+def as_xarray(a, dims=None, coords=None, name=None, resolution=None):
     if isinstance(a, torch.Tensor):
         a = a.detach().cpu().numpy()
     if dims is None:
         dims = [f'dim{i}' for i in range(a.ndim)]
     if coords is None:
-        coords = {d: np.arange(a.shape[i]) for i, d in enumerate(dims)}
+        if resolution is not None:
+            res = dict(zip(['x', 'y', 'z'], resolution))
+            coords = {
+                d: np.arange(a.shape[i]) * res.get(d, 1) for i, d in enumerate(dims)
+            }
+        else:
+            coords = {d: np.arange(a.shape[i]) for i, d in enumerate(dims)}
     return xr.DataArray(a, dims=dims, coords=coords, name=name)
 
 

@@ -16,11 +16,11 @@ class Trainer(object):
         test_data,
         batch_size,
         learning_rate,
-        save_every,
-        save_prefix,
         interp_size,
         interp_type,
         rho_value,
+        save_every,
+        save_prefix,
         sync_cuda=False
     ):
         self.model = model
@@ -200,7 +200,7 @@ class Trainer(object):
                 e_true=e_true_dofs.unsqueeze(1),
                 u_pred=u_pred_dofs,
                 u_true=u_true_dofs,
-                mask=torch.ones_like(a_dofs, dtype=int),
+                mask=torch.ones(len(a_dofs), dtype=int),
                 index=(epoch, batch_num, name[k], phase, 'dofs')
             )
             total_loss += loss
@@ -225,7 +225,7 @@ class Trainer(object):
                 )
                 self.timer.tick((epoch, batch_num, k+1, phase, 'image_metrics'))
 
-                alpha = 0.5
+                alpha = 1.0
                 alpha_mask = (1 - alpha * (1 - mask_k))
                 emph_mask = (
                     mask_k +
@@ -234,6 +234,7 @@ class Trainer(object):
                     (a_image[k] < -950)
                 )
                 self.update_viewers(
+                    resolution[k],
                     anat=a_image[k] * alpha_mask,
                     emph=emph_mask * mask_k - 1,
                     e_pred=e_pred_image[k] * alpha_mask,
@@ -254,7 +255,7 @@ class Trainer(object):
             self.optimizer.zero_grad()
             self.timer.tick((epoch, batch_num, -1, phase, 'optimizer_step'))
 
-    def update_viewers(self, **kwargs):
+    def update_viewers(self, resolution, **kwargs):
 
         if self.metric_viewer is None:
             self.metric_viewer = visual.DataViewer(
@@ -272,13 +273,16 @@ class Trainer(object):
 
         # update xarray viewers
         for key, value in kwargs.items():
-            array = utils.as_xarray(value, dims=['c', 'x', 'y', 'z'], name=key)
+            array = utils.as_xarray(
+                value, dims=['c', 'x', 'y', 'z'], name=key, resolution=resolution
+            )
             if key not in self.array_viewers:
-                z_mid = array.z.median().values.astype(int)
+                slice_dim = 'y'
+                slice_mid = array[slice_dim].median().values.astype(int)
                 self.array_viewers[key] = visual.XArrayViewer(
-                    array, x='x', y='y', col='c', label_cols=False
+                    array, x='x', y='z', col='c', label_cols=False
                 )
-                self.array_viewers[key].update_index(z=z_mid)
+                self.array_viewers[key].update_index(**{slice_dim: slice_mid})
             else:
                 self.array_viewers[key].update_array(array)
 

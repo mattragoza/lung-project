@@ -743,7 +743,7 @@ def get_color_kws(array, pct=99, scale=1.1):
 
     elif contains_any(array.name, ['elast', 'mu_', 'lam_', 'e_']):
         cmap = mre_color_map()
-        vmin, vmax = (-12e3, 12e3)
+        vmin, vmax = (-5e4, 5e4)
 
     elif contains_any(array.name, ['disp', 'u_']):
         cmap = wave_color_map()
