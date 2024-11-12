@@ -5,7 +5,7 @@ import fenics as fe
 from mpi4py import MPI
 
 from . import imaging, utils
-from .pde import LinearElasticPDE
+from . import pde as pde_module
 
 
 class Dataset(torch.utils.data.Dataset):
@@ -33,36 +33,32 @@ class Dataset(torch.utils.data.Dataset):
         mesh_radius = example['mesh_radius']
         
         # load images from NIFTI files
-        anat = load_nii_file(example['anat_file'])
-        disp = load_nii_file(example['disp_file'])
+        a_image = load_nii_file(example['anat_file'])
+        u_image = load_nii_file(example['disp_file'])
         mask = load_nii_file(example['mask_file'])        
 
         # get image spatial resolution
-        resolution = anat.header.get_zooms()
+        resolution = a_image.header.get_zooms()
         
         # convert arrays to tensors with shape (c,x,y,z)
         kwargs = dict(dtype=self.dtype, device=self.device)
-        anat = torch.as_tensor(anat.get_fdata(), **kwargs).unsqueeze(0)
-        disp = torch.as_tensor(disp.get_fdata(), **kwargs).permute(3,0,1,2)
+        a_image = torch.as_tensor(a_image.get_fdata(), **kwargs).unsqueeze(0)
+        u_image = torch.as_tensor(u_image.get_fdata(), **kwargs).permute(3,0,1,2)
         mask = torch.as_tensor(mask.get_fdata(), **kwargs).unsqueeze(0)
 
         # load mesh from xdmf file
         mesh = load_mesh_file(example['mesh_file'])
 
-        # initialize biomechanical pde model
-        pde = LinearElasticPDE(mesh)
-
-        # compute dof coords and kernel radius for interpolation
-        points = torch.as_tensor(pde.S.tabulate_dof_coordinates())
-        radius = compute_point_radius(points, resolution)
+        # initialize biomechanical model
+        pde = pde_module.FiniteElementModel(mesh, resolution)
 
         if 'elast_file' in example: # has ground truth
-            elast = load_nii_file(example['elast_file'])
-            elast = torch.as_tensor(elast.get_fdata(), **kwargs).unsqueeze(0)
+            e_image = load_nii_file(example['elast_file'])
+            e_image = torch.as_tensor(e_image.get_fdata(), **kwargs).unsqueeze(0)
         else:
-            elast = torch.zeros_like(anat)
+            e_image = torch.zeros_like(a_image)
 
-        return anat, elast, disp, mask, resolution, pde, points, radius, example_name
+        return a_image, e_image, u_image, mask, resolution, pde, example_name
 
 
 def load_nii_file(nii_file):
@@ -79,11 +75,3 @@ def load_mesh_file(mesh_file):
         f.read(mesh)
     print(mesh.num_vertices())
     return mesh
-
-
-def compute_point_radius(points, resolution):
-    min_radius = np.linalg.norm(resolution) / 2
-    distance = torch.norm(points[:,None,:] - points[None,:,:], dim=-1)
-    distance[distance == 0] = 1e3
-    distance[distance < min_radius] = min_radius
-    return distance.min(dim=-1, keepdims=True).values

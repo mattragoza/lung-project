@@ -4,7 +4,7 @@ import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from . import pde, interpolation, evaluation, visual, utils
+from . import interpolation, evaluation, visual, utils
 
 
 class Trainer(object):
@@ -18,6 +18,9 @@ class Trainer(object):
         learning_rate,
         save_every,
         save_prefix,
+        interp_size,
+        interp_type,
+        rho_value,
         sync_cuda=False
     ):
         self.model = model
@@ -31,7 +34,6 @@ class Trainer(object):
         self.train_iterator = iter(enumerate(self.train_loader))
         self.test_iterator = iter(enumerate(self.test_loader))
 
-        self.pde_class = pde.LinearElasticPDE
         self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
         self.epoch = 0
 
@@ -51,6 +53,10 @@ class Trainer(object):
         if save_prefix:
             os.makedirs(self.viewer_dir, exist_ok=True)
             os.makedirs(self.state_dir, exist_ok=True)
+
+        self.interp_size = interp_size
+        self.interp_type = interp_type
+        self.rho_value = rho_value
 
     @property
     def save_dir(self):
@@ -122,109 +128,116 @@ class Trainer(object):
 
     def run_next_batch(self, phase, epoch):
         j, batch = self.get_next_batch(phase)
-        batch_num = j + 1
-        self.timer.tick((epoch, batch_num, -1, phase, 'get_next_batch'))
-        self.run_batch(batch, phase, epoch, batch_num)
+        self.timer.tick((epoch, j+1, -1, phase, 'get_next_batch'))
+        self.run_batch(batch, phase, epoch, j+1)
     
     def run_batch(self, batch, phase, epoch, batch_num):
-        anat_image, mu_image, u_image, mask, resolution, pde, points, radius, example = batch
-        print(f'{example}', end='', flush=True)
+        a_image, e_image, u_image, mask, resolution, pde, name = batch
+        print(f'{name}', end='', flush=True)
 
         # move tensors to GPU
-        anat_image = anat_image.to('cuda')
-        mu_image = mu_image.to('cuda')
+        a_image = a_image.to('cuda')
+        e_image = e_image.to('cuda')
         u_image = u_image.to('cuda')
-        mask = mask.to('cuda')
+        mask = (mask > 0).to('cuda')
 
         # predict elasticity from anatomical image
-        mu_pred_image = self.model.forward(anat_image) * 1000
+        e_pred_image = self.model.forward(a_image) * 1000 # kPa -> Pa
         self.timer.tick((epoch, batch_num, -1, phase, 'model_forward'))
 
         # physical FEM simulation
         total_loss = 0
-        batch_size = len(example)
+        batch_size = len(batch[0])
         for k in range(batch_size):
             print('.', end='', flush=True)
-            points_k = points[k].to('cuda')
-            radius_k = radius[k].to('cuda')
+            points_k = pde[k].points.to('cuda')
+            radius_k = pde[k].radius.to('cuda')
 
-            # convert tensors to FEM basis coefficients
-            anat_dofs = interpolation.interpolate_image(
-                anat_image[k], resolution[k], points_k, radius_k,
-                kernel_size=7
-            ).to(dtype=torch.float64, device='cpu')
-            rho_dofs = (1 + anat_dofs/1000) * 1000
-
-            mu_pred_dofs = interpolation.interpolate_image(
-                mu_pred_image[k], resolution[k], points_k, radius_k,
-                kernel_size=7
+            # convert tensors to FEM coefficients
+            kernel_size = self.interp_size # 7
+            a_dofs = interpolation.interpolate_image(
+                a_image[k], mask[k], resolution[k], points_k, radius_k,
+                kernel_size=self.interp_size,
+                kernel_type=self.interp_type,
             ).to(dtype=torch.float64, device='cpu')
 
-            mu_true_dofs = interpolation.interpolate_image(
-                mu_image[k], resolution[k], points_k, radius_k,
-                kernel_size=7
+            if self.rho_value == 'anat':
+                rho_dofs = (a_dofs + 1000)
+            else:
+                rho_dofs = torch.full_like(a_dofs, float(self.rho_value))
+
+            e_true_dofs = interpolation.interpolate_image(
+                e_image[k], mask[k], resolution[k], points_k, radius_k,
+                kernel_size=self.interp_size,
+                kernel_type=self.interp_type,
+            ).to(dtype=torch.float64, device='cpu')
+
+            e_pred_dofs = interpolation.interpolate_image(
+                e_pred_image[k], mask[k], resolution[k], points_k, radius_k,
+                kernel_size=self.interp_size,
+                kernel_type=self.interp_type,
             ).to(dtype=torch.float64, device='cpu')
 
             u_true_dofs = interpolation.interpolate_image(
-                u_image[k], resolution[k], points_k, radius_k,
-                kernel_size=7
+                u_image[k], mask[k], resolution[k], points_k, radius_k,
+                kernel_size=self.interp_size,
+                kernel_type=self.interp_type,
             ).to(dtype=torch.float64, device='cpu')
-
             self.timer.tick((epoch, batch_num, k+1, phase, 'image_to_dofs'))
 
-            # solve FEM for simulated displacement coefficients
+            # solve pde for simulated displacement field
             u_pred_dofs = pde[k].forward(
                 u_true_dofs[None,:,:],
-                mu_pred_dofs[None,:,0],
+                e_pred_dofs[None,:,0],
                 rho_dofs[None,:,0],
             )[0]
             self.timer.tick((epoch, batch_num, k+1, phase, 'pde_forward'))
 
             # compute loss and evaluation metrics
             loss = self.evaluator.evaluate(
-                anat_dofs.unsqueeze(1),
-                mu_pred_dofs.unsqueeze(1),
-                mu_true_dofs.unsqueeze(1),
-                u_pred_dofs,
-                u_true_dofs,
-                mask=torch.ones_like(anat_dofs, dtype=int),
-                index=(epoch, batch_num, example[k], phase, 'dofs')
+                anat=a_dofs.unsqueeze(1),
+                e_pred=e_pred_dofs.unsqueeze(1),
+                e_true=e_true_dofs.unsqueeze(1),
+                u_pred=u_pred_dofs,
+                u_true=u_true_dofs,
+                mask=torch.ones_like(a_dofs, dtype=int),
+                index=(epoch, batch_num, name[k], phase, 'dofs')
             )
             total_loss += loss
             self.timer.tick((epoch, batch_num, k+1, phase, 'dof_metrics'))
 
             if phase == 'test': # evaluate in image domain
-                mask_k = (mask[k,0] > 0).to(dtype=int)
+                mask_k = mask[k,0].to(dtype=int)
+
                 u_pred_image = interpolation.dofs_to_image(
                     u_pred_dofs, pde[k].V, u_image[k].shape[-3:], resolution[k]
                 ).to('cuda')
-                u_pred_image = torch.as_tensor(u_pred_image)
                 self.timer.tick((epoch, batch_num, k+1, phase, 'dofs_to_image'))
 
                 self.evaluator.evaluate(
-                    anat_image[k].permute(1,2,3,0),
-                    mu_pred_image[k].permute(1,2,3,0),
-                    mu_image[k].permute(1,2,3,0),
-                    u_pred_image.permute(1,2,3,0),
-                    u_image[k].permute(1,2,3,0),
-                    mask_k,
-                    index=(epoch, batch_num, example[k], phase, 'image')
+                    anat=a_image[k].permute(1,2,3,0),
+                    e_pred=e_pred_image[k].permute(1,2,3,0),
+                    e_true=e_image[k].permute(1,2,3,0),
+                    u_pred=u_pred_image.permute(1,2,3,0),
+                    u_true=u_image[k].permute(1,2,3,0),
+                    mask=mask_k,
+                    index=(epoch, batch_num, name[k], phase, 'image')
                 )
                 self.timer.tick((epoch, batch_num, k+1, phase, 'image_metrics'))
 
                 alpha = 0.5
                 alpha_mask = (1 - alpha * (1 - mask_k))
-                emph = (
+                emph_mask = (
                     mask_k +
-                    (anat_image[k] < -850) +
-                    (anat_image[k] < -900) +
-                    (anat_image[k] < -950)
+                    (a_image[k] < -850) +
+                    (a_image[k] < -900) +
+                    (a_image[k] < -950)
                 )
                 self.update_viewers(
-                    anat=anat_image[k] * alpha_mask,
-                    emph=emph * mask_k - 1,
-                    mu_pred=mu_pred_image[k] * alpha_mask,
-                    mu_true=mu_image[k] * alpha_mask,
+                    anat=a_image[k] * alpha_mask,
+                    emph=emph_mask * mask_k - 1,
+                    e_pred=e_pred_image[k] * alpha_mask,
+                    e_true=e_image[k] * alpha_mask,
                     u_pred=u_pred_image * alpha_mask,
                     u_true=u_image[k] * alpha_mask
                 )
@@ -300,13 +313,11 @@ class Trainer(object):
 
 def collate_fn(batch):
     # we need a custom collate_fn b/c mesh is not a tensor
-    anat = torch.stack([ex[0] for ex in batch])
-    elast = torch.stack([ex[1] for ex in batch])
-    disp = torch.stack([ex[2] for ex in batch])
+    a_image = torch.stack([ex[0] for ex in batch])
+    e_image = torch.stack([ex[1] for ex in batch])
+    u_image = torch.stack([ex[2] for ex in batch])
     mask = torch.stack([ex[3] for ex in batch])
-    resolution = [ex[4] for ex in batch]
-    pde = [ex[5] for ex in batch]
-    points = [ex[6] for ex in batch]
-    radius = [ex[7] for ex in batch]
-    example = [ex[8] for ex in batch]
-    return anat, elast, disp, mask, resolution, pde, points, radius, example
+    res  = [ex[4] for ex in batch]
+    pde  = [ex[5] for ex in batch]
+    name = [ex[6] for ex in batch]
+    return a_image, e_image, u_image, mask, res, pde, name

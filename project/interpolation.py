@@ -5,16 +5,23 @@ import fenics as fe
 import torch_fenics
 
 
-def interpolate_image(image, resolution, points, kernel_radius, kernel_size=None):
+def interpolate_image(
+    image, mask, resolution, points, kernel_radius,
+    kernel_size=None,
+    kernel_type='tent',
+):
     '''
     Image interpolation method that takes a weighted sum
     of the image values in the neighborhood of each point.
 
     Args:
         image: (C, X, Y, Z) image tensor
+        mask: (C, X, Y, Z) mask tensor
         resolution: image resolution (float)
         points: (N, 3) sampling points
         kernel_radius: kernel shape parameter (N,)
+        kernel_size: kernel window half-size
+        kernel_type: 'flat', 'tent', or 'bell'
     '''
     C, X, Y, Z = image.shape
     N, D = points.shape
@@ -45,17 +52,32 @@ def interpolate_image(image, resolution, points, kernel_radius, kernel_size=None
         neighbor_voxels[:,:,1],
         neighbor_voxels[:,:,2],
     ].permute(1,2,0) # (N, K, C)
-    
+
+    neighbor_mask = mask[
+        0,
+        neighbor_voxels[:,:,0],
+        neighbor_voxels[:,:,1],
+        neighbor_voxels[:,:,2],
+    ] # (N, K)
+  
     neighbor_points = neighbor_voxels * resolution.unsqueeze(0).unsqueeze(0) # (N, K, D)
     
     displacement = (neighbor_points - points.unsqueeze(1)) # (N, K, D)
     distance = torch.norm(displacement, dim=-1) # (N, K)
     
-    weights = torch.clamp(1 - torch.abs(distance / kernel_radius), 0) # (N, K)
-    weights = (distance <= kernel_radius).float()
+    if kernel_type == 'flat':
+        weights = (distance <= kernel_radius).float()
+    elif kernel_type == 'tent':
+        weights = torch.clamp(1 - torch.abs(distance / kernel_radius), 0) # (N, K)
+    elif kernel_type == 'bell':
+        kernel_sigma = kernel_radius / 2
+        weights = torch.exp(-(distance / kernel_sigma)**2) # (N, K)
+    
+    weights = weights * neighbor_mask
     
     weighted_sum = (weights.unsqueeze(-1) * neighbor_values).sum(dim=1) # (N, C)
-    total_weight = weights.sum(dim=-1, keepdims=True) # (N, 1)
+    total_weight = weights.sum(dim=-1, keepdims=True) + 1e-8 # (N, 1)
+    assert (total_weight > 0).all(), 'zero total weight'
     
     interpolated_values = weighted_sum / total_weight # (N, C)
 

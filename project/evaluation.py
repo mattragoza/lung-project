@@ -39,32 +39,32 @@ class Evaluator(object):
     def long_format_metrics(self):
         return self.metrics.melt(var_name='metric', ignore_index=False)
 
-    def evaluate(self, anat, mu_pred, mu_true, u_pred, u_true, mask, index):
+    def evaluate(self, anat, e_pred, e_true, u_pred, u_true, mask, index):
 
-        u_error = mean_relative_squared_error(u_pred, u_true, mask)
+        u_error = mean_relative_error(u_pred, u_true, mask)
         self.metrics.loc[index, 'u_error'] = u_error.item()
-        self.metrics.loc[index, 'u_pred_norm'] = mean_squared_norm(u_pred,mask).item()
-        self.metrics.loc[index, 'u_true_norm'] = mean_squared_norm(u_true,mask).item()
+        self.metrics.loc[index, 'u_pred_norm'] = mean_norm(u_pred, mask).item()
+        self.metrics.loc[index, 'u_true_norm'] = mean_norm(u_true, mask).item()
 
-        mu_error = mean_relative_squared_error(mu_pred, mu_true, mask)
-        self.metrics.loc[index, 'mu_error'] = mu_error.item()
-        self.metrics.loc[index, 'mu_pred_norm'] = mean_squared_norm(mu_pred,mask).item()
-        self.metrics.loc[index, 'mu_true_norm'] = mean_squared_norm(mu_true,mask).item()
+        e_error = mean_relative_error(e_pred, e_true, mask)
+        self.metrics.loc[index, 'mu_error'] = e_error.item()
+        self.metrics.loc[index, 'mu_pred_norm'] = mean_norm(e_pred, mask).item()
+        self.metrics.loc[index, 'mu_true_norm'] = mean_norm(e_true, mask).item()
 
         corr_mat = correlation_matrix([
-            mu_pred, mu_true, anat,
+            e_pred, e_true, anat,
             (anat < -950),
             (anat < -900),
             (anat < -850),
         ], mask)
 
-        self.metrics.loc[index, 'mu_true_corr'] = corr_mat[0,1].item()
-        self.metrics.loc[index, 'mu_anat_corr'] = corr_mat[0,2].item()
+        self.metrics.loc[index, 'e_true_corr'] = corr_mat[0,1].item()
+        self.metrics.loc[index, 'e_anat_corr'] = corr_mat[0,2].item()
         self.metrics.loc[index, 'true_anat_corr'] = corr_mat[1,2].item()
 
-        self.metrics.loc[index, 'mu_950_corr'] = corr_mat[0,3].item()
-        self.metrics.loc[index, 'mu_900_corr'] = corr_mat[0,4].item()
-        self.metrics.loc[index, 'mu_850_corr'] = corr_mat[0,5].item()
+        self.metrics.loc[index, 'e_950_corr'] = corr_mat[0,3].item()
+        self.metrics.loc[index, 'e_900_corr'] = corr_mat[0,4].item()
+        self.metrics.loc[index, 'e_850_corr'] = corr_mat[0,5].item()
 
         self.metrics.loc[index, 'true_950_corr'] = corr_mat[1,3].item()
         self.metrics.loc[index, 'true_900_corr'] = corr_mat[1,4].item()
@@ -86,12 +86,12 @@ def weighted_mean(x, weights, dim=None):
     return weighted_sum / total_weight
 
 
-def mean_squared_norm(x, mask):
+def mean_norm(x, mask):
     norm = torch.sqrt(squared_norm(x))
     return weighted_mean(norm, mask)
 
 
-def mean_relative_squared_error(x_pred, x_true, mask, eps=1e-6):
+def mean_relative_error(x_pred, x_true, mask, eps=1e-6):
     residual_norm = squared_norm(x_true - x_pred)
     true_norm = squared_norm(x_true)
     relative_error = residual_norm / (true_norm + eps)
