@@ -106,7 +106,7 @@ class Emory4DCT(object):
         for case in self.cases:
             case.register_cases(fixed_case)
 
-    def get_examples(self, mask_roi='lung_regions', mesh_radius=20):
+    def get_examples(self, mask_roi='lung_regions', mesh_version=10):
         examples = []
         for case in self.cases:
             for fixed_phase in self.phases:
@@ -116,8 +116,7 @@ class Emory4DCT(object):
                     'anat_file': case.nifti_file(fixed_phase),
                     'disp_file': case.disp_file(moving_phase, fixed_phase),
                     'mask_file': case.mask_file(fixed_phase, mask_roi),
-                    'mesh_file': case.mesh_file(fixed_phase, mask_roi, mesh_radius),
-                    'mesh_radius': mesh_radius
+                    'mesh_file': case.mesh_file(fixed_phase, mask_roi, mesh_version),
                 })
         return examples
 
@@ -183,9 +182,9 @@ class Emory4DCTCase(object):
         return self.disp_dir / \
             f'case{self.case_id}_T{moving_phase:02d}_T{fixed_phase:02d}.nii.gz' 
 
-    def mesh_file(self, phase, roi, radius):
+    def mesh_file(self, phase, mask_roi, mesh_version):
         return self.mesh_dir / \
-            f'case{self.case_id}_T{phase:02d}_{roi}_{radius}.xdmf'
+            f'case{self.case_id}_T{phase:02d}_{mask_roi}_{mesh_version}.xdmf'
         
     def load_images(self, shape, resolution, shift=-1000, flip_z=True):
 
@@ -323,10 +322,10 @@ class Emory4DCTCase(object):
             name='displacement'
         )
 
-    def load_meshes(self, roi, mesh_radius):
+    def load_meshes(self, mask_roi, mesh_version):
         self.meshes = []
         for phase in self.phases:
-            mesh_file = self.mesh_file(phase, roi, mesh_radius)
+            mesh_file = self.mesh_file(phase, mask_roi, mesh_version)
             mesh = meshing.load_mesh_fenics(mesh_file)
             self.meshes.append(mesh)
 

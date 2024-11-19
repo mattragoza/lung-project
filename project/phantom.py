@@ -30,7 +30,7 @@ class PhantomSet(object):
         for i, phantom in enumerate(self.phantoms):
             phantom.generate(*args, **kwargs)
             
-    def get_examples(self, mesh_radius):
+    def get_examples(self, mesh_version):
         examples = []
         for i, phantom in enumerate(self.phantoms):
             examples.append({
@@ -39,8 +39,7 @@ class PhantomSet(object):
                 'elast_file': phantom.elast_file(),
                 'disp_file': phantom.disp_file(),
                 'mask_file': phantom.mask_file(),
-                'mesh_file': phantom.mesh_file(mesh_radius),
-                'mesh_radius': mesh_radius
+                'mesh_file': phantom.mesh_file(mesh_version)
             })
         return examples
 
@@ -71,8 +70,8 @@ class Phantom(object):
     def mask_file(self):
         return self.phantom_dir / f'{self.phantom_name}_mask.nii.gz'
     
-    def mesh_file(self, mesh_radius):
-        return self.phantom_dir / f'{self.phantom_name}_mesh{mesh_radius}.xdmf'
+    def mesh_file(self, mesh_version):
+        return self.phantom_dir / f'{self.phantom_name}_mesh{mesh_version}.xdmf'
     
     def load_niftis(self):
 
@@ -116,12 +115,12 @@ class Phantom(object):
             name='mask'
         )
 
-    def load_mesh(self, mesh_radius):
-        mesh_file = self.mesh_file(mesh_radius)
+    def load_mesh(self, mesh_version):
+        mesh_file = self.mesh_file(mesh_version)
         print(f'Loading {mesh_file}')
         self.mesh = meshing.load_mesh_fenics(mesh_file)
 
-    def generate(self, mask_file, mesh_radius, **kwargs):
+    def generate(self, mask_file, mesh_version, **kwargs):
         self.phantom_dir.mkdir(exist_ok=True)
         
         nifti = nib.load(mask_file)
@@ -132,8 +131,7 @@ class Phantom(object):
         elast, anat, disp_bc, disp, mask, mesh = generate_phantom(
             input_mask=input_mask,
             resolution=resolution,
-            mesh_radius=mesh_radius,
-            mesh_file=self.mesh_file(mesh_radius),
+            mesh_file=self.mesh_file(mesh_version),
             random_seed=self.phantom_id,
             **kwargs 
         )
@@ -143,26 +141,26 @@ class Phantom(object):
         y = np.arange(shape[1]) * resolution[1]
         z = np.arange(shape[2]) * resolution[2]
 
-        self.elast = xr.DataArray(
-            data=elast,
+        self.elast = utils.as_xarray(
+            elast,
             dims=['x', 'y', 'z'],
             coords=dict(x=x, y=y, z=z),
             name='elasticity'
         )
-        self.anat = xr.DataArray(
-            data=anat,
+        self.anat = utils.as_xarray(
+            anat,
             dims=['x', 'y', 'z'],
             coords=dict(x=x, y=y, z=z),
             name='anatomy'
         )
-        self.disp = xr.DataArray(
-            data=disp,
+        self.disp = utils.as_xarray(
+            disp,
             dims=['x', 'y', 'z', 'component'],
             coords=dict(x=x, y=y, z=z, component=['x', 'y', 'z']),
             name='displacement'
         )
-        self.mask = xr.DataArray(
-            data=mask,
+        self.mask = utils.as_xarray(
+            mask,
             dims=['x', 'y', 'z'],
             coords=dict(x=x, y=y, z=z),
             name='mask'
@@ -262,15 +260,17 @@ def generate_phantom(
     radius_min=5,
     radius_max=25,
     log_kpa_min=-1,
-    log_kpa_max=1,
-    bias_midpoint=0,
-    bias_range=500,
-    anat_range=2000,
+    log_kpa_max=2,
+    bias_midpoint=-750,
+    bias_range=250,
+    anat_range=500,
     log_cutoff_min=-3,
     log_cutoff_max=0,
     phase_sigma=1.0,
-    mesh_radius=10,
     mesh_file='phantom.xdmf',
+    interp_size=5,
+    interp_type='tent',
+    rho_value=0,
     random_seed=None
 ):
     print(f'Setting random seed to {random_seed}')
@@ -297,11 +297,11 @@ def generate_phantom(
     print('Generating stiffness map..')
     log_kpa_range = (log_kpa_max - log_kpa_min)
     log_kpa = latent * log_kpa_range + log_kpa_min
-    mu = np.power(10, log_kpa) * 1000 # log kPa -> Pa
-    mu[0] = 0 # background stiffness
+    elast = np.power(10, log_kpa) * 1000 # log kPa -> Pa
+    elast[0] = 0 # background stiffness
 
     # assign stiffness to each spatial region
-    mu = (region_indicator * mu[:,None,None,None]).sum(axis=0)
+    elast = (region_indicator * elast[:,None,None,None]).sum(axis=0)
 
     # map latent variables to anatomical texture parameters
     print('Generating anatomical image...')
@@ -333,11 +333,11 @@ def generate_phantom(
     disp_bc = np.sin(2 * np.pi * (coords/extent) @ phase)
 
     # generate mesh using pygalmesh
-    print('Generating mesh...')
-    mask = regions.astype(np.uint16)
+    print('Generating mesh...', flush=True)
+    regions = regions.astype(np.uint16)
     mesh = pygalmesh.generate_from_array(
-        mask, resolution,
-        max_cell_circumradius=float(mesh_radius),
+        regions, resolution,
+        max_cell_circumradius=10.0,
         min_facet_angle=15,
         max_facet_distance=1.0,
         odt=True, lloyd=True
@@ -347,44 +347,57 @@ def generate_phantom(
     # save mesh using meshio, then read with fenics
     meshing.save_mesh_meshio(mesh_file, mesh, cell_blocks=[1])
     mesh = meshing.load_mesh_fenics(mesh_file)
+    mask = (regions > 0)
     
     # convert to FEM basis coefficients
     print('Interpolating FEM coefficients...')
-    pde_ = pde.LinearElasticPDE(mesh)
-    device = 'cpu'
-    dtype = torch.float32
-    u_dofs = interpolation.image_to_dofs(
-        torch.as_tensor(disp_bc, dtype=dtype, device=device).permute(3, 0, 1, 2),
-        resolution, pde_.V,
-        radius=int(mesh_radius),
-        sigma=mesh_radius/2
-    )
-    mu_dofs = interpolation.image_to_dofs(
-        torch.as_tensor(mu, dtype=dtype, device=device),
-        resolution, pde_.S,
-        radius=int(mesh_radius),
-        sigma=mesh_radius/2
-    )
-    anat_dofs = interpolation.image_to_dofs(
-        torch.as_tensor(anat, dtype=dtype, device=device),
-        resolution, pde_.S,
-        radius=int(mesh_radius),
-        sigma=mesh_radius/2
-    )
-    rho_dofs = (1 + anat_dofs/1000) * 1000
+    fem = pde.FiniteElementModel(mesh, resolution)
+
+    anat = torch.as_tensor(anat, dtype=torch.float32, device='cuda')
+    elast = torch.as_tensor(elast, dtype=torch.float32, device='cuda')
+    disp_bc = torch.as_tensor(disp_bc, dtype=torch.float32,device='cuda')
+    mask = torch.as_tensor(mask, dtype=torch.float32, device='cuda')
+
+    points = fem.points.to('cuda')
+    radius = fem.radius.to('cuda')
+
+    u_dofs = interpolation.interpolate_image(
+        disp_bc.permute(3, 0, 1, 2), mask.unsqueeze(0), resolution, points, radius,
+        kernel_size=interp_size,
+        kernel_type=interp_type,
+    ).to(dtype=torch.float64, device='cpu')
+
+    e_dofs = interpolation.interpolate_image(
+        elast.unsqueeze(0), mask.unsqueeze(0), resolution, points, radius,
+        kernel_size=interp_size,
+        kernel_type=interp_type,
+    ).to(dtype=torch.float64, device='cpu')
+
+    a_dofs = interpolation.interpolate_image(
+        anat.unsqueeze(0), mask.unsqueeze(0), resolution, points, radius,
+        kernel_size=interp_size,
+        kernel_type=interp_type,
+    ).to(dtype=torch.float64, device='cpu')
+
+    if rho_value == 'anat':
+        rho_dofs = (a_dofs + 1000)
+    else:
+        rho_dofs = torch.full_like(a_dofs, float(rho_value))
     
     # solve for simulated displacement dofs
     print('Solving FEM model...')
-    u_sim_dofs = pde_.forward(
-        u_dofs.unsqueeze(0),
-        mu_dofs.unsqueeze(0),
-        rho_dofs.unsqueeze(0),
+    u_sim_dofs = fem.forward(
+        u_dofs[None,:,:],
+        e_dofs[None,:,0],
+        rho_dofs[None,:,0],
     )[0]
     
     # convert to displacement image
     print('Converting displacement field to image...')
     disp_sim = interpolation.dofs_to_image(
-        u_sim_dofs, pde_.V, disp_bc.shape[:3], resolution
+        u_sim_dofs, fem.V, disp_bc.shape[:3], resolution
     ).permute(1,2,3,0)
     
-    return mu, anat, disp_bc, disp_sim, mask, mesh
+    print(anat.shape, elast.shape, disp_bc.shape, disp_sim.shape, regions.shape)
+
+    return elast, anat, disp_bc, disp_sim, regions, mesh

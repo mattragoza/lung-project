@@ -30,7 +30,6 @@ class Dataset(torch.utils.data.Dataset):
     def load_example(self, idx):
         example = self.examples[idx]    
         example_name = example['name']
-        mesh_radius = example['mesh_radius']
         
         # load images from NIFTI files
         a_image = load_nii_file(example['anat_file'])

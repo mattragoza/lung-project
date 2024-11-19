@@ -288,6 +288,7 @@ class XArrayViewer(Viewer):
                     artist.set_ydata(self.array[index])
                 else: # image
                     artist.set_array(self.array[index].T)
+                    artist.set_clim()
         self.fig.canvas.draw()
 
 
@@ -737,13 +738,17 @@ def get_color_kws(array, pct=99, scale=1.1):
     for visualizing the provided xarray.
     '''
     print(array.name)
-    if contains_any(array.name, ['CT', 'anat', 'a_']):
+    if contains_any(array.name, ['CTE']):
+        cmap = 'seismic'
+        vmin, vmax = (0, 2)
+
+    elif contains_any(array.name, ['CT', 'anat', 'a_']):
         cmap = grayscale_color_map()
         vmin, vmax = (-1000, -500)
 
     elif contains_any(array.name, ['elast', 'mu_', 'lam_', 'e_']):
         cmap = mre_color_map()
-        vmin, vmax = (-5e4, 5e4)
+        vmin, vmax = (-1e5, 1e5)
 
     elif contains_any(array.name, ['disp', 'u_']):
         cmap = wave_color_map()
@@ -760,6 +765,12 @@ def get_color_kws(array, pct=99, scale=1.1):
     elif contains_any(array.name, ['emph']):
         cmap = threshold_color_map(7, has_background=True)
         vmin, vmax = (-3, 3)
+
+    elif contains_any(array.name, ['C_']):
+        cmap = 'seismic'
+        vmin, vmax = (-3, 3)
+
+
 
     else:
         cmap = 'seismic'
