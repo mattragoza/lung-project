@@ -157,11 +157,15 @@ class Emory4DCTCase(object):
         return self.case_dir / 'NIFTI'
 
     @property
-    def mask_dir(self):
+    def totalseg_mask_dir(self):
         return self.case_dir / 'TotalSegment'
 
     @property
-    def disp_dir(self):
+    def medpseg_mask_dir(self):
+        return self.case_dir / 'medpseg'
+
+    @property
+    def corrfield_dir(self):
         return self.case_dir / 'CorrField'
 
     @property
@@ -175,11 +179,14 @@ class Emory4DCTCase(object):
     def nifti_file(self, phase):
         return self.nifti_dir / f'case{self.case_id}_T{phase:02d}.nii.gz'
 
-    def mask_file(self, phase, roi):
-        return self.mask_dir  /f'case{self.case_id}_T{phase:02d}/{roi}.nii.gz'
+    def totalseg_mask_file(self, phase, roi):
+        return self.totalseg_mask_dir / f'case{self.case_id}_T{phase:02d}/{roi}.nii.gz'
+
+    def medpseg_mask_file(self, phase, roi):
+        return self.medpseg_mask_dir / f'case{self.case_id}_T{phase:02d}_{roi}.nii.gz'
 
     def disp_file(self, moving_phase, fixed_phase):
-        return self.disp_dir / \
+        return self.corrfield_dir / \
             f'case{self.case_id}_T{moving_phase:02d}_T{fixed_phase:02d}.nii.gz' 
 
     def mesh_file(self, phase, mask_roi, mesh_version):
@@ -243,12 +250,12 @@ class Emory4DCTCase(object):
             name=f'CT'
         )
 
-    def load_masks(self, roi='lung_regions'):
+    def load_totalseg_masks(self, roi='lung_regions'):
         all_data = []
         for phase in self.phases:
             phase_data = []
             for r in as_iterable(roi):
-                mask_file = self.mask_file(phase, roi=r)
+                mask_file = self.totalseg_mask_file(phase, roi=r)
                 print(f'Loading {mask_file}')
                 mask = nib.load(mask_file)
                 if all_data:
@@ -265,7 +272,42 @@ class Emory4DCTCase(object):
         assert np.allclose(resolution, self.resolution), \
             f'{resolution} vs {self.resolution}'
 
-        self.mask = xr.DataArray(
+        self.totalseg_mask = xr.DataArray(
+            data=np.stack(all_data),
+            dims=['phase', 'roi', 'x', 'y', 'z'],
+            coords={
+                'phase': self.phases,
+                'x': np.arange(shape[0]) * resolution[0],
+                'y': np.arange(shape[1]) * resolution[1],
+                'z': np.arange(shape[2]) * resolution[2],
+                'roi': as_iterable(roi)
+            },
+            name='mask'
+        )
+
+    def load_medpseg_masks(self, roi):
+        all_data = []
+        for phase in self.phases:
+            phase_data = []
+            for r in as_iterable(roi):
+                mask_file = self.medpseg_mask_file(phase, roi=r)
+                print(f'Loading {mask_file}')
+                mask = nib.load(mask_file)
+                if all_data:
+                    assert mask.header.get_data_shape() == shape
+                    assert mask.header.get_zooms() == resolution
+                else:
+                    shape = mask.header.get_data_shape()
+                    resolution = mask.header.get_zooms()
+
+                phase_data.append(mask.get_fdata())
+            all_data.append(np.stack(phase_data))
+
+        assert shape == self.shape, f'{shape} vs. {self.shape}'
+        assert np.allclose(resolution, self.resolution), \
+            f'{resolution} vs {self.resolution}'
+
+        self.medpseg_mask = xr.DataArray(
             data=np.stack(all_data),
             dims=['phase', 'roi', 'x', 'y', 'z'],
             coords={

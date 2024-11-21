@@ -16,17 +16,18 @@ class Evaluator(object):
             'u_pred_norm',
             'u_true_norm',
 
-            'mu_error', 
-            'mu_pred_norm',
-            'mu_true_norm',
+            'e_error', 
+            'e_pred_norm',
+            'e_true_norm',
+            'CTE',
 
-            'mu_true_corr',
-            'mu_anat_corr',
+            'e_true_corr',
+            'e_anat_corr',
             'true_anat_corr',
 
-            'mu_950_corr',
-            'mu_900_corr',
-            'mu_850_corr',
+            'e_950_corr',
+            'e_900_corr',
+            'e_850_corr',
 
             'true_950_corr',
             'true_900_corr',
@@ -40,23 +41,29 @@ class Evaluator(object):
         return self.metrics.melt(var_name='metric', ignore_index=False)
 
     def evaluate(self, anat, e_pred, e_true, u_pred, u_true, mask, index):
+        region_mask = mask
+        binary_mask = (mask > 0)
 
-        u_error = mean_relative_error(u_pred, u_true, mask)
+        u_error = mean_relative_error(u_pred, u_true, binary_mask)
         self.metrics.loc[index, 'u_error'] = u_error.item()
-        self.metrics.loc[index, 'u_pred_norm'] = mean_norm(u_pred, mask).item()
-        self.metrics.loc[index, 'u_true_norm'] = mean_norm(u_true, mask).item()
+        self.metrics.loc[index, 'u_pred_norm'] = mean_norm(u_pred, binary_mask).item()
+        self.metrics.loc[index, 'u_true_norm'] = mean_norm(u_true, binary_mask).item()
 
-        e_error = mean_relative_error(e_pred, e_true, mask)
-        self.metrics.loc[index, 'mu_error'] = e_error.item()
-        self.metrics.loc[index, 'mu_pred_norm'] = mean_norm(e_pred, mask).item()
-        self.metrics.loc[index, 'mu_true_norm'] = mean_norm(e_true, mask).item()
+        e_error = mean_relative_error(e_pred, e_true, binary_mask)
+        self.metrics.loc[index, 'e_error'] = e_error.item()
+        self.metrics.loc[index, 'e_pred_norm'] = mean_norm(e_pred, binary_mask).item()
+        self.metrics.loc[index, 'e_true_norm'] = mean_norm(e_true, binary_mask).item()
+
+        self.metrics.loc[index, 'CTE'] = contrast_transfer_efficiency(
+            e_pred[...,0], e_true[...,0], region_mask
+        ).item()
 
         corr_mat = correlation_matrix([
             e_pred, e_true, anat,
             (anat < -950),
             (anat < -900),
             (anat < -850),
-        ], mask)
+        ], binary_mask)
 
         self.metrics.loc[index, 'e_true_corr'] = corr_mat[0,1].item()
         self.metrics.loc[index, 'e_anat_corr'] = corr_mat[0,2].item()
@@ -96,6 +103,17 @@ def mean_relative_error(x_pred, x_true, mask, eps=1e-6):
     true_norm = squared_norm(x_true)
     relative_error = residual_norm / (true_norm + eps)
     return weighted_mean(relative_error, mask)
+
+
+def contrast_transfer_efficiency(x_pred, x_true, region_mask, eps=1e-6):
+    background_mask = (region_mask == 1)
+    target_mask = (region_mask > 1)
+    x_pred_0 = weighted_mean(x_pred, background_mask)
+    x_true_0 = weighted_mean(x_true, background_mask)
+    c_pred = torch.log10(x_pred / x_pred_0 + eps)
+    c_true = torch.log10(x_true / x_true_0 + eps)
+    c_ratio = 10 ** -(c_pred - c_true).abs()
+    return weighted_mean(c_ratio, target_mask)
 
 
 def correlation_matrix(xs, mask):

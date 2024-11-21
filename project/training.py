@@ -139,7 +139,8 @@ class Trainer(object):
         a_image = a_image.to('cuda')
         e_image = e_image.to('cuda')
         u_image = u_image.to('cuda')
-        mask = (mask > 0).to('cuda')
+        region_mask = mask.to('cuda')
+        binary_mask = (region_mask > 0)
 
         # predict elasticity from anatomical image
         e_pred_image = self.model.forward(a_image) * 1000 # kPa -> Pa
@@ -156,7 +157,7 @@ class Trainer(object):
             # convert tensors to FEM coefficients
             kernel_size = self.interp_size # 7
             a_dofs = interpolation.interpolate_image(
-                a_image[k], mask[k], resolution[k], points_k, radius_k,
+                a_image[k], binary_mask[k], resolution[k], points_k, radius_k,
                 kernel_size=self.interp_size,
                 kernel_type=self.interp_type,
             ).to(dtype=torch.float64, device='cpu')
@@ -167,22 +168,28 @@ class Trainer(object):
                 rho_dofs = torch.full_like(a_dofs, float(self.rho_value))
 
             e_true_dofs = interpolation.interpolate_image(
-                e_image[k], mask[k], resolution[k], points_k, radius_k,
+                e_image[k], binary_mask[k], resolution[k], points_k, radius_k,
                 kernel_size=self.interp_size,
                 kernel_type=self.interp_type,
             ).to(dtype=torch.float64, device='cpu')
 
             e_pred_dofs = interpolation.interpolate_image(
-                e_pred_image[k], mask[k], resolution[k], points_k, radius_k,
+                e_pred_image[k], binary_mask[k], resolution[k], points_k, radius_k,
                 kernel_size=self.interp_size,
                 kernel_type=self.interp_type,
             ).to(dtype=torch.float64, device='cpu')
 
             u_true_dofs = interpolation.interpolate_image(
-                u_image[k], mask[k], resolution[k], points_k, radius_k,
+                u_image[k], binary_mask[k], resolution[k], points_k, radius_k,
                 kernel_size=self.interp_size,
                 kernel_type=self.interp_type,
             ).to(dtype=torch.float64, device='cpu')
+
+            dof_region_mask = interpolation.interpolate_image(
+                region_mask[k], binary_mask[k], resolution[k], points_k, radius_k,
+                kernel_size=1,
+                kernel_type='nearest',
+            ).to(dtype=torch.int32, device='cpu')
             self.timer.tick((epoch, batch_num, k+1, phase, 'image_to_dofs'))
 
             # solve pde for simulated displacement field
@@ -195,19 +202,20 @@ class Trainer(object):
 
             # compute loss and evaluation metrics
             loss = self.evaluator.evaluate(
-                anat=a_dofs.unsqueeze(1),
-                e_pred=e_pred_dofs.unsqueeze(1),
-                e_true=e_true_dofs.unsqueeze(1),
+                anat=a_dofs,
+                e_pred=e_pred_dofs,
+                e_true=e_true_dofs,
                 u_pred=u_pred_dofs,
                 u_true=u_true_dofs,
-                mask=torch.ones(len(a_dofs), dtype=int),
+                mask=dof_region_mask[:,0],
                 index=(epoch, batch_num, name[k], phase, 'dofs')
             )
             total_loss += loss
             self.timer.tick((epoch, batch_num, k+1, phase, 'dof_metrics'))
 
             if phase == 'test': # evaluate in image domain
-                mask_k = mask[k,0].to(dtype=int)
+                binary_mask_k = binary_mask[k,0].to(dtype=torch.int32)
+                region_mask_k = region_mask[k,0].to(dtype=torch.int32)
 
                 u_pred_image = interpolation.dofs_to_image(
                     u_pred_dofs, pde[k].V, u_image[k].shape[-3:], resolution[k]
@@ -220,15 +228,15 @@ class Trainer(object):
                     e_true=e_image[k].permute(1,2,3,0),
                     u_pred=u_pred_image.permute(1,2,3,0),
                     u_true=u_image[k].permute(1,2,3,0),
-                    mask=mask_k,
+                    mask=region_mask_k,
                     index=(epoch, batch_num, name[k], phase, 'image')
                 )
                 self.timer.tick((epoch, batch_num, k+1, phase, 'image_metrics'))
 
                 alpha = 1.0
-                alpha_mask = (1 - alpha * (1 - mask_k))
+                alpha_mask = (1 - alpha * (1 - binary_mask_k))
                 emph_mask = (
-                    mask_k +
+                    binary_mask_k +
                     (a_image[k] < -850) +
                     (a_image[k] < -900) +
                     (a_image[k] < -950)
@@ -236,7 +244,7 @@ class Trainer(object):
                 self.update_viewers(
                     resolution[k],
                     anat=a_image[k] * alpha_mask,
-                    emph=emph_mask * mask_k - 1,
+                    emph=emph_mask * binary_mask_k - 1,
                     e_pred=e_pred_image[k] * alpha_mask,
                     e_true=e_image[k] * alpha_mask,
                     u_pred=u_pred_image * alpha_mask,

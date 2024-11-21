@@ -72,6 +72,10 @@ def interpolate_image(
     elif kernel_type == 'bell':
         kernel_sigma = kernel_radius / 2
         weights = torch.exp(-(distance / kernel_sigma)**2) # (N, K)
+    elif kernel_type == 'nearest':
+        weights = (distance == distance.min(dim=-1, keepdims=True).values).float()
+    else:
+        raise ValueError(f"invalid kernel type '{kernel_type}\'")
     
     weights = weights * neighbor_mask
     
