@@ -12,10 +12,10 @@ from . import data, meshing, interpolation, pde, utils
 
 class PhantomSet(object):
     
-    def __init__(self, data_root, num_phantoms):
+    def __init__(self, data_root, phantom_ids):
         self.data_root = pathlib.Path(data_root)
         self.phantoms = []
-        for i in range(num_phantoms):
+        for i in phantom_ids:
             phantom = Phantom(data_root, phantom_id=i)
             self.phantoms.append(phantom)
 
@@ -242,12 +242,14 @@ def bandpass_filter(freqs, cutoff1, cutoff2, power):
     return (1 - filter1) * filter2
 
 
-def random_texture(filter):
+def draw_random_texture(shape, cutoff1, cutoff2, power):
+    freq_coords = frequency_coordinates(shape)
+    filter_ = bandpass_filter(freq_coords, cutoff1, cutoff2, power)
     complex_noise = (
-        np.random.normal(0, 1, filter.shape) + 
-        np.random.normal(0, 1, filter.shape) * 1j
+        np.random.normal(0, 1, shape) + 
+        np.random.normal(0, 1, shape) * 1j
     )
-    texture = np.fft.ifftn(complex_noise * filter).real
+    texture = np.fft.ifftn(complex_noise * filter_).real
     texture -= texture.min()
     texture /= texture.max()
     return texture * 2 - 1
@@ -271,6 +273,7 @@ def generate_phantom(
     interp_size=5,
     interp_type='tent',
     rho_value=0,
+    dummy_targets=False,
     random_seed=None
 ):
     print(f'Setting random seed to {random_seed}')
@@ -293,12 +296,16 @@ def generate_phantom(
     print('Sampling latent variables...')
     latent = np.random.rand(n_regions)
 
+    # determine which regions are dummmy regions
+    dummy = (region_id > 1) & (region_id % 2 == 1) & dummy_targets
+
     # map latent variables to stiffness values
     print('Generating stiffness map..')
     log_kpa_range = (log_kpa_max - log_kpa_min)
     log_kpa = latent * log_kpa_range + log_kpa_min
     elast = np.power(10, log_kpa) * 1000 # log kPa -> Pa
     elast[0] = 0 # background stiffness
+    elast[dummy] = elast[1] # dummy stiffness
 
     # assign stiffness to each spatial region
     elast = (region_indicator * elast[:,None,None,None]).sum(axis=0)
@@ -312,16 +319,17 @@ def generate_phantom(
     log_cutoff = latent * log_cutoff_range + log_cutoff_min
     cutoff = np.power(10, log_cutoff)
 
-    freq_coords = frequency_coordinates(shape)
     texture = np.zeros_like(region_indicator, dtype=float)
     for i in range(n_regions):
-        filter_ = bandpass_filter(freq_coords, cutoff[i]/2, cutoff[i], power=2)
-        texture[i] = random_texture(filter_)
+        if dummy[i]:
+            texture[i] = texture[1]
+        else:
+            texture[i] = draw_random_texture(shape, cutoff[i]/2, cutoff[i], power=3)
 
     texture_range = (anat_range - bias_range)
     anat = texture * texture_range/2 + bias[:,None,None,None]
     anat_min = bias_midpoint - anat_range/2
-    anat[0] = anat_min
+    anat[0] = anat_min # background texture
 
     # assign anatomical textures to each region
     anat = (region_indicator * anat).sum(axis=0)
@@ -374,7 +382,8 @@ def generate_phantom(
     ).to(dtype=torch.float64, device='cpu')
 
     a_dofs = interpolation.interpolate_image(
-        anat.unsqueeze(0), mask.unsqueeze(0), resolution, points, radius,
+        anat.unsqueeze(0), mask.unsqueeze(0), resolution
+        , points, radius,
         kernel_size=interp_size,
         kernel_type=interp_type,
     ).to(dtype=torch.float64, device='cpu')
