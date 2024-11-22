@@ -144,7 +144,7 @@ class UNet3D(torch.nn.Module):
         pool_kernel_size=2,
         pool_type='max',
         upsample_mode='trilinear',
-        output_func='exp'
+        output_func='relu'
     ):
         super().__init__()
         assert num_levels > 0
