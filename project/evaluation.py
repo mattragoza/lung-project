@@ -51,7 +51,6 @@ class Evaluator(object):
     def evaluate(self, anat, e_pred, e_true, u_pred, u_true, mask, disease_mask, index):
         region_mask = mask
         binary_mask = (mask > 0)
-        disease_mask = disease_mask
 
         u_error = mean_relative_error(u_pred, u_true, binary_mask)
         self.metrics.loc[index, 'u_error'] = u_error.item()
@@ -66,9 +65,6 @@ class Evaluator(object):
         self.metrics.loc[index, 'CTE'] = contrast_transfer_efficiency(
             e_pred[...,0], e_true[...,0], region_mask
         ).item()
-
-        print(e_pred.shape)
-        print(disease_mask.shape)
 
         corr_mat = correlation_matrix([
             e_pred, e_true, anat,

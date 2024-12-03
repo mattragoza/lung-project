@@ -155,6 +155,15 @@ class Trainer(object):
             points_k = pde[k].points.to('cuda')
             radius_k = pde[k].radius.to('cuda')
 
+            assert not torch.isnan(a_image[k]).any(), \
+                f'a_image contains nan ({name[k]})'
+            assert not torch.isnan(e_image[k]).any(), \
+                f'e_image contains nan ({name[k]})'
+            assert not torch.isnan(u_image[k]).any(), \
+                f'u_image contains nan ({name[k]})'
+            assert not torch.isnan(e_pred_image[k]).any(), \
+                f'e_pred_image contains nan ({name[k]})'
+
             # convert tensors to FEM coefficients
             kernel_size = self.interp_size # 7
             a_dofs = interpolation.interpolate_image(
@@ -206,6 +215,9 @@ class Trainer(object):
                 e_pred_dofs[None,:,0],
                 rho_dofs[None,:,0],
             )[0]
+            assert not torch.isnan(u_pred_dofs).any(), \
+                f'u_pred_dofs contains nan ({name[k]})'
+    
             self.timer.tick((epoch, batch_num, k+1, phase, 'pde_forward'))
 
             # compute loss and evaluation metrics
@@ -219,6 +231,8 @@ class Trainer(object):
                 disease_mask=dof_disease_mask,
                 index=(epoch, batch_num, name[k], phase, 'dofs')
             )
+            assert not torch.isnan(loss).any(), f'loss is nan ({name[k]})'
+
             total_loss += loss
             self.timer.tick((epoch, batch_num, k+1, phase, 'dof_metrics'))
 
