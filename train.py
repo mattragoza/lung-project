@@ -6,6 +6,8 @@ def train(
     data_root='data/Emory-4DCT',
     mask_roi='lung_regions',
     mesh_version=10,
+    test_case=None,
+    test_phase=-1,
     num_levels=3,
     num_conv_layers=2,
     conv_channels=8,
@@ -19,14 +21,37 @@ def train(
     num_epochs=200,
     save_every=10,
     save_prefix='ASDF',
-    load_epoch=0
+    load_epoch=0,
+    random_seed=None,
 ):
-    if data_name == 'emory':
-        train_image_set = project.imaging.Emory4DCT(data_root, phases=range(10,100,10))
-        test_image_set = project.imaging.Emory4DCT(data_root, phases=[0])
+    if isinstance(random_seed, str):
+        random_seed = int(random_seed)
+    project.utils.set_random_seed(random_seed)
 
-        train_examples = train_image_set.get_examples(mask_roi, mesh_version)
-        test_examples = test_image_set.get_examples(mask_roi, mesh_version)
+    if data_name == 'emory':
+
+        if not test_case or test_case == 'None':
+            train_cases = test_cases = project.imaging.ALL_CASES
+        else:
+            assert test_case in project.imaging.ALL_CASES
+            train_cases = [c for c in project.imaging.ALL_CASES if c != test_case]
+            test_cases = [test_case]
+
+        if test_phase == -1:
+            train_phases = test_phases = project.imaging.ALL_PHASES
+        else:
+            assert test_phase in project.imaging.ALL_PHASES
+            train_phases = [p for p in project.imaging.ALL_PHASES if p != test_phase]
+            test_phases = [test_phase]
+
+        print(test_cases)
+        print(test_phases)
+
+        train_images = project.imaging.Emory4DCT(data_root, train_cases, train_phases)
+        test_images = project.imaging.Emory4DCT(data_root, test_cases, test_phases)
+
+        train_examples = train_images.get_examples(mask_roi, mesh_version)
+        test_examples = test_images.get_examples(mask_roi, mesh_version)
 
     elif data_name == 'phantom':
         phantom_set = project.phantom.PhantomSet(data_root, phantom_ids=range(100))

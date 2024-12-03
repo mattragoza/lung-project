@@ -1,7 +1,23 @@
-import sys, inspect, argparse, time
+import sys, inspect, argparse, time, random
 import numpy as np
 import xarray as xr
 import torch
+
+MAX_SEED = 2**32 - 1
+
+
+def get_random_seed():
+    time.sleep((time.time() % 1) / 1000)
+    return int(time.time() * 1e6) % MAX_SEED
+
+
+def set_random_seed(random_seed=None):
+    if random_seed is None:
+        random_seed = get_random_seed()
+    print(f'Setting random seed to {random_seed}')
+    random.seed(random_seed)
+    np.random.seed(random_seed)
+    torch.manual_seed(random_seed)
 
 
 def as_xarray(a, dims=None, coords=None, name=None, resolution=None):

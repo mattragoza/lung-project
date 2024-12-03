@@ -132,15 +132,16 @@ class Trainer(object):
         self.run_batch(batch, phase, epoch, j+1)
     
     def run_batch(self, batch, phase, epoch, batch_num):
-        a_image, e_image, u_image, mask, resolution, pde, name = batch
+        a_image, e_image, u_image, mask, disease_mask, resolution, pde, name = batch
         print(f'{name}', end='', flush=True)
 
-        # move tensors to GPU
+        # move CPU tensors to GPU
         a_image = a_image.to('cuda')
         e_image = e_image.to('cuda')
         u_image = u_image.to('cuda')
         region_mask = mask.to('cuda')
         binary_mask = (region_mask > 0)
+        disease_mask = disease_mask.to('cuda')
 
         # predict elasticity from anatomical image
         e_pred_image = self.model.forward(a_image) * 1000 # kPa -> Pa
@@ -192,6 +193,13 @@ class Trainer(object):
             ).to(dtype=torch.int32, device='cpu')
             self.timer.tick((epoch, batch_num, k+1, phase, 'image_to_dofs'))
 
+            dof_disease_mask = interpolation.interpolate_image(
+                disease_mask[k], binary_mask[k], resolution[k], points_k, radius_k,
+                kernel_size=1,
+                kernel_type='nearest',
+            ).to(dtype=torch.int32, device='cpu')
+            self.timer.tick((epoch, batch_num, k+1, phase, 'image_to_dofs'))
+
             # solve pde for simulated displacement field
             u_pred_dofs = pde[k].forward(
                 u_true_dofs[None,:,:],
@@ -208,6 +216,7 @@ class Trainer(object):
                 u_pred=u_pred_dofs,
                 u_true=u_true_dofs,
                 mask=dof_region_mask[:,0],
+                disease_mask=dof_disease_mask,
                 index=(epoch, batch_num, name[k], phase, 'dofs')
             )
             total_loss += loss
@@ -216,6 +225,7 @@ class Trainer(object):
             if phase == 'test': # evaluate in image domain
                 binary_mask_k = binary_mask[k,0].to(dtype=torch.int32)
                 region_mask_k = region_mask[k,0].to(dtype=torch.int32)
+                disease_mask_k = disease_mask[k].to(dtype=torch.int32)
 
                 u_pred_image = interpolation.dofs_to_image(
                     u_pred_dofs, pde[k].V, u_image[k].shape[-3:], resolution[k]
@@ -229,6 +239,7 @@ class Trainer(object):
                     u_pred=u_pred_image.permute(1,2,3,0),
                     u_true=u_image[k].permute(1,2,3,0),
                     mask=region_mask_k,
+                    disease_mask=disease_mask_k.permute(1,2,3,0),
                     index=(epoch, batch_num, name[k], phase, 'image')
                 )
                 self.timer.tick((epoch, batch_num, k+1, phase, 'image_metrics'))
@@ -329,7 +340,8 @@ def collate_fn(batch):
     e_image = torch.stack([ex[1] for ex in batch])
     u_image = torch.stack([ex[2] for ex in batch])
     mask = torch.stack([ex[3] for ex in batch])
-    res  = [ex[4] for ex in batch]
-    pde  = [ex[5] for ex in batch]
-    name = [ex[6] for ex in batch]
-    return a_image, e_image, u_image, mask, res, pde, name
+    disease_mask = torch.stack([ex[4] for ex in batch])
+    res  = [ex[5] for ex in batch]
+    pde  = [ex[6] for ex in batch]
+    name = [ex[7] for ex in batch]
+    return a_image, e_image, u_image, mask, disease_mask, res, pde, name

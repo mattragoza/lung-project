@@ -746,6 +746,10 @@ def get_color_kws(array, pct=99, scale=1.1):
         cmap = grayscale_color_map()
         vmin, vmax = (-1000, -500)
 
+    elif contains_any(array.name, ['e_pred']):
+        cmap = mre_color_map()
+        vmin, vmax = (-1e4, 1e4)
+
     elif contains_any(array.name, ['elast', 'mu_', 'lam_', 'e_']):
         cmap = mre_color_map()
         vmin, vmax = (-1e5, 1e5)

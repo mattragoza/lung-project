@@ -32,6 +32,14 @@ class Evaluator(object):
             'true_950_corr',
             'true_900_corr',
             'true_850_corr',
+
+            'e_dis0_corr',
+            'e_dis1_corr',
+            'e_dis2_corr',
+
+            'true_dis0_corr',
+            'true_dis1_corr',
+            'true_dis2_corr',
         ]
         self.metrics = pd.DataFrame(columns=index_cols + self.metric_cols)
         self.metrics.set_index(index_cols, inplace=True)
@@ -40,9 +48,10 @@ class Evaluator(object):
     def long_format_metrics(self):
         return self.metrics.melt(var_name='metric', ignore_index=False)
 
-    def evaluate(self, anat, e_pred, e_true, u_pred, u_true, mask, index):
+    def evaluate(self, anat, e_pred, e_true, u_pred, u_true, mask, disease_mask, index):
         region_mask = mask
         binary_mask = (mask > 0)
+        disease_mask = disease_mask
 
         u_error = mean_relative_error(u_pred, u_true, binary_mask)
         self.metrics.loc[index, 'u_error'] = u_error.item()
@@ -58,11 +67,17 @@ class Evaluator(object):
             e_pred[...,0], e_true[...,0], region_mask
         ).item()
 
+        print(e_pred.shape)
+        print(disease_mask.shape)
+
         corr_mat = correlation_matrix([
             e_pred, e_true, anat,
             (anat < -950),
             (anat < -900),
             (anat < -850),
+            disease_mask[...,0:1],
+            disease_mask[...,1:2],
+            disease_mask[...,2:3],
         ], binary_mask)
 
         self.metrics.loc[index, 'e_true_corr'] = corr_mat[0,1].item()
@@ -76,6 +91,14 @@ class Evaluator(object):
         self.metrics.loc[index, 'true_950_corr'] = corr_mat[1,3].item()
         self.metrics.loc[index, 'true_900_corr'] = corr_mat[1,4].item()
         self.metrics.loc[index, 'true_850_corr'] = corr_mat[1,5].item()
+
+        self.metrics.loc[index, 'e_dis0_corr'] = corr_mat[0,6].item()
+        self.metrics.loc[index, 'e_dis1_corr'] = corr_mat[0,7].item()
+        self.metrics.loc[index, 'e_dis2_corr'] = corr_mat[0,8].item()
+
+        self.metrics.loc[index, 'true_dis0_corr'] = corr_mat[1,6].item()
+        self.metrics.loc[index, 'true_dis1_corr'] = corr_mat[1,7].item()
+        self.metrics.loc[index, 'true_dis2_corr'] = corr_mat[1,8].item()
 
         return u_error
 

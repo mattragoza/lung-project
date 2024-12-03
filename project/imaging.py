@@ -106,7 +106,9 @@ class Emory4DCT(object):
         for case in self.cases:
             case.register_cases(fixed_case)
 
-    def get_examples(self, mask_roi='lung_regions', mesh_version=10):
+    def get_examples(
+        self, mask_roi='lung_regions', mesh_version=10
+    ):
         examples = []
         for case in self.cases:
             for fixed_phase in self.phases:
@@ -115,7 +117,10 @@ class Emory4DCT(object):
                     'name': case.nifti_file(fixed_phase).stem,
                     'anat_file': case.nifti_file(fixed_phase),
                     'disp_file': case.disp_file(moving_phase, fixed_phase),
-                    'mask_file': case.mask_file(fixed_phase, mask_roi),
+                    'mask_file': case.totalseg_mask_file(fixed_phase, mask_roi),
+                    'mask_file1': case.medpseg_mask_file(fixed_phase, 'findings'),
+                    'mask_file2': case.medpseg_mask_file(fixed_phase, 'consolidation'),
+                    'mask_file3': case.medpseg_mask_file(fixed_phase, 'ggo'),
                     'mesh_file': case.mesh_file(fixed_phase, mask_roi, mesh_version),
                 })
         return examples

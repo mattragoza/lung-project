@@ -34,7 +34,7 @@ class Dataset(torch.utils.data.Dataset):
         # load images from NIFTI files
         a_image = load_nii_file(example['anat_file'])
         u_image = load_nii_file(example['disp_file'])
-        mask = load_nii_file(example['mask_file'])        
+        mask = load_nii_file(example['mask_file'])  
 
         # get image spatial resolution
         resolution = a_image.header.get_zooms()
@@ -57,7 +57,22 @@ class Dataset(torch.utils.data.Dataset):
         else:
             e_image = torch.zeros_like(a_image)
 
-        return a_image, e_image, u_image, mask, resolution, pde, example_name
+        if 'mask_file1' in example: # has disease masks
+            mask1 = load_nii_file(example['mask_file1'])
+            mask1 = torch.as_tensor(mask1.get_fdata(), **kwargs).unsqueeze(0)
+
+            mask2 = load_nii_file(example['mask_file2'])
+            mask2 = torch.as_tensor(mask2.get_fdata(), **kwargs).unsqueeze(0)
+
+            mask3 = load_nii_file(example['mask_file3'])
+            mask3 = torch.as_tensor(mask3.get_fdata(), **kwargs).unsqueeze(0)
+
+            disease_mask = torch.cat([mask1, mask2, mask3], dim=0)
+        else:
+            zeros = torch.zeros_like(mask)
+            disease_mask = torch.cat([zeros, zeros, zeros], dim=0)
+
+        return a_image, e_image, u_image, mask, disease_mask, resolution, pde, example_name
 
 
 def load_nii_file(nii_file):
