@@ -3,11 +3,12 @@ import fenics as fe
 import fenics_adjoint as fa
 import torch
 import torch_fenics
+import dolfin
 
 
 class FiniteElementModel(torch_fenics.FEniCSModule):
     
-    def __init__(self, mesh, resolution):
+    def __init__(self, mesh, resolution, cell_labels):
         super().__init__()
         self.mesh = mesh
         self.S = fe.FunctionSpace(mesh, 'P', 1)
@@ -15,6 +16,19 @@ class FiniteElementModel(torch_fenics.FEniCSModule):
 
         self.points = torch.as_tensor(self.S.tabulate_dof_coordinates())
         self.radius = compute_point_radius(self.points, resolution)
+
+        self.cell_labels = cell_labels
+
+        # detect interface between subdomains
+        dim = mesh.geometry().dim()
+        self.on_interface = fe.MeshFunction('size_t', mesh, dim - 1)
+        self.has_interface = False
+        for facet in dolfin.facets(mesh):
+            cell_indices = [c for c in facet.entities(dim)]
+            subdomain_ids = set(cell_labels[c] for c in cell_indices)
+            if len(subdomain_ids) > 1:
+                self.on_interface[facet] = 1
+                self.has_interface = True
         
     def __repr__(self):
         return f'{type(self).__name__}({self.mesh})'
@@ -35,7 +49,12 @@ class FiniteElementModel(torch_fenics.FEniCSModule):
         lam = E * nu / ((1 + nu)*(1 - 2*nu))
 
         # set displacement boundary condition
-        u_bc = fa.DirichletBC(self.V, u_bc, 'on_boundary')
+        u_bc_surface = fa.DirichletBC(self.V, u_bc, 'on_boundary')
+        bcs = [u_bc_surface]
+
+        if self.has_interface:
+            u_bc_interface = fa.DirichletBC(self.V, u_bc, self.on_interface, 1)
+            bcs.append(u_bc_interface)
 
         # body force and traction
         b = fe.as_vector([0, rho*g, 0])
@@ -57,7 +76,7 @@ class FiniteElementModel(torch_fenics.FEniCSModule):
         L = fe.dot(b, v)*fe.dx + fe.dot(t, v)*fe.dx
 
         u_pred = fa.Function(self.V)
-        fa.solve(a == L, u_pred, u_bc)
+        fa.solve(a == L, u_pred, bcs)
 
         return u_pred
 

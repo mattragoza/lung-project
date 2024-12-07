@@ -4,7 +4,7 @@ import nibabel as nib
 import fenics as fe
 from mpi4py import MPI
 
-from . import imaging, utils
+from . import imaging, utils, meshing
 from . import pde as pde_module
 
 
@@ -46,10 +46,10 @@ class Dataset(torch.utils.data.Dataset):
         mask = torch.as_tensor(mask.get_fdata(), **kwargs).unsqueeze(0)
 
         # load mesh from xdmf file
-        mesh = load_mesh_file(example['mesh_file'])
+        mesh, cell_labels = meshing.load_mesh_fenics(example['mesh_file'])
 
         # initialize biomechanical model
-        pde = pde_module.FiniteElementModel(mesh, resolution)
+        pde = pde_module.FiniteElementModel(mesh, resolution, cell_labels)
 
         if 'elast_file' in example: # has ground truth
             e_image = load_nii_file(example['elast_file'])
@@ -80,12 +80,3 @@ def load_nii_file(nii_file):
     nifti = nib.load(nii_file)
     print(nifti.header.get_data_shape())
     return nifti
-
-
-def load_mesh_file(mesh_file):
-    print(f'Loading {mesh_file}... ', end='')
-    mesh = fe.Mesh()
-    with fe.XDMFFile(MPI.COMM_WORLD, str(mesh_file)) as f:
-        f.read(mesh)
-    print(mesh.num_vertices())
-    return mesh

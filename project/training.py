@@ -165,7 +165,7 @@ class Trainer(object):
                 f'e_pred_image contains nan ({name[k]})'
 
             # convert tensors to FEM coefficients
-            kernel_size = self.interp_size # 7
+            kernel_size = self.interp_size
             a_dofs = interpolation.interpolate_image(
                 a_image[k], binary_mask[k], resolution[k], points_k, radius_k,
                 kernel_size=self.interp_size,

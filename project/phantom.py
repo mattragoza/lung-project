@@ -80,6 +80,9 @@ class Phantom(object):
         shape = nifti.header.get_data_shape()
         resolution = nifti.header.get_zooms()
 
+        self.shape = shape
+        self.resolution = resolution
+
         x = np.arange(shape[0]) * resolution[0]
         y = np.arange(shape[1]) * resolution[1]
         z = np.arange(shape[2]) * resolution[2]

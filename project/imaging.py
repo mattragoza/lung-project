@@ -409,13 +409,13 @@ class Emory4DCTCase(object):
             print(f'Saving {nifti_file}')
             nib.save(nifti, nifti_file)
 
-    def save_masks(self, roi):
+    def save_totalseg_masks(self, roi):
         for phase in self.phases:
-            data = self.mask.sel(phase=phase).data
+            data = self.totalseg_mask.sel(phase=phase).data
             affine = np.diag(list(self.resolution) + [1])
             nifti = nib.nifti1.Nifti1Image(data, affine)
-            mask_file = self.mask_file(phase, roi)
-            self.mask_dir.mkdir(exist_ok=True)
+            mask_file = self.totalseg_mask_file(phase, roi)
+            self.totalseg_mask_dir.mkdir(exist_ok=True)
             print(f'Saving {mask_file}')
             nib.save(nifti, mask_file)
 

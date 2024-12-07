@@ -10,7 +10,7 @@ def get_func_by_name(name):
         return torch.exp
     elif name == 'relu':
         return F.relu
-    elif name == 'splus':
+    elif name == 'softplus':
         return F.softplus
 
 
@@ -205,3 +205,18 @@ class UNet3D(torch.nn.Module):
             x = decoder(x, encoder_feats[i+1])
 
         return self.output_func(self.final_conv(x))
+
+
+class ParameterMap(torch.nn.Module):
+    '''
+    This class is used for directly optimizing an
+    elasticity parameter map, instead of training
+    a neural network to map from image to elasticity.
+    '''
+    def __init__(self, shape):
+        self.register_parameter('values', None)
+
+    def forward(self, x):
+        if self.values is None:
+            self.values = torch.nn.Parameter(torch.randn(x.shape))
+        return self.values

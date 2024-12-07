@@ -733,44 +733,47 @@ def contains_any(x, keys):
 
 
 def get_color_kws(array, pct=99, scale=1.1):
+    return get_color_map(array.name)
+
+
+def get_color_map(name, pct=99, scale=1.1):
     '''
     Get a dictionary of colormap arguments
     for visualizing the provided xarray.
     '''
-    print(array.name)
-    if contains_any(array.name, ['CTE']):
+    if contains_any(name, ['CTE']):
         cmap = 'seismic'
         vmin, vmax = (0, 2)
 
-    elif contains_any(array.name, ['CT', 'anat', 'a_']):
+    elif contains_any(name, ['CT', 'anat', 'a_']):
         cmap = grayscale_color_map()
         vmin, vmax = (-1000, -500)
 
-    elif contains_any(array.name, ['e_pred']):
+    elif contains_any(name, ['e_pred']):
         cmap = mre_color_map()
         vmin, vmax = (-1e4, 1e4)
 
-    elif contains_any(array.name, ['elast', 'mu_', 'lam_', 'e_']):
+    elif contains_any(name, ['elast', 'mu_', 'lam_', 'e_']):
         cmap = mre_color_map()
         vmin, vmax = (-1e5, 1e5)
 
-    elif contains_any(array.name, ['disp', 'u_']):
+    elif contains_any(name, ['disp', 'u_']):
         cmap = wave_color_map()
         vmin, vmax = (-1, 1)
 
-    elif contains_any(array.name, ['mask']):
+    elif contains_any(name, ['mask']):
         cmap = grayscale_color_map()
         vmin, vmax = (0, 1)
 
-    elif contains_any(array.name, ['region']):
+    elif contains_any(name, ['region']):
         cmap = region_color_map(8, has_background=True)
         vmin, vmax = (0, 7)
 
-    elif contains_any(array.name, ['emph']):
+    elif contains_any(name, ['emph']):
         cmap = threshold_color_map(7, has_background=True)
         vmin, vmax = (-3, 3)
 
-    elif contains_any(array.name, ['C_']):
+    elif contains_any(name, ['C_']):
         cmap = 'seismic'
         vmin, vmax = (-3, 3)
 

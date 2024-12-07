@@ -10,11 +10,11 @@ def train(
     test_phase=-1,
     num_levels=3,
     num_conv_layers=2,
-    conv_channels=8,
+    conv_channels=32,
     conv_kernel_size=3,
     output_func='relu',
     rho_value='anat',
-    interp_size=7,
+    interp_size=5,
     interp_type='tent',
     batch_size=1,
     learning_rate=1e-5,
@@ -23,9 +23,11 @@ def train(
     save_prefix='ASDF',
     load_epoch=0,
     random_seed=None,
+    use_param_map=False,
 ):
     if isinstance(random_seed, str):
         random_seed = int(random_seed)
+
     project.utils.set_random_seed(random_seed)
 
     if data_name == 'emory':
@@ -63,15 +65,18 @@ def train(
     train_data = project.data.Dataset(train_examples)
     test_data = project.data.Dataset(test_examples)
 
-    model = project.model.UNet3D(
-        in_channels=1,
-        out_channels=1,
-        num_levels=num_levels,
-        num_conv_layers=num_conv_layers,
-        conv_channels=conv_channels,
-        conv_kernel_size=conv_kernel_size,
-        output_func=output_func,
-    ).cuda()
+    if use_param_map:
+        model = project.model.ParameterMap()
+    else:
+        model = project.model.UNet3D(
+            in_channels=1,
+            out_channels=1,
+            num_levels=num_levels,
+            num_conv_layers=num_conv_layers,
+            conv_channels=conv_channels,
+            conv_kernel_size=conv_kernel_size,
+            output_func=output_func,
+        ).cuda()
 
     trainer = project.training.Trainer(
         model=model,

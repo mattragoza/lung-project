@@ -10,11 +10,13 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 import fenics as fe
 from mpi4py import MPI
+import dolfin
 
 
 def save_mesh_meshio(mesh_file, mesh, cell_blocks):
     mesh_cells = [(mesh.cells[i].type, mesh.cells[i].data) for i in cell_blocks]
     meshio.write_points_cells(mesh_file, mesh.points, mesh_cells)
+    meshio.xdmf.write(mesh_file, mesh)
 
 
 def load_mesh_fenics(mesh_file):
@@ -22,8 +24,11 @@ def load_mesh_fenics(mesh_file):
     mesh = fe.Mesh()
     with fe.XDMFFile(MPI.COMM_WORLD, str(mesh_file)) as f:
         f.read(mesh)
+        dim = mesh.geometry().dim()
+        cell_labels = dolfin.MeshFunction('size_t', mesh, dim)
+        f.read(cell_labels, 'c_labels')
     print(mesh.num_vertices())
-    return mesh
+    return mesh, cell_labels
 
 
 def estimate_limit(x, expand=0.1):
@@ -114,6 +119,20 @@ def smooth_facet_values(vertices, facets, facet_values, func, order=1):
     return new_facet_values
 
 
+def check_disconnected_nodes(mesh):
+    # mesh is a fenics mesh
+    tdim = mesh.topology().dim()
+    mesh.init(0, tdim)
+    vertex_to_cell = mesh.topology()(0, tdim)
+    unconnected_nodes = []
+    num_vertices = mesh.num_vertices()
+    for v in range(num_vertices):
+        if len(vertex_to_cell(v)) == 0:
+            unconnected_nodes.append(v)
+    print(len(unconnected_nodes), num_vertices)
+    return unconnected_nodes
+
+
 def check_used_points(mesh):
     point_inds = np.arange(mesh.points.shape[0])
     point_used = np.zeros_like(point_inds, dtype=bool)
@@ -146,7 +165,9 @@ def remove_unused_points(mesh):
     new_tri_cells = new_indices[tri_cells]
     new_tet_cells = new_indices[tet_cells]
     
-    return meshio.Mesh(
+    new_mesh = meshio.Mesh(
         points=new_points,
-        cells=[('triangle', new_tri_cells), ('tetra', new_tet_cells)]
+        cells=[('triangle', new_tri_cells), ('tetra', new_tet_cells)],
     )
+    new_mesh.cell_data['c_labels'] = [mesh.get_cell_data('medit:ref', 'tetra')]
+    return new_mesh
