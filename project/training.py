@@ -145,6 +145,8 @@ class Trainer(object):
 
         # predict elasticity from anatomical image
         e_pred_image = self.model.forward(a_image) * 1000 # kPa -> Pa
+        e_pred_image = e_pred_image.clamp(min=1, max=1e12)
+
         self.timer.tick((epoch, batch_num, -1, phase, 'model_forward'))
 
         # physical FEM simulation
