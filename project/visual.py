@@ -281,14 +281,18 @@ class XArrayViewer(Viewer):
             for j in range(self.n_cols):
                 index, row_label, col_label = self.get_index_and_labels(i, j)
                 artist = self.artists[i][j]
-                if isinstance(artist, list): # multiple lines
-                    for k, artist in enumerate(artist):
-                        artist.set_ydata(self.array[index].T[k])
-                elif isinstance(artist, matplotlib.lines.Line2D): # one line
-                    artist.set_ydata(self.array[index])
-                else: # image
-                    artist.set_array(self.array[index].T)
-                    artist.set_clim()
+                try:
+                    if isinstance(artist, list): # multiple lines
+                        for k, artist in enumerate(artist):
+                            artist.set_ydata(self.array[index].T[k])
+                    elif isinstance(artist, matplotlib.lines.Line2D): # one line
+                        artist.set_ydata(self.array[index])
+                    else: # image
+                        artist.set_array(self.array[index].T)
+                        artist.set_clim()
+                except:
+                    print(index, row_label, col_label)
+                    raise
         self.fig.canvas.draw()
 
 

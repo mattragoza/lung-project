@@ -18,17 +18,18 @@ class FiniteElementModel(torch_fenics.FEniCSModule):
         self.radius = compute_point_radius(self.points, resolution)
 
         self.cell_labels = cell_labels
-
-        # detect interface between subdomains
-        dim = mesh.geometry().dim()
-        self.on_interface = fe.MeshFunction('size_t', mesh, dim - 1)
         self.has_interface = False
-        for facet in dolfin.facets(mesh):
-            cell_indices = [c for c in facet.entities(dim)]
-            subdomain_ids = set(cell_labels[c] for c in cell_indices)
-            if len(subdomain_ids) > 1:
-                self.on_interface[facet] = 1
-                self.has_interface = True
+
+        if cell_labels is not None:
+            # detect interface between subdomains
+            dim = mesh.geometry().dim()
+            self.on_interface = fe.MeshFunction('size_t', mesh, dim - 1)
+            for facet in dolfin.facets(mesh):
+                cell_indices = [c for c in facet.entities(dim)]
+                subdomain_ids = set(cell_labels[c] for c in cell_indices)
+                if len(subdomain_ids) > 1:
+                    self.on_interface[facet] = 1
+                    self.has_interface = True
         
     def __repr__(self):
         return f'{type(self).__name__}({self.mesh})'

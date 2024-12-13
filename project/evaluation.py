@@ -124,9 +124,10 @@ def mean_relative_error(x_pred, x_true, mask, eps=1e-6):
     return weighted_mean(relative_error, mask)
 
 
-def contrast_transfer_efficiency(x_pred, x_true, region_mask, eps=1e-6):
+def contrast_transfer_efficiency(x_pred, x_true, region_mask, eps=1e-8):
     background_mask = (region_mask == 1)
     target_mask = (region_mask > 1)
+    binary_mask = (region_mask > 0)
     x_pred_0 = weighted_mean(x_pred, background_mask)
     x_true_0 = weighted_mean(x_true, background_mask)
     c_pred = torch.log10(x_pred / x_pred_0 + eps)
@@ -146,8 +147,8 @@ class Timer(object):
 
     def __init__(self, index_cols, sync_cuda=False):
         self.index_cols = index_cols
-        self.usage = pd.DataFrame(columns=index_cols)
-        self.usage.set_index(index_cols, inplace=True)
+        self.benchmarks = pd.DataFrame(columns=index_cols)
+        self.benchmarks.set_index(index_cols, inplace=True)
         self.sync_cuda = sync_cuda
 
     def start(self):
@@ -158,15 +159,17 @@ class Timer(object):
             torch.cuda.synchronize()
 
         t_curr, t_prev = time.time(), self.t_prev
-        self.usage.loc[index, 'time'] = (t_curr - t_prev)
+        self.benchmarks.loc[index, 'time'] = (t_curr - t_prev)
         self.t_prev = t_curr
 
         device_props = torch.cuda.get_device_properties(0)
-        self.usage.loc[index, 'gpu_mem_total'] = device_props.total_memory
-        self.usage.loc[index, 'gpu_mem_reserved'] = torch.cuda.memory_reserved()
-        self.usage.loc[index, 'gpu_mem_allocated'] = torch.cuda.memory_allocated()
+        self.benchmarks.loc[index, 'gpu_mem_total'] = device_props.total_memory
+        self.benchmarks.loc[index, 'gpu_mem_reserved'] = torch.cuda.memory_reserved()
+        self.benchmarks.loc[index, 'gpu_mem_allocated'] = torch.cuda.memory_allocated()
 
         process = psutil.Process(os.getpid())
-        self.usage.loc[index, 'mem_total'] = psutil.virtual_memory().total
-        self.usage.loc[index, 'mem_used'] = process.memory_info().rss
+        self.benchmarks.loc[index, 'mem_total'] = psutil.virtual_memory().total
+        self.benchmarks.loc[index, 'mem_used'] = process.memory_info().rss
 
+    def save_benchmarks(self, path):
+        self.benchmarks.to_csv(path)

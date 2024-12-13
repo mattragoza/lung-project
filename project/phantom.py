@@ -39,7 +39,8 @@ class PhantomSet(object):
                 'elast_file': phantom.elast_file(),
                 'disp_file': phantom.disp_file(),
                 'mask_file': phantom.mask_file(),
-                'mesh_file': phantom.mesh_file(mesh_version)
+                'mesh_file': phantom.mesh_file(mesh_version),
+                'has_labels': (mesh_version >= 20)
             })
         return examples
 
@@ -121,7 +122,8 @@ class Phantom(object):
     def load_mesh(self, mesh_version):
         mesh_file = self.mesh_file(mesh_version)
         print(f'Loading {mesh_file}')
-        self.mesh = meshing.load_mesh_fenics(mesh_file)
+        has_labels = (mesh_version >= 20)
+        self.mesh, self.cell_labels = meshing.load_mesh_fenics(mesh_file, has_labels)
 
     def generate(self, mask_file, mesh_version, **kwargs):
         self.phantom_dir.mkdir(exist_ok=True)

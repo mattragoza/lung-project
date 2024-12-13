@@ -46,7 +46,7 @@ class Dataset(torch.utils.data.Dataset):
         mask = torch.as_tensor(mask.get_fdata(), **kwargs).unsqueeze(0)
 
         # load mesh from xdmf file
-        mesh, cell_labels = meshing.load_mesh_fenics(example['mesh_file'])
+        mesh, cell_labels = meshing.load_mesh_fenics(example['mesh_file'], example['has_labels'])
 
         # initialize biomechanical model
         pde = pde_module.FiniteElementModel(mesh, resolution, cell_labels)

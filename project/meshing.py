@@ -19,14 +19,17 @@ def save_mesh_meshio(mesh_file, mesh, cell_blocks):
     meshio.xdmf.write(mesh_file, mesh)
 
 
-def load_mesh_fenics(mesh_file):
+def load_mesh_fenics(mesh_file, has_labels=True):
     print(f'Loading {mesh_file}...', end=' ')
     mesh = fe.Mesh()
     with fe.XDMFFile(MPI.COMM_WORLD, str(mesh_file)) as f:
         f.read(mesh)
         dim = mesh.geometry().dim()
-        cell_labels = dolfin.MeshFunction('size_t', mesh, dim)
-        f.read(cell_labels, 'c_labels')
+        if has_labels:
+            cell_labels = dolfin.MeshFunction('size_t', mesh, dim)
+            f.read(cell_labels, 'c_labels')
+        else:
+            cell_labels = None
     print(mesh.num_vertices())
     return mesh, cell_labels
 

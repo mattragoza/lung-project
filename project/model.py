@@ -213,10 +213,21 @@ class ParameterMap(torch.nn.Module):
     elasticity parameter map, instead of training
     a neural network to map from image to elasticity.
     '''
-    def __init__(self, shape):
-        self.register_parameter('values', None)
+    def __init__(self, shape, upsample_mode, conv_kernel_size, output_func):
+        super().__init__()
+        assert len(shape) == 4
+        self.params = torch.nn.Parameter(torch.randn(shape))
+        self.upsample = Upsample(mode=upsample_mode)
+        self.final_conv = torch.nn.Conv3d(
+            in_channels=shape[0],
+            out_channels=shape[0],
+            kernel_size=conv_kernel_size,
+            padding='same',
+            padding_mode='replicate'
+        )
+        self.output_func = get_func_by_name(output_func)
 
     def forward(self, x):
-        if self.values is None:
-            self.values = torch.nn.Parameter(torch.randn(x.shape))
-        return self.values
+        p = self.params.unsqueeze(0)
+        p = self.upsample(p, size=x.shape[2:])
+        return self.output_func(self.final_conv(p))

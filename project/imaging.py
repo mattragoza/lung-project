@@ -122,6 +122,7 @@ class Emory4DCT(object):
                     'mask_file2': case.medpseg_mask_file(fixed_phase, 'consolidation'),
                     'mask_file3': case.medpseg_mask_file(fixed_phase, 'ggo'),
                     'mesh_file': case.mesh_file(fixed_phase, mask_roi, mesh_version),
+                    'has_labels': (mesh_version >= 20)
                 })
         return examples
 

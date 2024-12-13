@@ -73,7 +73,7 @@ def generate_arg_parser(func):
         if default is undefined: # positional argument
             parser.add_argument(name, type=type_)
 
-        elif default is False and type_ in {bool, None}: # flag
+        elif default is False or default is True and type_ in {bool, None}: # flag
             parser.add_argument(
                 f'--{name}', default=False, type=as_bool, help=f'[{default}]'
             )
