@@ -736,11 +736,17 @@ def contains_any(x, keys):
     return any([key in x for key in keys])
 
 
-def get_color_kws(array, pct=99, scale=1.1):
-    return get_color_map(array.name)
+def get_color_kws(array):
+    kws = get_color_map(array.name)
+    if kws.get('vmax') is None:
+        vmin, vmax = np.percentile(array.values, [0, 100])
+        print(vmin, vmax)
+        kws['vmax'] = vmax
+        kws['vmin'] = vmin
+    return kws
 
 
-def get_color_map(name, pct=99, scale=1.1):
+def get_color_map(name):
     '''
     Get a dictionary of colormap arguments
     for visualizing the provided xarray.
@@ -781,12 +787,9 @@ def get_color_map(name, pct=99, scale=1.1):
         cmap = 'seismic'
         vmin, vmax = (-3, 3)
 
-
-
     else:
         cmap = 'seismic'
-        vmax = np.percentile(np.abs(array), pct) * scale
-        vmin = -vmax
+        vmax = vmin = None
 
     return dict(cmap=cmap, vmin=vmin, vmax=vmax)
 

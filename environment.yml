@@ -12,17 +12,14 @@ dependencies:
   - xarray
   - nibabel
   - h5py
-  - eigen
-  - cgal
-  - meshio
   - pytorch
   - cudatoolkit=11.7
   - torchvision
   - fenics
   - trame
-  - trame-vtk
-  - trame-vuetify
-  - xvfbwrapper
+  - meshio
+  - eigen
+  - cgal
   - matplotlib
   - seaborn
   - hvplot

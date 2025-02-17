@@ -185,7 +185,8 @@ def transform_image(image_mov, image_fix, transform, default=0):
     resampler.SetReferenceImage(image_fix)
     resampler.SetInterpolator(sitk.sitkBSpline)
     resampler.SetDefaultPixelValue(default)
-    resampler.SetTransform(transform)
+    if transform is not None:
+        resampler.SetTransform(transform)
     image_warp = resampler.Execute(image_mov)
     return image_warp
 

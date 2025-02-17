@@ -1,19 +1,22 @@
-data_name=Emory-4DCT
-case_id=1
-phase=50
+data_root=data/COPDGene
+subject_id=10009Y
+visit_name=Phase-1
+image_state=EXP
+image_filter=STD
+image_code=NJC
+image_post=COPD
 
-data_root=data/$data_name
+image_root=${data_root}/Images
+subject_dir=${image_root}/${subject_id}
+visit_dir=${subject_dir}/${visit_name}
 
-case_name=Case${case_id}Pack
-case_dir=$data_root/$case_name
+image_dir=${visit_dir}/Resized
+mask_dir=${visit_dir}/TotalSegment
 
-image_dir=$case_dir/NIFTI
-mask_dir=$case_dir/TotalSegment
+image_name=${subject_id}_${image_state}_${image_filter}_${image_code}_${image_post}
 
-image_name=case${case_id}_T${phase}
-
-image_file=$image_dir/$image_name.nii.gz
-output_dir=$mask_dir/$image_name
+image_file=${image_dir}/${image_name}.nii.gz
+output_dir=${mask_dir}/${image_name}
 
 TotalSegmentator -i $image_file -o $output_dir -ta total --roi_subset lung_upper_lobe_right lung_upper_lobe_left lung_middle_lobe_right lung_lower_lobe_right lung_lower_lobe_left
 TotalSegmentator -i $image_file -o $output_dir -ta lung_vessels

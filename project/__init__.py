@@ -2,6 +2,7 @@ from . import (
 	data,
 	evaluation,
 	imaging,
+	copdgene,
 	interpolation,
 	meshing,
 	model,
