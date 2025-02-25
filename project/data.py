@@ -10,22 +10,31 @@ from . import pde as pde_module
 
 class Dataset(torch.utils.data.Dataset):
 
-    def __init__(self, examples, dtype=torch.float32, device='cpu'):
+    def __init__(
+        self, examples, dtype=torch.float32, device='cpu', scale=(1,1,1),
+        use_cache=True
+    ):
         super().__init__()
 
         self.examples = examples
         self.dtype = dtype
         self.device = device
+        self.scale = scale
+        self.use_cache = use_cache
 
-        self.cache = [None] * len(examples)
+        if use_cache:
+            self.cache = [None] * len(examples)
 
     def __len__(self):
         return len(self.examples)
     
     def __getitem__(self, idx):
-        if self.cache[idx] is None:
-            self.cache[idx] = self.load_example(idx)
-        return self.cache[idx]
+        if self.use_cache:
+            if self.cache[idx] is None:
+                self.cache[idx] = self.load_example(idx)
+            return self.cache[idx]
+        else:
+            return self.load_example(idx)
     
     def load_example(self, idx):
         example = self.examples[idx]    
@@ -46,10 +55,9 @@ class Dataset(torch.utils.data.Dataset):
         mask = torch.as_tensor(mask.get_fdata(), **kwargs).unsqueeze(0)
 
         # load mesh from xdmf file
-        mesh, cell_labels = meshing.load_mesh_fenics(example['mesh_file'], example['has_labels'])
-
-        # initialize biomechanical model
-        pde = pde_module.FiniteElementModel(mesh, resolution, cell_labels)
+        mesh, cell_labels = meshing.load_mesh_fenics(
+            example['mesh_file'], example['has_labels']
+        )
 
         if 'elast_file' in example: # has ground truth
             e_image = load_nii_file(example['elast_file'])
@@ -71,6 +79,21 @@ class Dataset(torch.utils.data.Dataset):
         else:
             zeros = torch.zeros_like(mask)
             disease_mask = torch.cat([zeros, zeros, zeros], dim=0)
+
+        # downsample if necessary
+        x_scale, y_scale, z_scale = self.scale
+        if x_scale > 1 or y_scale > 1 or z_scale > 1:
+            a_image = a_image[:,::x_scale,::y_scale,::z_scale]
+            e_image = e_image[:,::x_scale,::y_scale,::z_scale]
+            u_image = u_image[:,::x_scale,::y_scale,::z_scale]
+            mask = mask[:,::x_scale,::y_scale,::z_scale]
+            disease_mask = disease_mask[:,::x_scale,::y_scale,::z_scale]
+            resolution = np.array([r*s for r,s in zip(resolution, self.scale)])
+
+        resolution = torch.as_tensor(resolution)
+
+        # initialize biomechanical model
+        pde = pde_module.FiniteElementModel(mesh, resolution, cell_labels)
 
         return a_image, e_image, u_image, mask, disease_mask, resolution, pde, example_name
 

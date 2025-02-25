@@ -510,7 +510,7 @@ class Trainer(object):
             )
             if key not in self.array_viewers:
                 slice_dim = 'y'
-                slice_mid = array[slice_dim].median().values.astype(int)
+                slice_mid = len(array[slice_dim]) // 2
                 self.array_viewers[key] = visual.XArrayViewer(
                     array, x='x', y='z', col='c', label_cols=False
                 )
