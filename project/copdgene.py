@@ -4,6 +4,8 @@ import xarray as xr
 import pandas as pd
 import nibabel as nib
 
+from . import meshing
+
 
 class COPDGene(object):
 
@@ -38,6 +40,35 @@ class COPDGene(object):
             metadata.append(m)
         return pd.concat(metadata)
 
+    def get_examples(
+        self,
+        image_dir='Resized',
+        mask_dir='TotalSegment',
+        mask_roi='lung_regions',
+        mesh_dir='pygalmesh',
+        mesh_version=10,
+        disp_dir='CorrField'
+    ):
+        examples = []
+        for subject in self.subjects:
+            for visit in subject.visits:
+                for fix_name in visit.list_images(image_dir):
+                    if '_SHARP_' in fix_name:
+                        continue
+                    if '_INSP_' in fix_name:
+                        mov_name = fix_name.replace('_INSP_', '_EXP_')
+                    elif '_EXP_' in fix_name:
+                        mov_name = fix_name.replace('_EXP_', '_INSP_')
+                    examples.append({
+                        'name': visit.image_file(image_dir, fix_name).name[:-7],
+                        'anat_file': visit.image_file(image_dir, fix_name),
+                        'disp_file': visit.disp_file(disp_dir, fix_name, mov_name),
+                        'mask_file': visit.mask_file(mask_dir, fix_name, mask_roi),
+                        'mesh_file': visit.mesh_file(mesh_dir, fix_name, mask_roi, mesh_version),
+                        'has_labels': True
+                    })
+        return examples
+
 
 class COPDGeneSubject(object):
 
@@ -70,7 +101,7 @@ class COPDGeneSubject(object):
         images = []
         for visit in self.visits:
             images.append(visit.load_images(subdir))
-        return
+        return images
 
     def load_metadata(self, subdir):
         metadata = []
@@ -95,36 +126,33 @@ class COPDGeneVisit(object):
         return self.data_root / 'Images' / self.subject_id / self.visit_name
 
     def list_subdirs(self):
-        return sorted([x.name for x in self.visit_dir.iterdir()])
+        return sorted([x.name for x in self.visit_dir.iterdir() if x.is_dir()])
 
     def image_dir(self, subdir):
         return self.visit_dir / subdir
 
     def image_file(self, subdir, image_name):
-        return self.image_dir(subdir) / f'{image_name}.nii.gz'
+        return self.image_dir(subdir) / (image_name + '.nii.gz')
 
-    def list_images(self, subdir):
-        return sorted([x.name[:-7] for x in self.image_dir(subdir).glob('*.nii.gz')])
+    def image_files(self, subdir, pattern='*'):
+        return self.image_dir(subdir).glob(pattern + '.nii.gz')
 
-    def check_images(self, subdir):
-        image_names = self.list_images(subdir)
-        image_fields = [x.split('_') for x in image_names]
-        #subjects = list({x[0] for x in image_fields})
-        #states   = list({x[1] for x in image_fields})
-        #filters  = list({x[2] for x in image_fields})
-        #codes    = list({x[3] for x in image_fields})
-        #diseases = list({x[4] for x in image_fields})
-        #assert all(x == self.subject_id for x in subjects)
-        return image_names
+    def list_images(self, subdir, pattern='*'):
+        return sorted([x.name[:-7] for x in self.image_files(subdir, pattern)])
 
     def mask_dir(self, subdir, image_name):
         return self.visit_dir / subdir / image_name
 
     def mask_file(self, subdir, image_name, roi):
-        return self.image_dir(subdir) / image_name / f'{roi}.nii.gz'
+        return self.mask_dir(subdir, image_name) / (roi + '.nii.gz')
 
-    def list_masks(self, subdir, image_name):
-        return sorted([x.name[:-7] for x in self.mask_dir(subdir, image_name).glob('*.nii.gz')])
+    def mask_files(self, subdir, image_name, pattern='*'):
+        return self.mask_dir(subdir, image_name).glob(pattern + '.nii.gz')
+
+    def list_masks(self, subdir, image_name, pattern='*'):
+        return sorted([
+            x.name[:-7] for x in self.mask_files(subdir, image_name, pattern)
+        ])
 
     def mesh_dir(self, subdir, image_name):
         return self.visit_dir / subdir / image_name
@@ -132,9 +160,23 @@ class COPDGeneVisit(object):
     def mesh_file(self, subdir, image_name, mask_roi, mesh_version):
         return self.mesh_dir(subdir, image_name) / f'{mask_roi}_{mesh_version}.xdmf'
 
-    def load_metadata(self, subdir):
+    def disp_dir(self, subdir, fix_image_name):
+        return self.visit_dir / subdir / fix_image_name
+
+    def disp_file(self, subdir, fix_image_name, mov_image_name):
+        return self.disp_dir(subdir, fix_image_name) / (mov_image_name + '.nii.gz')
+
+    def disp_files(self, subdir, fix_image_name, pattern='*'):
+        return self.disp_dir(subdir, fix_image_name).glob(pattern + '.nii.gz')
+
+    def list_displacements(self, subdir, fix_image_name, pattern='*'):
+        return sorted([
+            x.name[:-7] for x in self.disp_files(subdir, fix_image_name, pattern)
+        ])
+
+    def load_metadata(self, subdir, pattern='*'):
         metadata = []
-        for image_name in self.check_images(subdir):
+        for image_name in self.list_images(subdir, pattern):
             image_file = self.image_file(subdir, image_name)
             image = nib.load(image_file)
             shape = image.header.get_data_shape()
@@ -148,9 +190,9 @@ class COPDGeneVisit(object):
             })
         return pd.DataFrame(metadata)
 
-    def load_images(self, subdir):
+    def load_images(self, subdir, pattern='*'):
         images = []
-        for image_name in self.check_images(subdir):
+        for image_name in self.list_images(subdir, pattern):
             image_file = self.image_file(subdir, image_name)
             print(f'Loading {image_file}')
             image = nib.load(image_file)
@@ -183,11 +225,9 @@ class COPDGeneVisit(object):
 
     def load_masks(self, image_dir, mask_dir):
         masks = []
-        for image_name in self.check_images(image_dir)[:1]:
-            print(image_name)
+        for image_name in self.list_images(image_dir):
             image_masks, mask_rois = [], []
             for mask_roi in self.list_masks(mask_dir, image_name):
-                print(mask_roi)
                 mask_file = self.mask_file(mask_dir, image_name, mask_roi)
                 print(f'Loading {mask_file}')
                 mask = nib.load(mask_file)
@@ -197,7 +237,6 @@ class COPDGeneVisit(object):
                 image_masks.append(mask.get_fdata())
                 mask_rois.append(mask_roi)
 
-            print(mask_rois)
             masks.append(xr.DataArray(
                 data=np.stack(image_masks),
                 dims=['roi', 'x', 'y', 'z'],
@@ -210,3 +249,44 @@ class COPDGeneVisit(object):
                 name=image_name
             ))
         return masks
+
+    def load_meshes(self, image_dir, mesh_dir, mask_roi, mesh_version):
+        meshes = []
+        labels = []
+        for image_name in self.list_images(image_dir):
+            mesh_file = self.mesh_file(mesh_dir, image_name, mask_roi, mesh_version)
+            has_labels = True
+            print(f'Loading {mesh_file}')
+            mesh, cell_labels = meshing.load_mesh_fenics(mesh_file, has_labels)
+            meshes.append(mesh)
+            labels.append(cell_labels)
+        return meshes, labels
+
+    def load_displacements(self, image_dir, disp_dir):
+        disps = []
+        for fix_image_name in self.list_images(image_dir):
+            fix_image_disps = []
+            mov_image_names = []
+            for mov_image_name in self.list_displacements(disp_dir, fix_image_name):
+                disp_file = self.disp_file(disp_dir, fix_image_name, mov_image_name)
+                print(disp_file, disp_file.exists())
+                disp = nib.load(disp_file)
+                shape = disp.header.get_data_shape()
+                resolution = disp.header.get_zooms()
+                fix_image_disps.append(disp.get_fdata())
+                mov_image_names.append(mov_image_name)
+
+            disps.append(xr.DataArray(
+                data=np.stack(fix_image_disps),
+                dims=['mov_image_name', 'x', 'y', 'z', 'component'],
+                coords={
+                    'mov_image_name': mov_image_names,
+                    'x': np.arange(shape[0]) * resolution[0],
+                    'y': np.arange(shape[1]) * resolution[1],
+                    'z': np.arange(shape[2]) * resolution[2],
+                    'component': ['x', 'y', 'z']
+                },
+                name=fix_image_name
+            ))
+        return disps
+

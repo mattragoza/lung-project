@@ -83,6 +83,7 @@ class FiniteElementModel(torch_fenics.FEniCSModule):
 
 
 def compute_point_radius(points, resolution):
+    # compute distance to nearest neighbor point
     min_radius = np.linalg.norm(resolution) / 2
     distance = torch.norm(points[:,None,:] - points[None,:,:], dim=-1)
     distance[distance == 0] = 1e3
