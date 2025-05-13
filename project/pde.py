@@ -8,14 +8,19 @@ import dolfin
 
 class FiniteElementModel(torch_fenics.FEniCSModule):
     
-    def __init__(self, mesh, resolution, cell_labels):
+    def __init__(self, mesh, resolution, cell_labels, verbose=False):
         super().__init__()
         self.mesh = mesh
+
         self.S = fe.FunctionSpace(mesh, 'P', 1)
         self.V = fe.VectorFunctionSpace(mesh, 'P', 1)
 
         self.points = torch.as_tensor(self.S.tabulate_dof_coordinates())
-        self.radius = compute_point_radius(self.points, resolution)
+
+        if len(self.points) >= 30000:
+            self.radius = compute_point_radius(self.points.cpu(), resolution).cpu()
+        else:
+            self.radius = compute_point_radius(self.points.cuda(), resolution).cpu()
 
         self.cell_labels = cell_labels
         self.has_interface = False
@@ -86,6 +91,7 @@ def compute_point_radius(points, resolution):
     # compute distance to nearest neighbor point
     min_radius = np.linalg.norm(resolution) / 2
     distance = torch.norm(points[:,None,:] - points[None,:,:], dim=-1)
+    #distance = torch.cdist(points, points)
     distance[distance == 0] = 1e3
     distance[distance < min_radius] = min_radius
     return distance.min(dim=-1, keepdims=True).values

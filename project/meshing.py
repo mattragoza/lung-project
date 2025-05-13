@@ -19,8 +19,9 @@ def save_mesh_meshio(mesh_file, mesh, cell_blocks):
     meshio.xdmf.write(mesh_file, mesh)
 
 
-def load_mesh_fenics(mesh_file, has_labels=True):
-    print(f'Loading {mesh_file}...', end=' ')
+def load_mesh_fenics(mesh_file, has_labels=True, verbose=False):
+    if verbose:
+        print(f'Loading {mesh_file}...', end=' ')
     mesh = fe.Mesh()
     with fe.XDMFFile(MPI.COMM_WORLD, str(mesh_file)) as f:
         f.read(mesh)
@@ -30,7 +31,8 @@ def load_mesh_fenics(mesh_file, has_labels=True):
             f.read(cell_labels, 'c_labels')
         else:
             cell_labels = None
-    print(mesh.num_vertices())
+    if verbose:
+        print(mesh.num_vertices())
     return mesh, cell_labels
 
 

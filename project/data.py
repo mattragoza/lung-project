@@ -1,3 +1,4 @@
+from functools import lru_cache
 import numpy as np
 import torch
 import nibabel as nib
@@ -11,34 +12,32 @@ from . import pde as pde_module
 class Dataset(torch.utils.data.Dataset):
 
     def __init__(
-        self, examples, dtype=torch.float32, device='cpu', scale=(1,1,1),
-        use_cache=True
+        self,
+        examples,
+        dtype=torch.float32,
+        device='cpu',
+        image_scale=[1,1,1],
+        cache_size=None
     ):
         super().__init__()
 
         self.examples = examples
         self.dtype = dtype
         self.device = device
-        self.scale = scale
-        self.use_cache = use_cache
+        self.image_scale = image_scale
+        self.cache_size = cache_size
 
-        if use_cache:
-            self.cache = [None] * len(examples)
+        self.get_example = lru_cache(cache_size)(self.load_example)
 
     def __len__(self):
         return len(self.examples)
-    
+
     def __getitem__(self, idx):
-        if self.use_cache:
-            if self.cache[idx] is None:
-                self.cache[idx] = self.load_example(idx)
-            return self.cache[idx]
-        else:
-            return self.load_example(idx)
+        return self.get_example(idx)
     
     def load_example(self, idx):
         example = self.examples[idx]    
-        example_name = example['name']
+        name = example['name']
         
         # load images from NIFTI files
         a_image = load_nii_file(example['anat_file'])
@@ -46,7 +45,7 @@ class Dataset(torch.utils.data.Dataset):
         mask = load_nii_file(example['mask_file'])  
 
         # get image spatial resolution
-        resolution = a_image.header.get_zooms()
+        resolution = a_image.header.get_zooms() # tuple
         
         # convert arrays to tensors with shape (c,x,y,z)
         kwargs = dict(dtype=self.dtype, device=self.device)
@@ -75,31 +74,33 @@ class Dataset(torch.utils.data.Dataset):
             mask3 = load_nii_file(example['mask_file3'])
             mask3 = torch.as_tensor(mask3.get_fdata(), **kwargs).unsqueeze(0)
 
-            disease_mask = torch.cat([mask1, mask2, mask3], dim=0)
+            dis_mask = torch.cat([mask1, mask2, mask3], dim=0)
         else:
             zeros = torch.zeros_like(mask)
-            disease_mask = torch.cat([zeros, zeros, zeros], dim=0)
+            dis_mask = torch.cat([zeros, zeros, zeros], dim=0)
 
         # downsample if necessary
-        x_scale, y_scale, z_scale = self.scale
+        x_scale, y_scale, z_scale = self.image_scale
         if x_scale > 1 or y_scale > 1 or z_scale > 1:
             a_image = a_image[:,::x_scale,::y_scale,::z_scale]
             e_image = e_image[:,::x_scale,::y_scale,::z_scale]
             u_image = u_image[:,::x_scale,::y_scale,::z_scale]
             mask = mask[:,::x_scale,::y_scale,::z_scale]
-            disease_mask = disease_mask[:,::x_scale,::y_scale,::z_scale]
-            resolution = np.array([r*s for r,s in zip(resolution, self.scale)])
-
-        resolution = torch.as_tensor(resolution)
+            dis_mask = dis_mask[:,::x_scale,::y_scale,::z_scale]
+            resolution = tuple(r*s for r,s in zip(resolution, self.image_scale))
 
         # initialize biomechanical model
         pde = pde_module.FiniteElementModel(mesh, resolution, cell_labels)
 
-        return a_image, e_image, u_image, mask, disease_mask, resolution, pde, example_name
+        return (
+            a_image, e_image, u_image, mask, dis_mask, resolution, pde, name
+        )
 
 
-def load_nii_file(nii_file):
-    print(f'Loading {nii_file}... ', end='')
+def load_nii_file(nii_file, verbose=False):
+    if verbose:
+        print(f'Loading {nii_file}... ', end='')
     nifti = nib.load(nii_file)
-    print(nifti.header.get_data_shape())
+    if verbose:
+        print(nifti.header.get_data_shape())
     return nifti

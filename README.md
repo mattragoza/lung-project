@@ -41,8 +41,7 @@ done
 
 ### Convert images to NIFTI format
 
-TODO
-
+We need to convert the Emory 4DCT images to NIFTI format before running segmentation and registration steps. To do so, run the jupyter notebook `notebooks/Emory-4DCT-preprocessing.ipynb`.
 ## TotalSegmentator
 
 ### Install
