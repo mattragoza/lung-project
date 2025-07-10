@@ -1,117 +1,13 @@
 import sys, os, pathlib
 import numpy as np
-import xarray as xr
 import pandas as pd
 import nibabel as nib
+import xarray as xr
 
 from . import meshing
 
 
-class COPDGene(object):
-
-    def __init__(self, data_root, subject_ids=None, visit_names=None):
-        self.data_root = pathlib.Path(data_root)
-        self.subject_ids = subject_ids or self.list_subjects()
-        self.subjects = []
-        for subject_id in self.subject_ids:
-            subject = COPDGeneSubject(data_root, subject_id, visit_names)
-            self.subjects.append(subject)
-
-    def __len__(self):
-        return len(self.subjects)
-
-    def __getitem__(self, idx):
-        return self.subjects[idx]
-
-    def __repr__(self):
-        return f'{type(self).__name__}(data_root={self.data_root}, #subjects={len(self)})'
-
-    @property
-    def image_root(self):
-        return self.data_root / 'Images'
-
-    def list_subjects(self):
-        return sorted([x.name for x in self.image_root.iterdir()])
-
-    def load_metadata(self, subdir):
-        metadata = []
-        for subject in self.subjects:
-            m = subject.load_metadata(subdir)
-            metadata.append(m)
-        return pd.concat(metadata)
-
-    def get_examples(
-        self,
-        image_dir='Resized',
-        mask_dir='TotalSegment',
-        mask_roi='lung_regions',
-        mesh_dir='pygalmesh',
-        mesh_version=10,
-        disp_dir='CorrField'
-    ):
-        examples = []
-        for subject in self.subjects:
-            for visit in subject.visits:
-                for fix_name in visit.list_images(image_dir):
-                    if '_SHARP_' in fix_name:
-                        continue
-                    if '_INSP_' in fix_name:
-                        mov_name = fix_name.replace('_INSP_', '_EXP_')
-                    elif '_EXP_' in fix_name:
-                        mov_name = fix_name.replace('_EXP_', '_INSP_')
-                    examples.append({
-                        'name': visit.image_file(image_dir, fix_name).name[:-7],
-                        'anat_file': visit.image_file(image_dir, fix_name),
-                        'disp_file': visit.disp_file(disp_dir, fix_name, mov_name),
-                        'mask_file': visit.mask_file(mask_dir, fix_name, mask_roi),
-                        'mesh_file': visit.mesh_file(mesh_dir, fix_name, mask_roi, mesh_version),
-                        'has_labels': True
-                    })
-        return examples
-
-
-class COPDGeneSubject(object):
-
-    def __init__(self, data_root, subject_id, visit_names=None):
-        self.data_root = pathlib.Path(data_root)
-        self.subject_id = subject_id
-        self.visit_names = visit_names or self.list_visits()
-        self.visits = []
-        for visit_name in self.visit_names:
-            visit = COPDGeneVisit(data_root, subject_id, visit_name)
-            self.visits.append(visit)
-
-    def __len__(self):
-        return len(self.visits)
-
-    def __getitem__(self, idx):
-        return self.visits[idx]
-
-    def __repr__(self):
-        return f'{type(self).__name__}(data_root={self.data_root}, subject_id={self.subject_id}, #visits={len(self)})'
-
-    @property
-    def subject_dir(self):
-        return self.data_root / 'Images' / self.subject_id
-
-    def list_visits(self):
-        return sorted([x.name for x in self.subject_dir.iterdir()])
-
-    def load_images(self, subdir):
-        images = []
-        for visit in self.visits:
-            images.append(visit.load_images(subdir))
-        return images
-
-    def load_metadata(self, subdir):
-        metadata = []
-        for visit in self.visits:
-            m = visit.load_metadata(subdir)
-            metadata.append(m)
-        return pd.concat(metadata)
-
-
-class COPDGeneVisit(object):
+class COPDGeneVisit:
 
     def __init__(self, data_root, subject_id, visit_name):
         self.data_root = pathlib.Path(data_root)
@@ -125,20 +21,45 @@ class COPDGeneVisit(object):
     def visit_dir(self):
         return self.data_root / 'Images' / self.subject_id / self.visit_name
 
-    def list_subdirs(self):
+    # Image variants
+
+    def list_variants(self):
         return sorted([x.name for x in self.visit_dir.iterdir() if x.is_dir()])
 
-    def image_dir(self, subdir):
-        return self.visit_dir / subdir
+    def has_variant(self, variant):
+        return self.image_dir(variant).is_dir()
 
-    def image_file(self, subdir, image_name):
-        return self.image_dir(subdir) / (image_name + '.nii.gz')
+    def image_dir(self, variant):
+        return self.visit_dir / variant
 
-    def image_files(self, subdir, pattern='*'):
-        return self.image_dir(subdir).glob(pattern + '.nii.gz')
+    def image_file(self, image_name, variant):
+        return self.image_dir(variant) / (image_name + '.nii.gz')
 
-    def list_images(self, subdir, pattern='*'):
-        return sorted([x.name[:-7] for x in self.image_files(subdir, pattern)])
+    def list_images(self, variant, ext='.nii.gz'):
+        image_dir = self.image_dir(variant)
+        assert image_dir.is_dir(), f'Directory does not exist: {image_dir}'
+        return sorted([
+            x.name[:-len(ext)] for x in image_dir.glob('*' + ext)
+        ])
+
+    def parse_image_name(self, image_name):
+        parts = image_name.split('_')
+        return {
+            'subject_id': parts[0],
+            'state': parts[1],
+            'recon': parts[2],
+            'site_code': parts[3],
+            'condition': parts[4],
+        }
+
+    def check_image_name(self, image_name):
+        parsed = self.parse_image_name(image_name)
+        assert parsed['subject_id'] == self.subject_id
+        assert parsed['state'] in {'EXP', 'INSP'}
+        assert parsed['recon'] in {'STD', 'SHARP', 'B35f'},
+        assert parsed['condition'] in {'COPD'}
+
+    # Segmentation masks
 
     def mask_dir(self, subdir, image_name):
         return self.visit_dir / subdir / image_name
@@ -289,4 +210,107 @@ class COPDGeneVisit(object):
                 name=fix_image_name
             ))
         return disps
+
+
+class COPDGeneSubject:
+
+    def __init__(self, data_root, subject_id, visit_names=None):
+        self.data_root = pathlib.Path(data_root)
+        self.subject_id = subject_id
+        self.visit_names = visit_names or self.list_visits()
+        self.visits = []
+        for visit_name in self.visit_names:
+            visit = COPDGeneVisit(data_root, subject_id, visit_name)
+            self.visits.append(visit)
+
+    def __len__(self):
+        return len(self.visits)
+
+    def __getitem__(self, idx):
+        return self.visits[idx]
+
+    def __repr__(self):
+        return f'{type(self).__name__}(data_root={self.data_root}, subject_id={self.subject_id}, #visits={len(self)})'
+
+    @property
+    def subject_dir(self):
+        return self.data_root / 'Images' / self.subject_id
+
+    def list_visits(self):
+        return sorted([x.name for x in self.subject_dir.iterdir()])
+
+    def load_images(self, subdir):
+        images = []
+        for visit in self.visits:
+            images.append(visit.load_images(subdir))
+        return images
+
+    def load_metadata(self, subdir):
+        metadata = []
+        for visit in self.visits:
+            m = visit.load_metadata(subdir)
+            metadata.append(m)
+        return pd.concat(metadata)
+
+
+class COPDGene:
+
+    def __init__(self, data_root, subject_ids=None, visit_names=None):
+        self.data_root = pathlib.Path(data_root)
+        self.subject_ids = subject_ids or self.list_subjects()
+        self.subjects = []
+        for subject_id in self.subject_ids:
+            self.subjects.append(subject)
+
+    def __len__(self):
+        return len(self.subjects)
+
+    def __getitem__(self, idx):
+        return self.subjects[idx]
+
+    def __repr__(self):
+        return f'{type(self).__name__}(data_root={self.data_root}, #subjects={len(self)})'
+
+    @property
+    def image_root(self):
+        return self.data_root / 'Images'
+
+    def list_subjects(self):
+        return sorted([x.name for x in self.image_root.iterdir()])
+
+    def load_metadata(self, subdir):
+        metadata = []
+        for subject in self.subjects:
+            m = subject.load_metadata(subdir)
+            metadata.append(m)
+        return pd.concat(metadata)
+
+    def get_examples(
+        self,
+        image_dir='Resized',
+        mask_dir='TotalSegment',
+        mask_roi='lung_regions',
+        mesh_dir='pygalmesh',
+        mesh_version=10,
+        disp_dir='CorrField'
+    ):
+        examples = []
+        for subject in self.subjects:
+            for visit in subject.visits:
+                for fix_name in visit.list_images(image_dir):
+                    if '_SHARP_' in fix_name:
+                        continue
+                    if '_INSP_' in fix_name:
+                        mov_name = fix_name.replace('_INSP_', '_EXP_')
+                    elif '_EXP_' in fix_name:
+                        mov_name = fix_name.replace('_EXP_', '_INSP_')
+                    examples.append({
+                        'name': visit.image_file(image_dir, fix_name).name[:-7],
+                        'anat_file': visit.image_file(image_dir, fix_name),
+                        'disp_file': visit.disp_file(disp_dir, fix_name, mov_name),
+                        'mask_file': visit.mask_file(mask_dir, fix_name, mask_roi),
+                        'mesh_file': visit.mesh_file(mesh_dir, fix_name, mask_roi, mesh_version),
+                        'has_labels': True
+                    })
+        return examples
 
