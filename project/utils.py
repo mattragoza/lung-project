@@ -20,20 +20,33 @@ def set_random_seed(random_seed=None):
     torch.manual_seed(random_seed)
 
 
-def as_xarray(a, dims=None, coords=None, name=None, resolution=None):
-    if isinstance(a, torch.Tensor):
+def as_xarray(a, dims=None, coords=None, resolution=None, **kwargs):
+
+    if isinstance(a, torch.Tensor): # convert to numpy array
         a = a.detach().cpu().numpy()
-    if dims is None:
+
+    if dims is None: # auto-generate dimension names
         dims = [f'dim{i}' for i in range(a.ndim)]
-    if coords is None:
-        if resolution is not None:
-            res = dict(zip(['x', 'y', 'z'], resolution))
-            coords = {
-                d: np.arange(a.shape[i]) * res.get(d, 1) for i, d in enumerate(dims)
-            }
+
+    if coords is None: # auto-generate coordinates
+        coords = {}
+
+    if resolution is not None: # convert to resolution map
+        assert len(resolution) == 3, 'resolution must be a 3-tuple for (x,y,z)'
+        res_map = {'x': resolution[0], 'y': resolution[1], 'z': resolution[2]}
+    else:
+        res_map = {}
+
+    final_coords = {}
+    for i, dim in enumerate(dims):
+        if dim in coords:
+            final_coords[dim] = coords[dim]
+        elif dim in res_map:
+            final_coords[dim] = np.arange(a.shape[i]) * res_map[dim]
         else:
-            coords = {d: np.arange(a.shape[i]) for i, d in enumerate(dims)}
-    return xr.DataArray(a, dims=dims, coords=coords, name=name)
+            final_coords[dim] = np.arange(a.shape[i])
+
+    return xr.DataArray(a, dims=dims, coords=final_coords, **kwargs)
 
 
 def timer(sync):

@@ -1,8 +1,10 @@
-from collections import defaultdict
-from itertools import permutations
+from collections import defaultdict, deque
+from itertools import combinations, permutations
 import numpy as np
+import scipy as sp
 import meshio
 import pygalmesh
+import nibabel as nib
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -12,116 +14,240 @@ import fenics as fe
 from mpi4py import MPI
 import dolfin
 
-
-def save_mesh_meshio(mesh_file, mesh, cell_blocks):
-    mesh_cells = [(mesh.cells[i].type, mesh.cells[i].data) for i in cell_blocks]
-    meshio.write_points_cells(mesh_file, mesh.points, mesh_cells)
-    meshio.xdmf.write(mesh_file, mesh)
+from .segmentation import LUNG_LABEL, AIRWAY_LABEL, VESSEL_LABEL
 
 
-def load_mesh_fenics(mesh_file, has_labels=True, verbose=False):
+def get_used_point_indices(mesh):
+    return np.unique(
+        np.concatenate([block.data.ravel() for block in mesh.cells])
+    )
+
+
+def check_used_points(mesh):
+    point_is_used = np.zeros(mesh.points.shape[0], dtype=bool)
+    used_point_indices = get_used_point_indices(mesh)
+    point_is_used[used_point_indices] = True
+    return point_is_used
+
+
+def count_unused_points(mesh):
+    point_is_used = check_used_points(mesh)
+    return (~point_is_used).sum()
+
+
+def remove_unused_points(mesh):
+
+    # get indices of points used in cells
+    used_point_indices = get_used_point_indices(mesh)
+
+    # filter unused points
+    new_points = mesh.points[used_point_indices]
+
+    # filter point data, if present
+    new_point_data = {}
+    for key, value in mesh.point_data.items():
+        new_point_data[key] = value[used_point_indices]
+
+    # build mapping from old to new point indices
+    index_map = -np.ones(mesh.points.shape[0], dtype=int)
+    index_map[used_point_indices] = np.arange(len(used_point_indices))
+    
+    # reindex points in cell blocks
+    new_cells = []
+    for block in mesh.cells:
+        new_data = index_map[block.data]
+        new_block = meshio.CellBlock(block.type, new_data)
+        new_cells.append(new_block)
+
+    return meshio.Mesh(
+        points=new_points,
+        cells=new_cells,
+        cell_data=mesh.cell_data
+    )
+
+
+def construct_label_map(mesh, mask, resolution, label_key='medit:ref'):
+
+    tetrahedra = mesh.cells_dict['tetra']
+    barycenters = mesh.points[tetrahedra].mean(axis=1)
+    mask_coords = barycenters / resolution
+    mask_values = sp.ndimage.map_coordinates(
+        mask, mask_coords.T, order=0, mode='nearest'
+    ).astype(int)
+
+    mesh_labels = mesh.cell_data_dict[label_key]['tetra']
+    label_map = -np.ones(mesh_labels.max() + 1, dtype=int)
+    for mesh_label in np.unique(mesh_labels):
+        values = mask_values[mesh_labels == mesh_label]
+        most_common = np.bincount(values).argmax()
+        label_map[mesh_label] = most_common
+
+    return label_map
+
+
+def assign_cell_labels(mesh, mask, resolution, new_key='label', old_key='medit:ref'):
+    label_map = construct_label_map(mesh, mask, resolution, old_key)
+    new_cell_data = {
+        new_key: [label_map[l] for l in mesh.cell_data[old_key]]
+    }
+    return meshio.Mesh(
+        points=mesh.points,
+        cells=mesh.cells,
+        cell_data=new_cell_data
+    )
+
+
+def count_labeled_cells(mesh, cell_type, label_key, label_value):
+    cell_labels = mesh.cell_data_dict[label_key][cell_type]
+    cell_count = np.sum(cell_labels == label_value)
+    return cell_count
+
+
+def split_points_by_label(mesh, label_key='medit:ref'):
+    labels = mesh.point_data[label_key]
+    split = {}
+    for label in np.unique(labels):
+        mask = (labels == label)
+        sub_points = mesh.points[mask]
+        split[label] = meshio.Mesh(
+            points=sub_points,
+            cells=[], # no cells, just point cloud
+        )
+    return split
+
+
+def split_cells_by_label(mesh, label_key='medit:ref', cell_type='tetra'):
+    block_index = next(
+        i for i, b in enumerate(mesh.cells) if b.type == cell_type
+    )
+    labels = mesh.cell_data[label_key][block_index]
+    split = {}
+    for label in np.unique(labels):
+        mask = (labels == label)
+        sub_cells = mesh.cells[block_index].data[mask]
+        split[label] = meshio.Mesh(
+            points=mesh.points,
+            cells=[meshio.CellBlock(cell_type, sub_cells)]
+        )
+    return split
+
+
+def split_cells_by_type(mesh):
+    split = {}
+    for block in mesh.cells:
+        block_data = {k: [mesh.cell_data_dict[k][block.type]] for k in mesh.cell_data}
+        split[block.type] = meshio.Mesh(
+            points=mesh.points,
+            cells=[block],
+            cell_data=block_data
+        )
+    return split
+
+
+def count_connected_components(mesh, cell_type='tetra'):
+    cells = mesh.cells_dict[cell_type]
+
+    if cell_type == 'tetra':
+        face_indices = [[0,1,2], [0,1,3], [0,2,3], [1,2,3]]
+    elif cell_type == 'triangle':
+        face_indices = [[0,1], [1,2], [2,0]]
+    else:
+        raise ValueError(f'Unrecognized cell type: {cell_type}')
+
+    # build mapping from faces to incident cells
+    face_to_cells = defaultdict(list)
+    for cell_id, cell in enumerate(cells):
+        for inds in face_indices:
+            face = tuple(sorted(cell[inds]))
+            face_to_cells[face].append(cell_id)
+
+    # build adjacency list
+    adjacency = defaultdict(set)
+    for face, incident_cells in face_to_cells.items():
+        if len(incident_cells) == 2:
+            a, b = incident_cells
+            adjacency[a].add(b)
+            adjacency[b].add(a)
+
+    # traverse graph
+    visited = np.zeros(len(cells), dtype=bool)
+    n_components = 0
+
+    for start in range(len(cells)):
+        if visited[start]:
+            continue
+        n_components += 1
+        queue = deque([start])
+        while queue:
+            current = queue.pop()
+            if visited[current]:
+                continue
+            visited[current] = True
+            queue.extend(adjacency[current])
+
+    return n_components
+
+
+def generate_mesh_from_mask(mask, resolution):
+
+    mesh_raw = pygalmesh.generate_from_array(
+        mask.astype(np.uint16),
+        voxel_size=resolution,
+        max_cell_circumradius=min(resolution)*20,
+        max_facet_distance=min(resolution)*2,
+        verbose=True
+    )
+
+    mesh_labeled = assign_cell_labels(mesh_raw, mask, resolution)
+    assert count_labeled_cells(mesh_labeled, 'tetra', 'label', 0) == 0
+
+    mesh_cleaned = remove_unused_points(mesh_labeled)
+    assert count_unused_points(mesh_cleaned) == 0
+
+    num_components = count_connected_components(mesh_cleaned)
+    assert num_components > 0
+    if num_components > 1:
+        print(f'WARNING: mesh has {num_components} components')
+
+    return split_cells_by_type(mesh_cleaned)
+
+
+def generate_anatomical_mesh(visit, variant, image_name, mask_name='lung_regions'):
+
+    mask_path = visit.mask_file(variant, image_name, mask_name)
+    print(f'Loading {mask_path}')
+    mask_nifti = nib.load(mask_path)
+
+    print('Generating mesh from mask')
+    mesh_dict = generate_mesh_from_mask(
+        mask=mask_nifti.get_fdata(),
+        resolution=mask_nifti.header.get_zooms()
+    )
+
+    volume_path = visit.mesh_file(variant, image_name, mask_name, mesh_tag='volume')
+    print(f'Saving {volume_path}')
+    meshio.xdmf.write(volume_path, mesh_dict['tetra'])
+
+    surface_path = visit.mesh_file(variant, image_name, mask_name, mesh_tag='surface')
+    print(f'Saving {surface_path}')
+    meshio.xdmf.write(surface_path, mesh_dict['triangle'])
+
+
+def load_fenics_mesh(mesh_file, label_key='label', verbose=False):
     if verbose:
         print(f'Loading {mesh_file}...', end=' ')
     mesh = fe.Mesh()
     with fe.XDMFFile(MPI.COMM_WORLD, str(mesh_file)) as f:
         f.read(mesh)
         dim = mesh.geometry().dim()
-        if has_labels:
+        if label_key:
             cell_labels = dolfin.MeshFunction('size_t', mesh, dim)
-            f.read(cell_labels, 'c_labels')
+            f.read(cell_labels, label_key)
         else:
             cell_labels = None
     if verbose:
         print(mesh.num_vertices())
     return mesh, cell_labels
-
-
-def estimate_limit(x, expand=0.1):
-    x_min, x_max = np.min(x), np.max(x)
-    x_range = (x_max - x_min)
-    x_min -= expand * x_range / 2
-    x_max += expand * x_range / 2
-    return x_min, x_max
-
-
-def plot_mesh(vertices, facets, figsize=(6,6), **kwargs):
-    fig = plt.figure(figsize=figsize)
-    ax = fig.add_subplot(111, projection='3d', aspect='equal')
-    polys = Poly3DCollection(vertices[facets], **kwargs)
-    ax.add_collection(polys)
-    ax.set_xlim(estimate_limit(vertices.flatten()))
-    ax.set_ylim(estimate_limit(vertices.flatten()))
-    ax.set_zlim(estimate_limit(vertices.flatten()))
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
-    ax.set_zlabel('z')
-    return fig, ax
-
-
-def compute_angles_to_xy_plane(vertices, facets):
-    edges1 = vertices[facets[:,1]] - vertices[facets[:,0]]
-    edges2 = vertices[facets[:,2]] - vertices[facets[:,1]]
-    facet_normals = np.cross(edges1, edges2)
-    norms = np.linalg.norm(facet_normals, axis=1)
-    xy_normal = np.array([0, 0, 1])
-    angle_cos = (facet_normals @ xy_normal) / norms
-    return angle_cos
-
-
-def compute_angles_to_interior(vertices, facets, tetras):
-    edges1 = vertices[facets[:,1]] - vertices[facets[:,0]]
-    edges2 = vertices[facets[:,2]] - vertices[facets[:,1]]
-    facet_normals = np.cross(edges1, edges2)
-    facet_norms = np.linalg.norm(facet_normals, axis=1)
-    
-    facet_centroids = vertices[facets].mean(axis=1)
-    tetra_centroids = vertices[tetras].mean(axis=1)
-    facet_tetra_dists = (
-    	(facet_centroids[:,None,:] - tetra_centroids[None,:,:])**2
-    ).sum(axis=2)
-    nearest_tetras = np.argmin(facet_tetra_dists, axis=1)
-    nearest_tetra_centroids = tetra_centroids[nearest_tetras]
-
-    facet_offsets = facet_centroids - nearest_tetra_centroids
-    offset_norms = np.linalg.norm(facet_offsets, axis=1)
-    
-    angle_cos = (facet_normals * facet_offsets).sum(axis=1) / (facet_norms * offset_norms)
-    return angle_cos
-
-
-def smooth_facet_values(vertices, facets, facet_values, func, order=1):
-    '''
-    Args:
-        vertices: (N, 3) array of 3D vertex coordinates
-        facets: (M, 3) array of indices of triangle vertices
-        facet_values: (M, D) array of values assigned to facets
-        func: Reduces sets of facet values to a single value
-        order: Order of structure elements to define neighborhoods
-            For order=1, use common vertices
-            For order=2, use common edges
-    Returns:
-        new_facet_values: (M, D) array of values from applying
-            func to each facet's local neighborhood of values
-    '''
-    # mapping from elements to facets that share that element
-    common_elements = defaultdict(set)
-    for i, facet_vertices in enumerate(facets):
-        for element in permutations(facet_vertices, order):
-            common_elements[element].add(i)
-
-    # unordered sets of vertices for each facet
-    vertex_sets = [set(v) for v in facets]
-   
-    new_facet_values = np.zeros_like(facet_values)
-    for i, facet_vertices in enumerate(facets):
-        neighbor_values = []
-        for element in permutations(facet_vertices, order):
-            for j in common_elements[element]:
-                if vertex_sets[j] != vertex_sets[i]:
-                    neighbor_values.append(facet_values[j])
-        new_facet_values[i] = func(neighbor_values)
-            
-    return new_facet_values
 
 
 def check_disconnected_nodes(mesh):
@@ -137,42 +263,3 @@ def check_disconnected_nodes(mesh):
     print(len(unconnected_nodes), num_vertices)
     return unconnected_nodes
 
-
-def check_used_points(mesh):
-    point_inds = np.arange(mesh.points.shape[0])
-    point_used = np.zeros_like(point_inds, dtype=bool)
-    for cells in mesh.cells:
-        used_in_cells = np.unique(cells.data)
-        point_used |= np.isin(point_inds, used_in_cells)
-        
-    return point_used
-
-
-def remove_unused_points(mesh):
-
-    points = mesh.points
-    tri_cells = mesh.cells[0].data
-    tet_cells = mesh.cells[1].data
-    
-    # identify the used points
-    points_used = np.unique(np.concatenate([
-        tri_cells.flatten(), tet_cells.flatten()
-    ]))
-    
-    # mapping from old indices to new indices
-    new_indices = np.zeros(points.shape[0], dtype=int)
-    new_indices[points_used] = np.arange(len(points_used))
-    
-    # filter points to keep only the used points
-    new_points = points[points_used]
-    
-    # update the cell indices
-    new_tri_cells = new_indices[tri_cells]
-    new_tet_cells = new_indices[tet_cells]
-    
-    new_mesh = meshio.Mesh(
-        points=new_points,
-        cells=[('triangle', new_tri_cells), ('tetra', new_tet_cells)],
-    )
-    new_mesh.cell_data['c_labels'] = [mesh.get_cell_data('medit:ref', 'tetra')]
-    return new_mesh

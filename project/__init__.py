@@ -3,6 +3,7 @@ from . import (
 	evaluation,
 	imaging,
 	copdgene,
+	deformation,
 	interpolation,
 	meshing,
 	model,
@@ -10,6 +11,7 @@ from . import (
 	pde,
 	phantom,
 	registration,
+	segmentation,
 	training,
 	utils,
 	visual

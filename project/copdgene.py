@@ -5,23 +5,66 @@ import nibabel as nib
 import xarray as xr
 
 from . import meshing
+from . import utils
 
 
 class COPDGeneVisit:
-
-    def __init__(self, data_root, subject_id, visit_name):
+    '''
+    <data_root>/Images/<subject_id>/<visit_name>/
+        <variant>/
+            <image_name>.nii.gz
+            TotalSegmentator/
+                <image_name>/
+                    <roi_name>.nii.gz
+            pygalmesh/
+            CorrField/
+    '''
+    def __init__(self, data_root, subject_id, visit_name, site_code=None):
         self.data_root = pathlib.Path(data_root)
         self.subject_id = subject_id
         self.visit_name = visit_name
+        self.site_code = site_code
 
     def __repr__(self):
-        return f'{type(self).__name__}(data_root={self.data_root}, subject_id={self.subject_id}, visit_name={self.visit_name})'
+        return (
+            f'{type(self).__name__}('
+            f'data_root={self.data_root}, '
+            f'subject_id={self.subject_id}, '
+            f'visit_name={self.visit_name}, '
+            f'site_code={self.site_code})'
+        )
+
+    # Path helpers
 
     @property
     def visit_dir(self):
         return self.data_root / 'Images' / self.subject_id / self.visit_name
 
-    # Image variants
+    def image_dir(self, variant):
+        return self.visit_dir / variant
+
+    def image_file(self, variant, image_name, ext='.nii.gz'):
+        return self.image_dir(variant) / (image_name + ext)
+
+    def mask_root(self, variant):
+        return self.image_dir(variant) / 'TotalSegmentator'
+
+    def mask_dir(self, variant, image_name):
+        return self.mask_root(variant) / image_name
+
+    def mask_file(self, variant, image_name, mask_name, ext='.nii.gz'):
+        return self.mask_dir(variant, image_name) / (mask_name + ext)
+
+    def mesh_root(self, variant):
+        return self.image_dir(variant) / 'pygalmesh'
+
+    def mesh_dir(self, variant, image_name):
+        return self.mesh_root(variant) / image_name
+
+    def mesh_file(self, variant, image_name, mask_name, mesh_tag, ext='.xdmf'):
+        return self.mesh_dir(variant, image_name) / f'{mask_name}_{mesh_tag}{ext}'
+
+    # Directory exploration
 
     def list_variants(self):
         return sorted([x.name for x in self.visit_dir.iterdir() if x.is_dir()])
@@ -29,57 +72,131 @@ class COPDGeneVisit:
     def has_variant(self, variant):
         return self.image_dir(variant).is_dir()
 
-    def image_dir(self, variant):
-        return self.visit_dir / variant
-
-    def image_file(self, image_name, variant):
-        return self.image_dir(variant) / (image_name + '.nii.gz')
-
     def list_images(self, variant, ext='.nii.gz'):
         image_dir = self.image_dir(variant)
         assert image_dir.is_dir(), f'Directory does not exist: {image_dir}'
-        return sorted([
-            x.name[:-len(ext)] for x in image_dir.glob('*' + ext)
-        ])
+        return sorted([x.name[:-len(ext)] for x in image_dir.glob('*' + ext)])
 
-    def parse_image_name(self, image_name):
+    def has_image(self, variant, image_name):
+        return self.image_file(variant, image_name).is_file()
+
+    def has_masks(self, variant, image_name):
+        return self.mask_dir(variant, image_name).is_dir()
+
+    def list_mask_rois(self, variant, image_name, ext='.nii.gz'):
+        mask_dir = self.mask_dir(variant, image_name)
+        assert mask_dir.is_dir(), f'Directory does not exist: {mask_dir}'
+        return sorted([x.name[:-len(ext)] for x in mask_dir.glob('*' + ext)])
+
+    def has_mask_roi(self, variant, image_name, roi):
+        return self.mask_file(variant, image_name, roi).is_file()
+
+    # Image name parsing and validation
+
+    def parse_image_name(self, image_name, validate=True):
         parts = image_name.split('_')
-        return {
+        parsed = {
             'subject_id': parts[0],
             'state': parts[1],
             'recon': parts[2],
             'site_code': parts[3],
             'condition': parts[4],
         }
+        if validate:
+            assert parsed['subject_id'] == self.subject_id, (parsed['subject_id'], self.subject_id)
+            assert parsed['state'] in {'EXP', 'INSP'}, parsed['state']
+            assert parsed['recon'] in {'STD', 'SHARP', 'B35f', 'LUNG'}, parsed['recon']
+            assert parsed['site_code'] == self.site_code, (parsed['site_code'], self.site_code)
+            assert parsed['condition'] in {'COPD'}, parsed['condition']
+        return parsed
 
-    def check_image_name(self, image_name):
-        parsed = self.parse_image_name(image_name)
-        assert parsed['subject_id'] == self.subject_id
-        assert parsed['state'] in {'EXP', 'INSP'}
-        assert parsed['recon'] in {'STD', 'SHARP', 'B35f'},
-        assert parsed['condition'] in {'COPD'}
+    def build_image_name(self, state, recon):
+        return f'{self.subject_id}_{state}_{recon}_{self.site_code}_COPD'
 
-    # Segmentation masks
+    def has_valid_image_pair(self, variant, recon, ext='.nii.gz'):
+        for state in ['INSP', 'EXP']:
+            image_name = self.build_image_name(state, recon)
+            image_path = self.image_file(variant, image_name, ext)
+            if not image_path.is_file():
+                print(f'File does not exist: {image_path}')
+                return False
+            try: # check if loadable
+                nib.load(image_path)
+            except Exception:
+                print(f'Failed to load file: {image_path}')
+                return False
+        return True
 
-    def mask_dir(self, subdir, image_name):
-        return self.visit_dir / subdir / image_name
+    # Metadata loaders
 
-    def mask_file(self, subdir, image_name, roi):
-        return self.mask_dir(subdir, image_name) / (roi + '.nii.gz')
+    def load_metadata_from_filenames(self, variant, filters=None):
+        rows = []
+        for image_name in self.list_images(variant):
+            parsed = self.parse_image_name(image_name)
+            if filters and any(parsed.get(k) != filters[k] for k in filters):
+                continue
+            parsed.update({
+                'subject_id': self.subject_id,
+                'visit_name': self.visit_name,
+                'site_code': self.site_code,
+                'variant': variant,
+                'image_name': image_name
+            })
+            rows.append(parsed)
+        return pd.DataFrame(rows)
 
-    def mask_files(self, subdir, image_name, pattern='*'):
-        return self.mask_dir(subdir, image_name).glob(pattern + '.nii.gz')
+    def load_metadata_from_headers(self, variant, filters=None):
+        rows = []
+        for tup in self.load_metadata_from_filenames(variant, filters).itertuples():
+            image = nib.load(self.image_file(variant, tup.image_name))
+            dct = tup._asdict()
+            dct.update({
+                'shape': image.header.get_data_shape(),
+                'resolution': image.header.get_zooms(),
+            })
+            rows.append(dct)
+        return pd.DataFrame(rows)
 
-    def list_masks(self, subdir, image_name, pattern='*'):
-        return sorted([
-            x.name[:-7] for x in self.mask_files(subdir, image_name, pattern)
-        ])
+    # Image loaders
 
-    def mesh_dir(self, subdir, image_name):
-        return self.visit_dir / subdir / image_name
+    def load_image(self, variant, image_name):
+        image_path = self.image_file(variant, image_name)
+        image = nib.load(image_path)
+        return utils.as_xarray(
+            image.get_fdata(),
+            dims=['x', 'y', 'z'],
+            resolution=image.header.get_zooms(),
+            name=image_name
+        )
 
-    def mesh_file(self, subdir, image_name, mask_roi, mesh_version):
-        return self.mesh_dir(subdir, image_name) / f'{mask_roi}_{mesh_version}.xdmf'
+    def load_images(self, variant, recon, site_code):
+        images = {}
+        for state in ['INSP', 'EXP']:
+            image_name = self.build_image_name(state, recon, site_code)
+            images[state] = self.load_image(variant, image_name)
+        return images
+
+    def load_masks(self, variant, image_name, roi_list):
+        masks = []
+
+        image_path = self.image_file(variant, image_name)
+        image = nib.load(image_path)
+        resolution = image.header.get_zooms()
+
+        for roi in roi_list:
+            mask_path = self.mask_file(variant, image_name, roi)
+            mask = nib.load(mask_path)
+            assert mask.shape == image.shape
+            masks.append(mask.get_fdata())
+
+        return utils.as_xarray(
+            np.stack(masks, axis=0),
+            dims=['roi', 'x', 'y', 'z'],
+            coords={'roi': roi_list},
+            resolution=resolution
+        )
+
+    # Displacement fields
 
     def disp_dir(self, subdir, fix_image_name):
         return self.visit_dir / subdir / fix_image_name
@@ -95,42 +212,6 @@ class COPDGeneVisit:
             x.name[:-7] for x in self.disp_files(subdir, fix_image_name, pattern)
         ])
 
-    def load_metadata(self, subdir, pattern='*'):
-        metadata = []
-        for image_name in self.list_images(subdir, pattern):
-            image_file = self.image_file(subdir, image_name)
-            image = nib.load(image_file)
-            shape = image.header.get_data_shape()
-            resolution = image.header.get_zooms()
-            metadata.append({
-                'subject_id': self.subject_id,
-                'visit_name': self.visit_name,
-                'image_name': image_name,
-                'shape': shape,
-                'resolution': resolution
-            })
-        return pd.DataFrame(metadata)
-
-    def load_images(self, subdir, pattern='*'):
-        images = []
-        for image_name in self.list_images(subdir, pattern):
-            image_file = self.image_file(subdir, image_name)
-            print(f'Loading {image_file}')
-            image = nib.load(image_file)
-            shape = image.header.get_data_shape()
-            resolution = image.header.get_zooms()
-            print(image_file, shape)
-            images.append(xr.DataArray(
-                data=image.get_fdata(),
-                dims=['x', 'y', 'z'],
-                coords={
-                    'x': np.arange(shape[0]) * resolution[0],
-                    'y': np.arange(shape[1]) * resolution[1],
-                    'z': np.arange(shape[2]) * resolution[2],
-                },
-                name=image_name
-            ))
-        return images
 
     def save_images(self, subdir, images):
         self.image_dir(subdir).mkdir(parents=True, exist_ok=True)
@@ -144,32 +225,6 @@ class COPDGeneVisit:
             nifti = nib.nifti1.Nifti1Image(image, affine)
             nib.save(nifti, image_file)
 
-    def load_masks(self, image_dir, mask_dir):
-        masks = []
-        for image_name in self.list_images(image_dir):
-            image_masks, mask_rois = [], []
-            for mask_roi in self.list_masks(mask_dir, image_name):
-                mask_file = self.mask_file(mask_dir, image_name, mask_roi)
-                print(f'Loading {mask_file}')
-                mask = nib.load(mask_file)
-                shape = mask.header.get_data_shape()
-                resolution = mask.header.get_zooms()
-                print(mask_file, shape)
-                image_masks.append(mask.get_fdata())
-                mask_rois.append(mask_roi)
-
-            masks.append(xr.DataArray(
-                data=np.stack(image_masks),
-                dims=['roi', 'x', 'y', 'z'],
-                coords={
-                    'roi': mask_rois,
-                    'x': np.arange(shape[0]) * resolution[0],
-                    'y': np.arange(shape[1]) * resolution[1],
-                    'z': np.arange(shape[2]) * resolution[2],
-                },
-                name=image_name
-            ))
-        return masks
 
     def load_meshes(self, image_dir, mesh_dir, mask_roi, mesh_version):
         meshes = []
@@ -212,45 +267,25 @@ class COPDGeneVisit:
         return disps
 
 
-class COPDGeneSubject:
+class COPDGeneDataset:
 
-    def __init__(self, data_root, subject_id, visit_names=None):
+    @classmethod
+    def from_csv(cls, data_file, *args, **kwargs):
+        df = pd.read_csv(data_file, sep='\t', low_memory=False)
+        return cls(df, *args, **kwargs)
+
+    def __init__(self, df, data_root, visit_name='Phase-1'):
+        self.df = df
         self.data_root = pathlib.Path(data_root)
-        self.subject_id = subject_id
-        self.visit_names = visit_names or self.list_visits()
-        self.visits = []
-        for visit_name in self.visit_names:
-            visit = COPDGeneVisit(data_root, subject_id, visit_name)
-            self.visits.append(visit)
+        self.visit_name = visit_name
 
     def __len__(self):
-        return len(self.visits)
+        return len(self.df)
 
     def __getitem__(self, idx):
-        return self.visits[idx]
-
-    def __repr__(self):
-        return f'{type(self).__name__}(data_root={self.data_root}, subject_id={self.subject_id}, #visits={len(self)})'
-
-    @property
-    def subject_dir(self):
-        return self.data_root / 'Images' / self.subject_id
-
-    def list_visits(self):
-        return sorted([x.name for x in self.subject_dir.iterdir()])
-
-    def load_images(self, subdir):
-        images = []
-        for visit in self.visits:
-            images.append(visit.load_images(subdir))
-        return images
-
-    def load_metadata(self, subdir):
-        metadata = []
-        for visit in self.visits:
-            m = visit.load_metadata(subdir)
-            metadata.append(m)
-        return pd.concat(metadata)
+        row = self.df.iloc[idx]
+        visit = COPDGeneVisit(self.data_root, row.sid, self.visit_name, row.ccenter)
+        return row, visit
 
 
 class COPDGene:
@@ -260,6 +295,7 @@ class COPDGene:
         self.subject_ids = subject_ids or self.list_subjects()
         self.subjects = []
         for subject_id in self.subject_ids:
+            subject = COPDGeneSubject(self.data_root, subject_id, visit_names)
             self.subjects.append(subject)
 
     def __len__(self):
@@ -314,3 +350,10 @@ class COPDGene:
                     })
         return examples
 
+
+def is_nifti_file(path):
+    try:
+        nib.load(path)
+        return True
+    except Exception:
+        return False
