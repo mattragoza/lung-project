@@ -9,14 +9,13 @@ TOTAL_TASK_ROIS = [
     'lung_upper_lobe_left',
     'lung_lower_lobe_left',
 ]
-VESSEL_TASK_ROIS = [
+VESSELS_TASK_ROIS = [
     'lung_trachea_bronchia',
     'lung_vessels'
 ]
-
-LUNG_LABEL = 1
-AIRWAY_LABEL = 6
-VESSEL_LABEL = 7
+LUNGS_LABEL = 1
+AIRWAYS_LABEL = 6
+VESSELS_LABEL = 7
 
 
 def run_segmentation_tasks(visit, variant, image_name):
@@ -53,33 +52,83 @@ def run_segmentation_tasks(visit, variant, image_name):
 
 	print(f'Combined mask saved to {mask_path}')
 
- 
-def count_connected_components(mask):
-    return skimage.measure.label(mask, background=0, return_num=True)[1]
+
+def create_lung_regions_mask(
+    lungs_mask,
+    airways_mask,
+    vessels_mask,
+    lungs_kws,
+    airways_kws,
+    vessels_kws,
+    verbose=True
+):
+    print('Filtering connected components: lungs')
+    lungs_mask = filter_connected_components(
+        lungs_mask, verbose=verbose, **lungs_kws
+    )
+
+    print('Filtering connected components: airways')
+    airways_mask = filter_connected_components(
+        airways_mask, verbose=verbose, **airways_kws
+    )
+
+    print('Filtering connected components: vessels')
+    vessels_mask = filter_connected_components(
+        vessels_mask, verbose=verbose, **vessels_kws
+    )
+
+    print('Combining into lung regions mask')
+    regions_mask = np.zeros(lungs_mask.shape, dtype=np.uint16)
+    regions_mask[lungs_mask] = LUNGS_LABEL
+    regions_mask[airways_mask] = AIRWAYS_LABEL
+    regions_mask[vessels_mask] = VESSELS_LABEL
+
+    for i in [1, 2, 3]:
+        num_components = count_connected_components(regions_mask > 0, connectivity=i)
+        print(f'Mask has {num_components} components ({i}-connectivity)')
+
+    return regions_mask
 
 
-def filter_connected_components(mask, min_count=30, min_percent=0, keep_largest=True, verbose=True, label_name=None):
-
+def filter_connected_components(
+    mask,
+    min_count=30,
+    min_percent=0,
+    keep_largest=True,
+    connectivity=None,
+    max_components=None,
+    verbose=True
+):
     # label connected regions in the mask and measure their size
-    labeled_mask, n_labels = skimage.measure.label(mask, background=0, return_num=True)
+    labeled_mask, num_labels = skimage.measure.label(
+        mask, background=0, return_num=True, connectivity=connectivity
+    )
     labels, voxel_counts = np.unique(labeled_mask, return_counts=True)
-    print(f'[{label_name}] Mask has {n_labels} connected components')
+    if verbose:
+        print(f'  Input mask has {num_labels} components')
     
     total_voxels = voxel_counts[1:].sum() # exclude background
     filtered_mask = np.zeros_like(mask, dtype=bool)
 
     total_dropped = 0
+    total_components = 0
     for idx in np.argsort(-voxel_counts[1:]):
         label = labels[idx+1]
         count = voxel_counts[idx+1]
         percent = count / total_voxels * 100
-        if count >= min_count and percent >= min_percent:
+        if verbose > 1:
+            print(f'    Component {label} has {count} voxels ({percent:.4f}%): ', end='')
+        if count >= min_count and percent >= min_percent and not (max_components and total_components >= max_components):
             filtered_mask[labeled_mask == label] = True
-            print(f'[{label_name}] Component {label} has {count} voxels ({percent:.4f}%)')
+            if verbose > 1:
+                print('keep')
+            total_components += 1
         else:
             total_dropped += count
+            if verbose > 1:
+                print('drop')
 
-    if keep_largest and filtered_mask.sum() == 0 and n_labels > 0:
+    if keep_largest and filtered_mask.sum() == 0 and num_labels > 0:
         idx = np.argmax(voxel_counts[1:])
         label = labels[idx+1]
         count = voxel_counts[idx+1]
@@ -87,59 +136,19 @@ def filter_connected_components(mask, min_count=30, min_percent=0, keep_largest=
         filtered_mask = (labeled_mask == label)
         total_dropped -= count
 
-    percent = total_dropped / total_voxels * 100
-    print(f'[{label_name}] {total_dropped} voxels were dropped ({percent:.4f}%)')
+    if verbose:
+        percent = total_dropped / total_voxels * 100
+        print(f'    {total_dropped} voxels were dropped ({percent:.4f}%)')
+
+        num_final = count_connected_components(filtered_mask, connectivity)
+        print(f'  Output mask has {num_final} components')
 
     return filtered_mask
 
 
-def create_lung_region_mask(visit, variant, image_name, mask_name='lung_regions'):
+def count_connected_components(mask, connectivity=None):
+    return skimage.measure.label(
+        mask, background=0, return_num=True, connectivity=connectivity
+    )[1]
 
-    lung_file = visit.mask_file(variant, image_name, mask_name='lung_combined_mask')
-    print(f'Loading lung mask from {lung_file}')
-
-    lung_nifti = nib.load(lung_file)
-    lung_mask = lung_nifti.get_fdata().astype(bool)
-    assert lung_mask.sum() > 0
-
-    print('Filtering lung mask')
-    lung_mask = filter_connected_components(lung_mask, min_count=5000, min_percent=1, label_name='lung')
-
-    airway_file = visit.mask_file(variant, image_name, mask_name='lung_trachea_bronchia')
-    print(f'Loading airway mask from {airway_file}')
-
-    airway_mask = nib.load(airway_file).get_fdata().astype(bool)
-    assert airway_mask.sum() > 0
-
-    print('Filtering airway mask')
-    airway_mask = filter_connected_components(airway_mask, min_count=100, min_percent=0, label_name='airways')
-    
-    vessel_file = visit.mask_file(variant, image_name, mask_name='lung_vessels')
-    print(f'Loading vessel mask from {vessel_file}')
-
-    vessel_mask = nib.load(vessel_file).get_fdata().astype(bool)
-    assert vessel_mask.sum() > 0
-
-    print('Filtering vessel mask')
-    vessel_mask = filter_connected_components(vessel_mask, min_count=100, min_percent=1, label_name='vessels')
-    vessel_mask &= (lung_mask | airway_mask)
-
-    print(f'Combining lung region masks')
-    regions = [
-    	lung_mask   * LUNG_LABEL,
-    	airway_mask * AIRWAY_LABEL,
-    	vessel_mask * VESSEL_LABEL,
-    ]
-    combined = np.stack(regions).max(axis=0).astype(np.uint16)
-
-    num_components = count_connected_components(combined)
-    assert num_components > 0
-    if num_components > 1:
-        print(f'WARNING: mask has {num_components} components')
-
-    regions_file = visit.mask_file(variant, image_name, mask_name)
-    print(f'Saving lung region mask to {regions_file}')
-
-    regions_nifti = nib.nifti1.Nifti1Image(combined, lung_nifti.affine)
-    nib.save(regions_nifti, regions_file)
 

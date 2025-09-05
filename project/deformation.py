@@ -6,9 +6,8 @@ import torch
 import corrfield
 
 
-def create_deformation_field(
-	visit, variant, source_name, target_name, mask_name='lung_combined_mask'
-):
+def run_corrfield_registration():
+
 	source_path = visit.image_file(variant, source_name)
 	source_nifti = nib.load(source_path)
 	source_array = source_nifti.get_fdata()

@@ -14,25 +14,63 @@ import fenics as fe
 from mpi4py import MPI
 import dolfin
 
-from .segmentation import LUNG_LABEL, AIRWAY_LABEL, VESSEL_LABEL
+
+def generate_mesh_from_mask(mask, resolution, **kwargs):
+
+    mesh = pygalmesh.generate_from_array(
+        mask.astype(np.uint16),
+        voxel_size=resolution,
+        verbose=True,
+        **kwargs
+    )
+    mesh = assign_cell_labels(mesh, mask, resolution)
+    assert count_labeled_cells(mesh, 'tetra', 'label', 0) == 0
+
+    num_before = count_unused_points(mesh)
+    mesh = remove_unused_points(mesh)
+
+    num_after = count_unused_points(mesh)
+    print(f'Removed {num_before - num_after} unused points')
+    assert num_after == 0
+
+    print('Final mesh: ', mesh)
+
+    num_components = count_connected_components(mesh)
+    assert num_components > 0
+    print(f'Mesh has {num_components} components')
+
+    return split_cells_by_type(mesh)
 
 
-def get_used_point_indices(mesh):
-    return np.unique(
-        np.concatenate([block.data.ravel() for block in mesh.cells])
+def assign_cell_labels(mesh, mask, resolution, new_key='label', old_key='medit:ref'):
+    label_map = construct_label_map(mesh, mask, resolution, old_key)
+    new_cell_data = {
+        new_key: [label_map[l] for l in mesh.cell_data[old_key]]
+    }
+    return meshio.Mesh(
+        points=mesh.points,
+        cells=mesh.cells,
+        cell_data=new_cell_data
     )
 
 
-def check_used_points(mesh):
-    point_is_used = np.zeros(mesh.points.shape[0], dtype=bool)
-    used_point_indices = get_used_point_indices(mesh)
-    point_is_used[used_point_indices] = True
-    return point_is_used
+def construct_label_map(mesh, mask, resolution, label_key='medit:ref'):
 
+    tetrahedra = mesh.cells_dict['tetra']
+    barycenters = mesh.points[tetrahedra].mean(axis=1)
+    mask_coords = barycenters / resolution
+    mask_values = sp.ndimage.map_coordinates(
+        mask, mask_coords.T, order=0, mode='nearest'
+    ).astype(int)
 
-def count_unused_points(mesh):
-    point_is_used = check_used_points(mesh)
-    return (~point_is_used).sum()
+    mesh_labels = mesh.cell_data_dict[label_key]['tetra']
+    label_map = -np.ones(mesh_labels.max() + 1, dtype=int)
+    for mesh_label in np.unique(mesh_labels):
+        values = mask_values[mesh_labels == mesh_label]
+        most_common = np.bincount(values).argmax()
+        label_map[mesh_label] = most_common
+
+    return label_map
 
 
 def remove_unused_points(mesh):
@@ -66,35 +104,22 @@ def remove_unused_points(mesh):
     )
 
 
-def construct_label_map(mesh, mask, resolution, label_key='medit:ref'):
-
-    tetrahedra = mesh.cells_dict['tetra']
-    barycenters = mesh.points[tetrahedra].mean(axis=1)
-    mask_coords = barycenters / resolution
-    mask_values = sp.ndimage.map_coordinates(
-        mask, mask_coords.T, order=0, mode='nearest'
-    ).astype(int)
-
-    mesh_labels = mesh.cell_data_dict[label_key]['tetra']
-    label_map = -np.ones(mesh_labels.max() + 1, dtype=int)
-    for mesh_label in np.unique(mesh_labels):
-        values = mask_values[mesh_labels == mesh_label]
-        most_common = np.bincount(values).argmax()
-        label_map[mesh_label] = most_common
-
-    return label_map
-
-
-def assign_cell_labels(mesh, mask, resolution, new_key='label', old_key='medit:ref'):
-    label_map = construct_label_map(mesh, mask, resolution, old_key)
-    new_cell_data = {
-        new_key: [label_map[l] for l in mesh.cell_data[old_key]]
-    }
-    return meshio.Mesh(
-        points=mesh.points,
-        cells=mesh.cells,
-        cell_data=new_cell_data
+def get_used_point_indices(mesh):
+    return np.unique(
+        np.concatenate([block.data.ravel() for block in mesh.cells])
     )
+
+
+def check_used_points(mesh):
+    point_is_used = np.zeros(mesh.points.shape[0], dtype=bool)
+    used_point_indices = get_used_point_indices(mesh)
+    point_is_used[used_point_indices] = True
+    return point_is_used
+
+
+def count_unused_points(mesh):
+    point_is_used = check_used_points(mesh)
+    return (~point_is_used).sum()
 
 
 def count_labeled_cells(mesh, cell_type, label_key, label_value):
@@ -188,52 +213,26 @@ def count_connected_components(mesh, cell_type='tetra'):
     return n_components
 
 
-def generate_mesh_from_mask(mask, resolution):
-
-    mesh_raw = pygalmesh.generate_from_array(
-        mask.astype(np.uint16),
-        voxel_size=resolution,
-        max_cell_circumradius=min(resolution)*20,
-        max_facet_distance=min(resolution)*2,
-        verbose=True
+def apply_affine_to_mesh(mesh, resolution, affine):
+    # pygalmesh uses voxel spacing to generate the mesh,
+    # but not the full affine. we need to use the spacing
+    # and affine to convert the mesh to world coordinates.
+    resolution = np.asarray(resolution)
+    R = affine[:3,:3] @ np.diag(1.0 / resolution)
+    t = affine[:3, 3]
+    new_points = mesh.points @ R.T + t
+    return meshio.Mesh(
+        points=new_points,
+        cells=mesh.cells,
+        cell_data=mesh.cell_data,
+        point_data=mesh.point_data
     )
 
-    mesh_labeled = assign_cell_labels(mesh_raw, mask, resolution)
-    assert count_labeled_cells(mesh_labeled, 'tetra', 'label', 0) == 0
 
-    mesh_cleaned = remove_unused_points(mesh_labeled)
-    assert count_unused_points(mesh_cleaned) == 0
-
-    num_components = count_connected_components(mesh_cleaned)
-    assert num_components > 0
-    if num_components > 1:
-        print(f'WARNING: mesh has {num_components} components')
-
-    return split_cells_by_type(mesh_cleaned)
+## fenics mesh functions
 
 
-def generate_anatomical_mesh(visit, variant, image_name, mask_name='lung_regions'):
-
-    mask_path = visit.mask_file(variant, image_name, mask_name)
-    print(f'Loading {mask_path}')
-    mask_nifti = nib.load(mask_path)
-
-    print('Generating mesh from mask')
-    mesh_dict = generate_mesh_from_mask(
-        mask=mask_nifti.get_fdata(),
-        resolution=mask_nifti.header.get_zooms()
-    )
-
-    volume_path = visit.mesh_file(variant, image_name, mask_name, mesh_tag='volume')
-    print(f'Saving {volume_path}')
-    meshio.xdmf.write(volume_path, mesh_dict['tetra'])
-
-    surface_path = visit.mesh_file(variant, image_name, mask_name, mesh_tag='surface')
-    print(f'Saving {surface_path}')
-    meshio.xdmf.write(surface_path, mesh_dict['triangle'])
-
-
-def load_fenics_mesh(mesh_file, label_key='label', verbose=False):
+def load_mesh_with_fenics(mesh_file, label_key='label', verbose=False):
     if verbose:
         print(f'Loading {mesh_file}...', end=' ')
     mesh = fe.Mesh()
@@ -251,7 +250,6 @@ def load_fenics_mesh(mesh_file, label_key='label', verbose=False):
 
 
 def check_disconnected_nodes(mesh):
-    # mesh is a fenics mesh
     tdim = mesh.topology().dim()
     mesh.init(0, tdim)
     vertex_to_cell = mesh.topology()(0, tdim)

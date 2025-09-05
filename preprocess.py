@@ -3,14 +3,22 @@ import sys, os, argparse, pathlib, itertools
 import project
 
 
-def preprocess_visit(visit, variant='RAW', recon='STD', states=['INSP', 'EXP']):
+def preprocess_visit(visit, variant='ISO', recon='STD', states=['INSP', 'EXP']):
+
+	target = 'EXP'
+	for source in states:
+		if source == target: continue
+		source_name = visit.build_image_name(source, recon)
+		target_name = visit.build_image_name(target, recon)
+		project.registration.resample_image(visit, variant, )
 
 	# generate segmentation masks and anatomical mesh
 	for state in states:
 		image_name = visit.build_image_name(state, recon)
-		project.segmentation.run_segmentation_tasks(visit, variant, image_name)
-		project.segmentation.create_lung_region_mask(visit, variant, image_name)
-		project.meshing.generate_anatomical_mesh(visit, variant, image_name)
+		project.registration.resample_images()
+		project.segmentation.run_segmentation_tasks(visit, 'ISO', image_name)
+		project.segmentation.create_lung_region_mask(visit, 'ISO', image_name)
+		project.meshing.generate_anatomical_mesh(visit, 'ISO', image_name)
 
 	# generate deformation field
 	for source, target in itertools.product(states, states): 

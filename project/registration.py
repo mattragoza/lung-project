@@ -21,7 +21,7 @@ def image_from_xarray(array):
     return image
 
 
-def xarray_from_image(image):
+def xarray_from_image(image, name=None):
     '''
     Convert a 3D SITK image to an xarray.
     '''
@@ -38,7 +38,8 @@ def xarray_from_image(image):
             'x': origin[0] + np.arange(shape[0]) * resolution[0],
             'y': origin[1] + np.arange(shape[1]) * resolution[1],
             'z': origin[2] + np.arange(shape[2]) * resolution[2]
-        }
+        },
+        name=name
     )
     return array
 
@@ -205,3 +206,44 @@ def transform_array(array_mov, array_fix, *args, **kwargs):
     array_warp = xarray_from_image(image_warp).astype(array_mov.dtype)
     array_warp.name = array_mov.name
     return array_warp
+
+
+def create_reference_grid(image, new_spacing, anchor='center'):
+    assert anchor in {'origin', 'center'}
+    
+    old_size = np.array(image.GetSize(), dtype=float)
+    old_spacing = np.array(image.GetSpacing(), dtype=float)
+    old_origin = np.array(image.GetOrigin(), dtype=float)
+
+    new_spacing = np.array(new_spacing, dtype=float)
+    new_size = np.round((old_size - 1.0) * (old_spacing / new_spacing)).astype(int) + 1
+    new_size = np.maximum(new_size, 1)
+
+    if anchor == 'origin':
+        new_origin = old_origin
+
+    elif anchor == 'center':
+        D = np.array(image.GetDirection(), dtype=float).reshape(3, 3)
+        center = old_origin + D @ (old_spacing * (old_size - 1) / 2)
+        new_origin = center - D @ (new_spacing * (new_size - 1) / 2)
+
+    grid = sitk.Image(tuple(int(n) for n in new_size), image.GetPixelID())
+    grid.SetSpacing(tuple(new_spacing))
+    grid.SetOrigin(tuple(new_origin))
+    grid.SetDirection(image.GetDirection())
+    return grid
+
+
+def resample_image_on_grid(image, grid, interp, default):
+    assert interp in {'bspline', 'linear', 'nearest'}
+
+    if interp == 'bspline':
+        interp = sitk.sitkBSpline
+    elif interp == 'linear':
+        interp = sitk.sitkLinear
+    elif interp == 'nearest':
+        interp = sitk.sitkNearestNeighbor
+    
+    return sitk.Resample(
+        image, grid, sitk.Transform(), interp, default, image.GetPixelID()
+    )
