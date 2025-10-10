@@ -1,6 +1,5 @@
 import sys, inspect, argparse, time, random
 import numpy as np
-import xarray as xr
 import torch
 
 MAX_SEED = 2**32 - 1
@@ -19,34 +18,6 @@ def set_random_seed(random_seed=None):
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
 
-
-def as_xarray(a, dims=None, coords=None, resolution=None, **kwargs):
-
-    if isinstance(a, torch.Tensor): # convert to numpy array
-        a = a.detach().cpu().numpy()
-
-    if dims is None: # auto-generate dimension names
-        dims = [f'dim{i}' for i in range(a.ndim)]
-
-    if coords is None: # auto-generate coordinates
-        coords = {}
-
-    if resolution is not None: # convert to resolution map
-        assert len(resolution) == 3, 'resolution must be a 3-tuple for (x,y,z)'
-        res_map = {'x': resolution[0], 'y': resolution[1], 'z': resolution[2]}
-    else:
-        res_map = {}
-
-    final_coords = {}
-    for i, dim in enumerate(dims):
-        if dim in coords:
-            final_coords[dim] = coords[dim]
-        elif dim in res_map:
-            final_coords[dim] = np.arange(a.shape[i]) * res_map[dim]
-        else:
-            final_coords[dim] = np.arange(a.shape[i])
-
-    return xr.DataArray(a, dims=dims, coords=final_coords, **kwargs)
 
 
 def timer(sync):
@@ -68,7 +39,7 @@ def as_bool(s):
         return bool(s)
 
 
-def generate_arg_parser(func):
+def generate_argument_parser(func):
 
     # get full argument specification
     argspec = inspect.getfullargspec(func)
@@ -100,19 +71,16 @@ def generate_arg_parser(func):
     return parser
 
 
-
-
 def main(func):
     '''
     Decorator for auto parsing arguments and calling the main function
     '''
-    parent_frame = inspect.stack()[1].frame
-    __name__ = parent_frame.f_locals.get('__name__')
-
+    parent = inspect.stack()[1].frame
+    __name__ = parent.f_locals.get('__name__')
     if __name__ == '__main__':
 
         # parse and display command line arguments
-        parser = generate_arg_parser(func)
+        parser = generate_argument_parser(func)
         kwargs = vars(parser.parse_args(sys.argv[1:]))
         print(kwargs)
 

@@ -30,6 +30,8 @@ def create_deformation_field(
 		mask_fix=torch.as_tensor(mask_array, dtype=torch.float)[None,None,...].cuda()
 	)[0][0].detach().cpu().numpy()
 
+	
+
 	disp_path.parent.mkdir(exist_ok=True, parents=True)
 	disp_nifti = nib.nifti1.Nifti1Image(disp, target_nifti.affine)
 	nib.save(disp_nifti, disp_path)

@@ -1,11 +1,29 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-import fenics as fe
-import torch_fenics
 
 
-def interpolate_image(
+def interpolate_image(image, points, mode='bilinear'):
+    '''
+    Args:
+        image:  (X, Y, Z, C) input image tensor
+        points: (N, 3) tensor of voxel indices (ijk)
+    Returns:
+        (N, C) tensor of interpolated values
+    '''
+    import corrfield
+    points_pt = corrfield.utils.kpts_pt(points, image.shape[:3], align_corners=True)
+
+    return F.grid_sample(
+        input=image.permute(3, 0, 1, 2).unsqueeze(0),
+        grid=points_pt.unsqueeze(0).unsqueeze(0).unsqueeze(0),
+        mode=mode,
+        padding_mode='border',
+        align_corners=True
+    ).permute(0, 2, 3, 4, 1).squeeze(0).squeeze(0).squeeze(0)
+
+
+def my_interpolate_image(
     image, mask, resolution, points, kernel_radius,
     kernel_size=None,
     kernel_type='tent',
@@ -130,6 +148,9 @@ def dofs_to_image(dofs, V, image_shape, resolution):
     Returns:
         image: (C, X, Y, Z) torch.Tensor
     '''
+    import fenics as fe
+    import torch_fenics
+
     if V.num_sub_spaces() > 0:
         N, C = dofs.shape
     else:

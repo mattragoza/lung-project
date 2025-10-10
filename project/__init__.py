@@ -1,18 +1,25 @@
 from . import (
-	data,
-	evaluation,
-	imaging,
+
+	# updated modules
 	copdgene,
-	deformation,
-	interpolation,
-	meshing,
-	model,
-	output,
-	pde,
-	phantom,
 	registration,
 	segmentation,
-	training,
+	meshing,
+	interpolation,
+	transforms,
+
+	# probably in fine shape
+	data,       # torch data loader
+	model,      # torch nn modules
+	training,   # trainer class
+	evaluation, # evaluator class + metrics
+	output,     # interactive training plot
 	utils,
-	visual
+
+	# old data sets, update or remove?
+	emory4dct,
+	phantom,
+
+	pde, # fenics stuff. update or remove?
+	visual # does this even belong in this package?
 )

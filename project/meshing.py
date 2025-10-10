@@ -1,21 +1,12 @@
-from collections import defaultdict, deque
-from itertools import combinations, permutations
+import collections
 import numpy as np
 import scipy as sp
-import meshio
 import pygalmesh
-import nibabel as nib
-import matplotlib as mpl
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-
-import fenics as fe
-from mpi4py import MPI
-import dolfin
+import meshio
 
 
 def generate_mesh_from_mask(mask, resolution, **kwargs):
+    import pygalmesh
 
     mesh = pygalmesh.generate_from_array(
         mask.astype(np.uint16),
@@ -52,6 +43,12 @@ def assign_cell_labels(mesh, mask, resolution, new_key='label', old_key='medit:r
         cells=mesh.cells,
         cell_data=new_cell_data
     )
+
+
+def count_labeled_cells(mesh, cell_type, label_key, label_value):
+    cell_labels = mesh.cell_data_dict[label_key][cell_type]
+    cell_count = np.sum(cell_labels == label_value)
+    return cell_count
 
 
 def construct_label_map(mesh, mask, resolution, label_key='medit:ref'):
@@ -122,10 +119,48 @@ def count_unused_points(mesh):
     return (~point_is_used).sum()
 
 
-def count_labeled_cells(mesh, cell_type, label_key, label_value):
-    cell_labels = mesh.cell_data_dict[label_key][cell_type]
-    cell_count = np.sum(cell_labels == label_value)
-    return cell_count
+def count_connected_components(mesh, cell_type='tetra'):
+    cells = mesh.cells_dict[cell_type]
+
+    if cell_type == 'tetra':
+        face_indices = [[0,1,2], [0,1,3], [0,2,3], [1,2,3]]
+    elif cell_type == 'triangle':
+        face_indices = [[0,1], [1,2], [2,0]]
+    else:
+        raise ValueError(f'Unrecognized cell type: {cell_type}')
+
+    # build mapping from faces to incident cells
+    face_to_cells = collections.defaultdict(list)
+    for cell_id, cell in enumerate(cells):
+        for inds in face_indices:
+            face = tuple(sorted(cell[inds]))
+            face_to_cells[face].append(cell_id)
+
+    # build adjacency list
+    adjacency = collections.defaultdict(set)
+    for face, incident_cells in face_to_cells.items():
+        if len(incident_cells) == 2:
+            a, b = incident_cells
+            adjacency[a].add(b)
+            adjacency[b].add(a)
+
+    # traverse graph
+    visited = np.zeros(len(cells), dtype=bool)
+    n_components = 0
+
+    for start in range(len(cells)):
+        if visited[start]:
+            continue
+        n_components += 1
+        queue = collections.deque([start])
+        while queue:
+            current = queue.pop()
+            if visited[current]:
+                continue
+            visited[current] = True
+            queue.extend(adjacency[current])
+
+    return n_components
 
 
 def split_points_by_label(mesh, label_key='medit:ref'):
@@ -169,50 +204,6 @@ def split_cells_by_type(mesh):
     return split
 
 
-def count_connected_components(mesh, cell_type='tetra'):
-    cells = mesh.cells_dict[cell_type]
-
-    if cell_type == 'tetra':
-        face_indices = [[0,1,2], [0,1,3], [0,2,3], [1,2,3]]
-    elif cell_type == 'triangle':
-        face_indices = [[0,1], [1,2], [2,0]]
-    else:
-        raise ValueError(f'Unrecognized cell type: {cell_type}')
-
-    # build mapping from faces to incident cells
-    face_to_cells = defaultdict(list)
-    for cell_id, cell in enumerate(cells):
-        for inds in face_indices:
-            face = tuple(sorted(cell[inds]))
-            face_to_cells[face].append(cell_id)
-
-    # build adjacency list
-    adjacency = defaultdict(set)
-    for face, incident_cells in face_to_cells.items():
-        if len(incident_cells) == 2:
-            a, b = incident_cells
-            adjacency[a].add(b)
-            adjacency[b].add(a)
-
-    # traverse graph
-    visited = np.zeros(len(cells), dtype=bool)
-    n_components = 0
-
-    for start in range(len(cells)):
-        if visited[start]:
-            continue
-        n_components += 1
-        queue = deque([start])
-        while queue:
-            current = queue.pop()
-            if visited[current]:
-                continue
-            visited[current] = True
-            queue.extend(adjacency[current])
-
-    return n_components
-
-
 def apply_affine_to_mesh(mesh, resolution, affine):
     # pygalmesh uses voxel spacing to generate the mesh,
     # but not the full affine. we need to use the spacing
@@ -242,12 +233,10 @@ def apply_deformation_to_mesh(mesh, disp):
 ## fenics mesh functions
 
 
-def convert_mesh_to_fenics(mesh, mesh_file='temp.xdmf'):
-    meshio.xdmf.write(mesh_file, mesh)
-    return load_mesh_with_fenics(mesh_file)
-
-
 def load_mesh_with_fenics(mesh_file, label_key='label', verbose=False):
+    import fenics as fe
+    from mpi4py import MPI
+    import dolfin
     if verbose:
         print(f'Loading {mesh_file}...', end=' ')
     mesh = fe.Mesh()
@@ -264,15 +253,6 @@ def load_mesh_with_fenics(mesh_file, label_key='label', verbose=False):
     return mesh, cell_labels
 
 
-def check_disconnected_nodes(mesh):
-    tdim = mesh.topology().dim()
-    mesh.init(0, tdim)
-    vertex_to_cell = mesh.topology()(0, tdim)
-    unconnected_nodes = []
-    num_vertices = mesh.num_vertices()
-    for v in range(num_vertices):
-        if len(vertex_to_cell(v)) == 0:
-            unconnected_nodes.append(v)
-    print(len(unconnected_nodes), num_vertices)
-    return unconnected_nodes
-
+def convert_mesh_to_fenics(mesh, mesh_file='temp.xdmf'):
+    meshio.xdmf.write(mesh_file, mesh)
+    return load_mesh_with_fenics(mesh_file)

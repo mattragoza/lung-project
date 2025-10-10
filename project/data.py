@@ -2,10 +2,9 @@ from functools import lru_cache
 import numpy as np
 import torch
 import nibabel as nib
-import fenics as fe
-from mpi4py import MPI
 
 from . import imaging, utils, meshing
+
 from . import pde as pde_module
 
 

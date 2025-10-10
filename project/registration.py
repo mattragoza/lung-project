@@ -1,52 +1,46 @@
 import numpy as np
-import xarray as xr
 import SimpleITK as sitk
 
 
-def image_from_xarray(array):
-    '''
-    Convert a 3D xarray to an SITK image.
-    '''
-    assert array.dims == ('x', 'y', 'z')
-    data_T = array.transpose('z', 'y', 'x').data
-    image = sitk.GetImageFromArray(data_T)
-    x_res = float(array.x[1] - array.x[0])
-    y_res = float(array.y[1] - array.y[0])
-    z_res = float(array.z[1] - array.z[0])
-    image.SetSpacing((x_res, y_res, z_res))
-    x0 = float(array.x[0])
-    y0 = float(array.y[0])
-    z0 = float(array.z[0])
-    image.SetOrigin((x0, y0, z0))
-    return image
+def create_reference_grid(image, new_spacing, anchor='center'):
+    assert anchor in {'origin', 'center'}
+    
+    old_size = np.array(image.GetSize(), dtype=float)
+    old_spacing = np.array(image.GetSpacing(), dtype=float)
+    old_origin = np.array(image.GetOrigin(), dtype=float)
+
+    new_spacing = np.array(new_spacing, dtype=float)
+    new_size = np.round((old_size - 1.0) * (old_spacing / new_spacing)).astype(int) + 1
+    new_size = np.maximum(new_size, 1)
+
+    if anchor == 'origin':
+        new_origin = old_origin
+
+    elif anchor == 'center':
+        D = np.array(image.GetDirection(), dtype=float).reshape(3, 3)
+        center = old_origin + D @ (old_spacing * (old_size - 1) / 2)
+        new_origin = center - D @ (new_spacing * (new_size - 1) / 2)
+
+    grid = sitk.Image(tuple(int(n) for n in new_size), image.GetPixelID())
+    grid.SetSpacing(tuple(new_spacing))
+    grid.SetOrigin(tuple(new_origin))
+    grid.SetDirection(image.GetDirection())
+    return grid
 
 
-def xarray_from_image(image, name=None):
-    '''
-    Convert a 3D SITK image to an xarray.
-    '''
-    assert image.GetDimension() == 3
-    assert image.GetNumberOfComponentsPerPixel() == 1
-    data = sitk.GetArrayFromImage(image).T
-    shape = image.GetSize()
-    origin = image.GetOrigin()
-    resolution = image.GetSpacing()
-    array = xr.DataArray(
-        data=data,
-        dims=['x', 'y', 'z'],
-        coords={
-            'x': origin[0] + np.arange(shape[0]) * resolution[0],
-            'y': origin[1] + np.arange(shape[1]) * resolution[1],
-            'z': origin[2] + np.arange(shape[2]) * resolution[2]
-        },
-        name=name
+def resample_image_on_grid(image, grid, interp, default):
+    assert interp in {'bspline', 'linear', 'nearest'}
+
+    if interp == 'bspline':
+        interp = sitk.sitkBSpline
+    elif interp == 'linear':
+        interp = sitk.sitkLinear
+    elif interp == 'nearest':
+        interp = sitk.sitkNearestNeighbor
+    
+    return sitk.Resample(
+        image, grid, sitk.Transform(), interp, default, image.GetPixelID()
     )
-    return array
-
-
-def angle_to_versor(angle_degrees):
-    angle_radians = np.deg2rad(angle_degrees)
-    return np.sin(angle_radians / 2.0)
 
 
 def register_image(
@@ -192,58 +186,7 @@ def transform_image(image_mov, image_fix, transform, default=0):
     return image_warp
 
 
-def register_array(array_mov, array_fix, *args, **kwargs):
-    image_mov = image_from_xarray(array_mov.astype(float))
-    image_fix = image_from_xarray(array_fix.astype(float))
-    transform = register_image(image_mov, image_fix, *args, **kwargs)
-    return transform
+def angle_to_versor(angle_degrees):
+    angle_radians = np.deg2rad(angle_degrees)
+    return np.sin(angle_radians / 2.0)
 
-
-def transform_array(array_mov, array_fix, *args, **kwargs):
-    image_mov = image_from_xarray(array_mov.astype(float))
-    image_fix = image_from_xarray(array_fix.astype(float))
-    image_warp = transform_image(image_mov, image_fix, *args, **kwargs)
-    array_warp = xarray_from_image(image_warp).astype(array_mov.dtype)
-    array_warp.name = array_mov.name
-    return array_warp
-
-
-def create_reference_grid(image, new_spacing, anchor='center'):
-    assert anchor in {'origin', 'center'}
-    
-    old_size = np.array(image.GetSize(), dtype=float)
-    old_spacing = np.array(image.GetSpacing(), dtype=float)
-    old_origin = np.array(image.GetOrigin(), dtype=float)
-
-    new_spacing = np.array(new_spacing, dtype=float)
-    new_size = np.round((old_size - 1.0) * (old_spacing / new_spacing)).astype(int) + 1
-    new_size = np.maximum(new_size, 1)
-
-    if anchor == 'origin':
-        new_origin = old_origin
-
-    elif anchor == 'center':
-        D = np.array(image.GetDirection(), dtype=float).reshape(3, 3)
-        center = old_origin + D @ (old_spacing * (old_size - 1) / 2)
-        new_origin = center - D @ (new_spacing * (new_size - 1) / 2)
-
-    grid = sitk.Image(tuple(int(n) for n in new_size), image.GetPixelID())
-    grid.SetSpacing(tuple(new_spacing))
-    grid.SetOrigin(tuple(new_origin))
-    grid.SetDirection(image.GetDirection())
-    return grid
-
-
-def resample_image_on_grid(image, grid, interp, default):
-    assert interp in {'bspline', 'linear', 'nearest'}
-
-    if interp == 'bspline':
-        interp = sitk.sitkBSpline
-    elif interp == 'linear':
-        interp = sitk.sitkLinear
-    elif interp == 'nearest':
-        interp = sitk.sitkNearestNeighbor
-    
-    return sitk.Resample(
-        image, grid, sitk.Transform(), interp, default, image.GetPixelID()
-    )

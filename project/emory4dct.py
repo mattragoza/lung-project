@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 import nibabel as nib
 import xarray as xr
-import hvplot.xarray
-from tqdm import tqdm
+#import hvplot.xarray
+#from tqdm import tqdm
 import torch
 
 from . import data, meshing

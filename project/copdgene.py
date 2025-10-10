@@ -6,9 +6,7 @@ import xarray as xr
 
 from . import registration
 from . import segmentation
-from . import deformation
 from . import meshing
-from . import utils
 
 
 class COPDGeneVisit:
@@ -504,3 +502,4 @@ def is_nifti_file(path):
         return True
     except Exception:
         return False
+
