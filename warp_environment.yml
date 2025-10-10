@@ -1,0 +1,34 @@
+name: warp
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python
+  - numpy
+  - pandas
+  - xarray
+  - nibabel
+  - pytorch
+  - cudatoolkit=11.7
+  - torchvision
+  - simpleitk
+  - scikit-image
+  - meshio
+  - pygalmesh
+  - matplotlib
+  - seaborn
+  - ipython
+  - ipykernel
+  - ipywidgets
+  - ipympl
+  - pyvista
+  - trame
+  - trame-vtk
+  - trame-vuetify
+  - pip
+  - pip:
+    - TotalSegmentator
+    - --extra-index-url=https://pypi.nvidia.com/
+    - --pre
+    - warp-lang
