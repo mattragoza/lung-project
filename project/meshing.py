@@ -37,7 +37,7 @@ def generate_mesh_from_mask(mask, resolution, **kwargs):
 
     num_components = count_connected_components(mesh)
     assert num_components > 0
-    print(f'Mesh has {num_components} components')
+    print(f'Mesh has {num_components} connected component(s)')
 
     return split_cells_by_type(mesh)
 
@@ -229,7 +229,22 @@ def apply_affine_to_mesh(mesh, resolution, affine):
     )
 
 
+def apply_deformation_to_mesh(mesh, disp):
+    new_points = mesh.points + disp
+    return meshio.Mesh(
+        points=new_points,
+        cells=mesh.cells,
+        cell_data=mesh.cell_data,
+        point_data=mesh.point_data
+    )
+
+
 ## fenics mesh functions
+
+
+def convert_mesh_to_fenics(mesh, mesh_file='temp.xdmf'):
+    meshio.xdmf.write(mesh_file, mesh)
+    return load_mesh_with_fenics(mesh_file)
 
 
 def load_mesh_with_fenics(mesh_file, label_key='label', verbose=False):

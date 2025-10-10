@@ -46,35 +46,35 @@ class COPDGeneVisit:
     def visit_dir(self):
         return self.data_root / 'Images' / self.subject_id / self.visit_name
 
-    def image_dir(self, variant):
+    def get_image_dir(self, variant):
         return self.visit_dir / variant
 
-    def image_file(self, variant, image_name, ext='.nii.gz'):
-        return self.image_dir(variant) / (image_name + ext)
+    def get_image_path(self, variant, image_name, ext='.nii.gz'):
+        return self.get_image_dir(variant) / (image_name + ext)
 
-    def mask_root(self, variant):
-        return self.image_dir(variant) / 'TotalSegmentator'
+    def get_mask_root(self, variant):
+        return self.get_image_dir(variant) / 'TotalSegmentator'
 
-    def mask_dir(self, variant, image_name):
-        return self.mask_root(variant) / image_name
+    def get_mask_dir(self, variant, image_name):
+        return self.get_mask_root(variant) / image_name
 
-    def mask_file(self, variant, image_name, mask_name, ext='.nii.gz'):
-        return self.mask_dir(variant, image_name) / (mask_name + ext)
+    def get_mask_path(self, variant, image_name, mask_name, ext='.nii.gz'):
+        return self.get_mask_dir(variant, image_name) / (mask_name + ext)
 
-    def mesh_root(self, variant):
-        return self.image_dir(variant) / 'pygalmesh'
+    def get_mesh_root(self, variant):
+        return self.get_image_dir(variant) / 'pygalmesh'
 
-    def mesh_dir(self, variant, image_name):
-        return self.mesh_root(variant) / image_name
+    def get_mesh_dir(self, variant, image_name):
+        return self.get_mesh_root(variant) / image_name
 
-    def mesh_file(self, variant, image_name, mask_name, mesh_tag, ext='.xdmf'):
-        return self.mesh_dir(variant, image_name) / f'{mask_name}_{mesh_tag}{ext}'
+    def get_mesh_path(self, variant, image_name, mask_name, mesh_tag, ext='.xdmf'):
+        return self.get_mesh_dir(variant, image_name) / f'{mask_name}_{mesh_tag}{ext}'
 
-    def disp_root(self, variant):
-        return self.image_dir(variant) / 'CorrField'
+    def get_disp_root(self, variant):
+        return self.get_image_dir(variant) / 'CorrField'
 
-    def disp_file(self, variant, target_name, source_name):
-        return self.disp_root(variant) / (target_name + '__' + source_name + '.nii.gz')
+    def get_disp_path(self, variant, target_name, source_name):
+        return self.get_disp_root(variant) / (target_name + '__' + source_name + '.nii.gz')
 
     # Directory exploration
 
@@ -82,7 +82,7 @@ class COPDGeneVisit:
         return sorted([x.name for x in self.visit_dir.iterdir() if x.is_dir()])
 
     def list_images(self, variant, ext='.nii.gz'):
-        image_dir = self.image_dir(variant)
+        image_dir = self.get_image_dir(variant)
         assert image_dir.is_dir(), f'Directory does not exist: {image_dir}'
         return sorted([x.name[:-len(ext)] for x in image_dir.glob('*' + ext)])
 
@@ -105,13 +105,13 @@ class COPDGeneVisit:
             assert parsed['condition'] in {'COPD'}, parsed['condition']
         return parsed
 
-    def build_image_name(self, state, recon):
+    def get_image_name(self, state, recon):
         return f'{self.subject_id}_{state}_{recon}_{self.site_code}_COPD'
 
     def has_valid_image_pair(self, variant, recon, ext='.nii.gz'):
         for state in ['INSP', 'EXP']:
-            image_name = self.build_image_name(state, recon)
-            image_path = self.image_file(variant, image_name, ext)
+            image_name = self.get_image_name(state, recon)
+            image_path = self.get_image_path(variant, image_name, ext)
             if not image_path.is_file():
                 print(f'File does not exist: {image_path}')
                 return False
@@ -142,54 +142,68 @@ class COPDGeneVisit:
 
     def load_metadata_from_headers(self, variant, filters=None):
         rows = []
-        for tup in self.load_metadata_from_filenames(variant, filters).itertuples():
-            image = nib.load(self.image_file(variant, tup.image_name))
-            dct = tup._asdict()
-            dct.update({
+        for t in self.load_metadata_from_filenames(variant, filters).itertuples():
+            image_path = selfe.get_image_path(variant, t.image_name)
+            image = nib.load(image_path)
+            row = t._asdict()
+            row.update({
                 'shape': image.header.get_data_shape(),
                 'resolution': image.header.get_zooms(),
             })
-            rows.append(dct)
+            rows.append(row)
         return pd.DataFrame(rows)
 
     # Image loaders
 
-    def load_image(self, variant, image_name):
-        image_path = self.image_file(variant, image_name)
-        image = nib.load(image_path)
-        return utils.as_xarray(
-            image.get_fdata(),
-            dims=['x', 'y', 'z'],
-            resolution=image.header.get_zooms(),
-            name=image_name
-        )
+    def load_image(self, variant, state, recon='STD'):
+        image_name = self.get_image_name(state, recon)
+        image_path = self.get_image_path(variant, image_name)
+        return nib.load(image_path)
 
-    def load_images(self, variant, recon, site_code):
+    def load_images(self, variant, states=['EXP', 'INSP'], recon='STD'):
         images = {}
-        for state in ['INSP', 'EXP']:
-            image_name = self.build_image_name(state, recon, site_code)
-            images[state] = self.load_image(variant, image_name)
+        for state in states:
+            images[state] = self.load_image(variant, state, recon)
         return images
 
-    def load_masks(self, variant, image_name, roi_list):
-        masks = []
+    def load_mask(self, variant, state, mask_name, recon='STD'):
+        image_name = self.get_image_name(state, recon)
+        mask_path = self.get_mask_path(variant, image_name, mask_name)
+        return nib.load(mask_path)
 
-        image_path = self.image_file(variant, image_name)
+    def load_masks(self, variant, state, mask_list, recon='STD'):
+        image_name = self.get_image_name(variant, state, recon)
+        image_path = self.get_image_path(variant, image_name)
+
         image = nib.load(image_path)
         resolution = image.header.get_zooms()
 
-        for roi in roi_list:
-            mask_path = self.mask_file(variant, image_name, roi)
+        masks = {}
+        for mask_name in mask_list:
+            mask_path = self.get_mask_path(variant, image_name, mask_name)
             mask = nib.load(mask_path)
             assert mask.shape == image.shape
-            masks.append(mask.get_fdata())
+            masks[mask_name] = mask
 
-        return utils.as_xarray(
-            np.stack(masks, axis=0),
-            dims=['roi', 'x', 'y', 'z'],
-            coords={'roi': roi_list},
-            resolution=resolution
-        )
+        return masks
+
+    def load_mesh(self, variant, state, mask_name, mesh_tag, recon='STD'):
+        import meshio
+        image_name = self.get_image_name(state, recon)
+        mesh_path = self.get_mesh_path(variant, image_name, mask_name, mesh_tag)
+        return meshio.read(mesh_path)
+
+    def load_mesh_with_fenics(self, variant, state, mask_name, mesh_tag, recon='STD'):
+        import meshio
+        image_name = self.get_image_name(state, recon)
+        mesh_path = self.get_mesh_path(variant, image_name, mask_name, mesh_tag)
+        return meshing.load_mesh_with_fenics(mesh_path)
+
+    def load_displacement_field(self, variant, source_state, target_state, recon='STD'):
+        source_name = self.get_image_name(source_state, recon)
+        target_name = self.get_image_name(target_state, recon)
+        disp_path = self.get_disp_path(variant, target_name, source_name)
+        return nib.load(disp_path)
 
     # Preprocessing operations
 
@@ -205,22 +219,22 @@ class COPDGeneVisit:
     ):
         import SimpleITK as sitk
 
-        ref_image_name = self.build_image_name(states[0], recon)
-        ref_image_path = self.image_file(input_variant, ref_image_name)
+        ref_image_name = self.get_image_name(states[0], recon)
+        ref_image_path = self.get_image_path(input_variant, ref_image_name)
 
         print(f'[{ref_image_name}] Creating reference grid')
         ref_image = sitk.ReadImage(ref_image_path)
         ref_grid = registration.create_reference_grid(ref_image, new_spacing=resolution)
 
         for i, state in enumerate(states):
-            image_name = self.build_image_name(state, recon)
-            input_image_path = self.image_file(input_variant, image_name)
-            output_image_path = self.image_file(output_variant, image_name)
+            image_name = self.get_image_name(state, recon)
+            input_path = self.get_image_path(input_variant, image_name)
+            output_path = self.get_image_path(output_variant, image_name)
 
             print(f'[{image_name}] Resampling image on reference grid')
-            input_image = sitk.ReadImage(input_image_path) if i > 0 else ref_image
+            input_image = sitk.ReadImage(input_path) if i > 0 else ref_image
             output_image = registration.resample_image_on_grid(input_image, ref_grid, interp, default)
-            sitk.WriteImage(output_image, output_image_path)
+            sitk.WriteImage(output_image, output_path)
 
     def create_segmentation_masks(
         self,
@@ -229,53 +243,55 @@ class COPDGeneVisit:
         recon='STD',
         combined_mask_name='lung_combined_mask'
     ):
-        import totalsegmentator as ts
+        import totalsegmentator as totalseg
         import totalsegmentator.python_api
         import totalsegmentator.libs
 
-        image_name = self.build_image_name(state, recon)
-        image_path = self.image_file(variant, image_name)
-        mask_path = self.mask_file(variant, image_name, mask_name=combined_mask_name)
-        mask_dir = self.mask_dir(variant, image_name)
+        image_name = self.get_image_name(state, recon)
+        image_path = self.get_image_path(variant, image_name)
+
+        mask_path = self.get_mask_path(variant, image_name, mask_name=combined_mask_name)
+        mask_dir = self.get_mask_dir(variant, image_name)
         mask_dir.mkdir(parents=True, exist_ok=True)
 
         print(f'[{image_name}] Running segmentation task: total')
-        ts.python_api.totalsegmentator(image_path, mask_dir, task='total', roi_subset=segmentation.TOTAL_TASK_ROIS)
+        totalseg.python_api.totalsegmentator(
+            image_path, mask_dir, task='total', roi_subset=segmentation.TOTAL_TASK_ROIS
+        )
 
         print(f'[{image_name}] Running segmentation task: lung_vessels')
-        ts.python_api.totalsegmentator(image_path, mask_dir, task='lung_vessels')
+        totalseg.python_api.totalsegmentator(image_path, mask_dir, task='lung_vessels')
 
         print(f'[{image_name}] Combining segmentation masks: lung')
-        combined_nifti = ts.libs.combine_masks(mask_dir=mask_dir, class_type='lung')
+        combined_nifti = totalseg.libs.combine_masks(mask_dir=mask_dir, class_type='lung')
         nib.save(combined_nifti, mask_path)
 
-    def create_lung_regions_mask(
+    def create_multi_region_mask(
         self,
         variant='ISO',
         state='EXP',
         recon='STD',
-        lungs_mask_name='lung_combined_mask',
-        airways_mask_name='lung_trachea_bronchia',
-        vessels_mask_name='lung_vessels',
-        regions_mask_name='lung_regions',
-        **kwargs
+        mask_name='lung_regions',
+        connectivity=1
     ):
-        image_name = self.build_image_name(state, recon)
+        image_name = self.get_image_name(state, recon)
 
-        lungs_path = self.mask_file(variant, image_name, mask_name=lungs_mask_name)
-        airways_path = self.mask_file(variant, image_name, mask_name=airways_mask_name)
-        vessels_path = self.mask_file(variant, image_name, mask_name=vessels_mask_name)
-        regions_path = self.mask_file(variant, image_name, mask_name=regions_mask_name)
+        region_arrays = []
+        for i, roi in enumerate(segmentation.ALL_TASK_ROIS):
+            print(f'[{image_name}] Processing roi mask: {roi}')
+            mask_path = self.get_mask_path(variant, image_name, mask_name=roi)
+            mask_nifti = nib.load(mask_path)
+            mask_array = mask_nifti.get_fdata().astype(int)
+            filtered_array = segmentation.filter_connected_components(
+                mask_array,
+                connectivity=connectivity,
+                max_components=(1 if roi in segmentation.TOTAL_TASK_ROIS else None)
+            )
+            region_arrays.append(filtered_array * (i + 1))
 
-        lungs_nifti = nib.load(lungs_path)
-        lungs_mask = lungs_nifti.get_fdata()
-        airways_mask = nib.load(airways_path).get_fdata()
-        vessels_mask = nib.load(vessels_path).get_fdata()
-
-        print(f'[{image_name}] Creating lung regions mask')
-        regions_mask = segmentation.create_lung_regions_mask(lungs_mask, airways_mask, vessels_mask, **kwargs)
-
-        regions_nifti = nib.nifti1.Nifti1Image(regions_mask, lungs_nifti.affine)
+        regions_array = np.max(region_arrays, axis=0).astype(np.float64)
+        regions_nifti = nib.nifti1.Nifti1Image(regions_array, mask_nifti.affine)
+        regions_path = self.get_mask_path(variant, image_name, mask_name=mask_name)
         nib.save(regions_nifti, regions_path)
 
     def create_anatomical_mesh(
@@ -284,32 +300,32 @@ class COPDGeneVisit:
         state='EXP',
         recon='STD',
         mask_name='lung_regions',
-        volume_mesh_tag='volume',
-        surface_mesh_tag='surface',
+        volume_tag='volume',
+        surface_tag='surface',
         **kwargs
     ):
         import meshio
 
-        image_name = self.build_image_name(state, recon)
-        mask_path = self.mask_file(variant, image_name, mask_name)
+        image_name = self.get_image_name(state, recon)
+        mask_path = self.get_mask_path(variant, image_name, mask_name)
 
-        mesh_dir = self.mesh_dir(variant, image_name)
+        mesh_dir = self.get_mesh_dir(variant, image_name)
         mesh_dir.mkdir(parents=True, exist_ok=True)
 
-        volume_path = self.mesh_file(variant, image_name, mask_name, mesh_tag=volume_mesh_tag)
-        surface_path = self.mesh_file(variant, image_name, mask_name, mesh_tag=surface_mesh_tag)
+        volume_path = self.get_mesh_path(variant, image_name, mask_name, mesh_tag=volume_tag)
+        surface_path = self.get_mesh_path(variant, image_name, mask_name, mesh_tag=surface_tag)
 
         mask_nifti = nib.load(mask_path)
-        mask_array = mask_nifti.get_fdata()
+        mask_array = mask_nifti.get_fdata().astype(int)
         resolution = mask_nifti.header.get_zooms()[:3]
-        A = mask_nifti.affine
+        affine = mask_nifti.affine
 
         print(f'[{image_name}] Creating anatomical mesh')
         mesh_dict = meshing.generate_mesh_from_mask(mask_array, resolution, **kwargs)
 
         print(f'[{image_name}] Applying affine to mesh')
-        volume_mesh = meshing.apply_affine_to_mesh(mesh_dict['tetra'], resolution, A)
-        surface_mesh = meshing.apply_affine_to_mesh(mesh_dict['triangle'], resolution, A)
+        volume_mesh = meshing.apply_affine_to_mesh(mesh_dict['tetra'], resolution, affine)
+        surface_mesh = meshing.apply_affine_to_mesh(mesh_dict['triangle'], resolution, affine)
 
         meshio.xdmf.write(volume_path, volume_mesh)
         meshio.xdmf.write(surface_path, surface_mesh)
@@ -325,16 +341,17 @@ class COPDGeneVisit:
         mask_name='lung_combined_mask'
     ):
         import torch
+        import torch.nn.functional as F
         import corrfield
 
-        source_name = self.build_image_name(source_state, recon)
-        target_name = self.build_image_name(target_state, recon)
+        source_name = self.get_image_name(source_state, recon)
+        target_name = self.get_image_name(target_state, recon)
 
-        source_path = self.image_file(variant, source_name)
-        target_path = self.image_file(variant, target_name)
-        mask_path = self.mask_file(variant, target_name, mask_name)
+        source_path = self.get_image_path(variant, source_name)
+        target_path = self.get_image_path(variant, target_name)
+        mask_path = self.get_mask_path(variant, target_name, mask_name)
 
-        disp_path = self.disp_file(variant, target_name, source_name)
+        disp_path = self.get_disp_path(variant, target_name, source_name)
         disp_path.parent.mkdir(parents=True, exist_ok=True)
 
         source_nifti = nib.load(source_path)
@@ -345,15 +362,55 @@ class COPDGeneVisit:
         target_array = target_nifti.get_fdata()
         mask_array = mask_nifti.get_fdata()
 
-        print('Creating displacement field')
+        source_tensor = torch.as_tensor(source_array, dtype=torch.float, device='cuda')
+        target_tensor = torch.as_tensor(target_array, dtype=torch.float, device='cuda')
+        mask_tensor = torch.as_tensor(mask_array, dtype=torch.int, device='cuda')
 
-        disp_array = corrfield.corrfield.corrfield(
-            img_mov=torch.as_tensor(source_array, dtype=torch.float)[None,None,...].cuda(),
-            img_fix=torch.as_tensor(target_array, dtype=torch.float)[None,None,...].cuda(),
-            mask_fix=torch.as_tensor(mask_array, dtype=torch.float)[None,None,...].cuda()
-        )[0][0].detach().cpu().numpy()
+        print(f'[{source_name} -> {target_name}] Creating displacement field')
 
+        disp_tensor_ijk = corrfield.corrfield.corrfield(
+            img_mov=source_tensor[None,None,...],
+            img_fix=target_tensor[None,None,...],
+            mask_fix=mask_tensor[None,None,...]
+        )[0][0]
+
+        # check registration error
+        target_shape = target_tensor.shape
+        disp_normalized = corrfield.utils.flow_pt(
+            disp_tensor_ijk[None,...],
+            shape=target_shape,
+            align_corners=True
+        )
+        base = F.affine_grid(
+            torch.eye(3, 4, dtype=torch.float, device='cuda')[None,...],
+            size=(1,1,target_shape[0],target_shape[1],target_shape[2]),
+            align_corners=True
+        )
+        warped_tensor = F.grid_sample(
+            input=source_tensor[None,None,...],
+            grid=base + disp_normalized,
+            align_corners=True
+        )
+
+        def compute_error(t):
+            mask = (mask_tensor[None,...] > 0)
+            return torch.norm((t - target_tensor) * mask) / torch.norm(target_tensor * mask)
+
+        error_before = compute_error(source_tensor)
+        error_after  = compute_error(warped_tensor)
+
+        print(error_before)
+        print(error_after)
+
+        assert error_after < error_before, 'registration error did not decrease'
+
+        # convert from voxel to world coordinates (mm)
+        R = torch.as_tensor(target_nifti.affine[:3,:3], dtype=torch.float, device='cuda')
+        disp_tensor_world = torch.einsum('ij,dhwj->dhwi', R, disp_tensor_ijk)
+
+        disp_array = disp_tensor_world.detach().cpu().numpy()
         disp_nifti = nib.nifti1.Nifti1Image(disp_array, target_nifti.affine)
+        disp_nifti.header.set_intent('vector', (), name='displacement_mm')
         nib.save(disp_nifti, disp_path)
 
 
