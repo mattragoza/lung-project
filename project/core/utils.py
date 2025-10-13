@@ -1,13 +1,23 @@
-import sys, inspect, argparse, time, random
+import sys
+import inspect
+import argparse
+import time
+import random
 import numpy as np
 import torch
 
-MAX_SEED = 2**32 - 1
+
+def is_iterable(obj):
+    return hasattr(obj, '__iter__') and not isinstance(obj, str)
 
 
-def get_random_seed():
+def as_iterable(obj):
+    return obj if is_iterable(obj) else [obj]
+
+
+def get_random_seed(max_seed):
     time.sleep((time.time() % 1) / 1000)
-    return int(time.time() * 1e6) % MAX_SEED
+    return int(time.time() * 1e6) % 4294967295 # 2^32 - 1
 
 
 def set_random_seed(random_seed=None):
@@ -17,7 +27,6 @@ def set_random_seed(random_seed=None):
     random.seed(random_seed)
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
-
 
 
 def timer(sync):

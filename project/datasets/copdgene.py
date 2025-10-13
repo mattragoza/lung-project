@@ -1,17 +1,15 @@
-import sys, os, pathlib
+from typing import Optional, Any, Dict, List, Tuple, Iterable
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-import nibabel as nib
-import xarray as xr
 
-from . import registration
-from . import segmentation
-from . import meshing
+from . import base
 
 
-class COPDGeneVisit:
+class COPDGeneDataset(base.BaseDataset):
     '''
-    <data_root>/Images/<subject_id>/<visit_name>/
+    <data_root>/Images/<subject>/<visit>/
         <variant>/
             <image_name>.nii.gz
             TotalSegmentator/
@@ -21,22 +19,142 @@ class COPDGeneVisit:
                 <image_name>/
                     <mask_name>_<mesh_tag>.xdmf
             CorrField/
-                <target_name>__<source_name>.nii.gz
+                <fixed_name>__<moving_name>.nii.gz
+
+    <image_name> = <subject>_<state>_<recon>_<site>_COPD
     '''
+    VALID_STATES = ['EXP', 'INSP']
+    DEFAULT_RECON = 'STD'
+
+    def __init__(self, data_root: str|Path):
+        self.root = Path(data_root)
+        self._site_cache = {}
+
+    def subjects(self) -> List[str]:
+        image_root = self.root / 'Images'
+        if image_root.is_dir():
+            return sorted([p.name for p in image_root.iterdir()])
+        return []
+    
+    def visits(self, subject: str) -> List[str]:
+        subject_dir = self.root / 'Images' / subject
+        if subject_dir.is_dir():
+            return sorted([p.name for p in subject_dir.iterdir()])
+        return []
+
+    def states(self, subject: str, visit: str) -> List[str]:
+        return list(self.VALID_STATES)
+
+    def variants(self, subject: str, visit: str) -> List[str]:
+        visit_dir = self.root / 'Images' / subject / visit
+        if visit_dir.is_dir():
+            return sorted([p.name for p in visit_dir.iterdir() if p.is_dir()])
+        return []
+
+    def get_path(
+        self,
+        subject: str,
+        visit: str,
+        variant: str,
+        state: Optional[str] = None,
+        recon: Optional[str] = None,
+        asset_type: str = 'image',
+        **selectors
+    ):
+        base_dir = self.root / 'Images' / subject / visit / variant
+
+        if asset_type != 'disp':
+            assert state in self.VALID_STATES, str(state)
+
+        recon = recon or self.DEFAULT_RECON
+        site = self._infer_site_code(subject, visit)
+
+        def image_name(st: str) -> str:
+            return f'{subject}_{st}_{recon}_{site}_COPD'
+
+        if asset_type == 'image':
+            return base_dir / f'{image_name(state)}.nii.gz'
+
+        elif asset_type == 'mask':
+            mask_name = selectors['mask_name']
+            return base_dir / 'TotalSegmentator' / image_name(state) / f'{mask_name}.nii.gz'
+
+        elif asset_type == 'mesh':
+            mask_name = selectors['mask_name']
+            mesh_tag = selectors['mesh_tag']
+            return base_dir / 'pygalmesh' / image_name(state) / f'{mask_name}_{mesh_tag}.xdmf'
+
+        elif asset_type == 'disp':
+            fix = selectors['fixed_state']
+            mov = selectors['moving_state']
+            assert fix in self.VALID_STATES, fix
+            assert mov in self.VALID_STATES, mov
+            return base_dir / 'CorrField' / f'{image_name(fix)}__{image_name(mov)}.nii.gz'
+
+        raise RuntimeError(f'unrecognized asset type: {asset_type}')
+
+    def _infer_site_code(self, subject, visit):
+        key = (subject, visit)
+        if key in self._site_cache:
+            return self._site_cache[key]
+
+        visit_dir = self.root / 'Images' / subject / visit
+        for variant in self.variants(subject, visit):
+            variant_dir = visit_dir / variant
+            for nii_file in sorted(variant_dir.glob('*.nii.gz')):
+                name = nii_file.name[:-7]
+                parts = name.split('_')
+                # expected format: <subject>_<state>_<recon>_<site>_COPD
+                if len(parts) == 5 and parts[0] == subject and parts[1] in self.VALID_STATES:
+                    self._site_cache[key] = parts[3]
+                    return self._site_cache[key]
+
+        raise RuntimeError(f'failed to infer site code: {subject} {visit}')
+
+    def examples(
+        self,
+        subjects: Optional[List[str]] = None,
+        visit: str = None,
+        variant: str = 'ISO',
+        state_pairs: Optional[List[Tuple[str, str]]] = None,
+        recon: str = 'STD',
+        mask_name: str = 'lung_regions',
+        mesh_tag: str = 'volume',
+        source_variant: str = 'RAW',
+        ref_state: str = 'EXP'
+    ):
+        subjects = subjects or self.subjects()
+        for subj in subjects:
+            pairs = state_pairs or self.state_pairs(subj, visit)
+            for fixed, moving in pairs:
+                paths = {}
+                paths['ref_image'] = self.get_path(subj, visit, source_variant, ref_state, recon, 'image')
+                paths['fixed_source'] = self.get_path(subj, visit, source_variant, fixed, recon, 'image')
+                paths['moving_source'] = self.get_path(subj, visit, source_variant, moving, recon, 'image')
+                paths['fixed_image'] = self.get_path(subj, visit, variant, fixed, recon, 'image')
+                paths['moving_image'] = self.get_path(subj, visit, variant, moving, recon, 'image')
+                paths['fixed_mask'] = self.get_path(subj, visit, variant, fixed, recon, 'mask', mask_name=mask_name)
+                paths['fixed_mesh'] = self.get_path(subj, visit, variant, fixed, recon, 'mesh', mask_name=mask_name, mesh_tag=mesh_tag)
+                paths['disp_field'] = self.get_path(subj, visit, variant, None, recon, 'disp', fixed_state=fixed, moving_state=moving)
+                yield base.Example(
+                    dataset='COPDGene',
+                    subject=subj,
+                    visit=visit,
+                    variant=variant,
+                    fixed_state=fixed,
+                    moving_state=moving,
+                    paths=paths,
+                    metadata={'recon': recon}
+                )
+
+
+class COPDGeneVisit: # DEPRECATED
+
     def __init__(self, data_root, subject_id, visit_name, site_code=None):
-        self.data_root = pathlib.Path(data_root)
+        self.data_root  = pathlib.Path(data_root)
         self.subject_id = subject_id
         self.visit_name = visit_name
-        self.site_code = site_code
-
-    def __repr__(self):
-        return (
-            f'{type(self).__name__}('
-            f'data_root={self.data_root}, '
-            f'subject_id={self.subject_id}, '
-            f'visit_name={self.visit_name}, '
-            f'site_code={self.site_code})'
-        )
+        self.site_code  = site_code
 
     # Path helpers
 
@@ -141,7 +259,7 @@ class COPDGeneVisit:
     def load_metadata_from_headers(self, variant, filters=None):
         rows = []
         for t in self.load_metadata_from_filenames(variant, filters).itertuples():
-            image_path = selfe.get_image_path(variant, t.image_name)
+            image_path = self.get_image_path(variant, t.image_name)
             image = nib.load(image_path)
             row = t._asdict()
             row.update({
@@ -170,7 +288,7 @@ class COPDGeneVisit:
         return nib.load(mask_path)
 
     def load_masks(self, variant, state, mask_list, recon='STD'):
-        image_name = self.get_image_name(variant, state, recon)
+        image_name = self.get_image_name(state, recon)
         image_path = self.get_image_path(variant, image_name)
 
         image = nib.load(image_path)
@@ -186,16 +304,14 @@ class COPDGeneVisit:
         return masks
 
     def load_mesh(self, variant, state, mask_name, mesh_tag, recon='STD'):
-        import meshio
         image_name = self.get_image_name(state, recon)
         mesh_path = self.get_mesh_path(variant, image_name, mask_name, mesh_tag)
         return meshio.read(mesh_path)
 
     def load_mesh_with_fenics(self, variant, state, mask_name, mesh_tag, recon='STD'):
-        import meshio
         image_name = self.get_image_name(state, recon)
         mesh_path = self.get_mesh_path(variant, image_name, mask_name, mesh_tag)
-        return meshing.load_mesh_with_fenics(mesh_path)
+        return meshing.load_mesh_fenics(mesh_path)
 
     def load_displacement_field(self, variant, source_state, target_state, recon='STD'):
         source_name = self.get_image_name(source_state, recon)
@@ -210,29 +326,20 @@ class COPDGeneVisit:
         input_variant='RAW',
         output_variant='ISO',
         states=['EXP', 'INSP'],
+        ref_state='EXP',
         recon='STD',
-        resolution=[1.0, 1.0, 1.0],
-        interp='bspline',
-        default=-1024
+        **kwargs
     ):
-        import SimpleITK as sitk
-
-        ref_image_name = self.get_image_name(states[0], recon)
-        ref_image_path = self.get_image_path(input_variant, ref_image_name)
-
-        print(f'[{ref_image_name}] Creating reference grid')
-        ref_image = sitk.ReadImage(ref_image_path)
-        ref_grid = registration.create_reference_grid(ref_image, new_spacing=resolution)
-
+        from ..preprocess.api import resample_image_using_reference
+        ref_name = self.get_image_name(ref_state, recon)
+        ref_path = self.get_image_path(input_variant, ref_name)
         for i, state in enumerate(states):
             image_name = self.get_image_name(state, recon)
             input_path = self.get_image_path(input_variant, image_name)
             output_path = self.get_image_path(output_variant, image_name)
-
-            print(f'[{image_name}] Resampling image on reference grid')
-            input_image = sitk.ReadImage(input_path) if i > 0 else ref_image
-            output_image = registration.resample_image_on_grid(input_image, ref_grid, interp, default)
-            sitk.WriteImage(output_image, output_path)
+            resample_image_using_reference(
+                input_path, output_path, ref_path, **kwargs
+            )
 
     def create_segmentation_masks(
         self,
@@ -241,28 +348,12 @@ class COPDGeneVisit:
         recon='STD',
         combined_mask_name='lung_combined_mask'
     ):
-        import totalsegmentator as totalseg
-        import totalsegmentator.python_api
-        import totalsegmentator.libs
-
+        from ..preprocess.api import create_segmentation_masks
         image_name = self.get_image_name(state, recon)
         image_path = self.get_image_path(variant, image_name)
-
-        mask_path = self.get_mask_path(variant, image_name, mask_name=combined_mask_name)
         mask_dir = self.get_mask_dir(variant, image_name)
-        mask_dir.mkdir(parents=True, exist_ok=True)
-
-        print(f'[{image_name}] Running segmentation task: total')
-        totalseg.python_api.totalsegmentator(
-            image_path, mask_dir, task='total', roi_subset=segmentation.TOTAL_TASK_ROIS
-        )
-
-        print(f'[{image_name}] Running segmentation task: lung_vessels')
-        totalseg.python_api.totalsegmentator(image_path, mask_dir, task='lung_vessels')
-
-        print(f'[{image_name}] Combining segmentation masks: lung')
-        combined_nifti = totalseg.libs.combine_masks(mask_dir=mask_dir, class_type='lung')
-        nib.save(combined_nifti, mask_path)
+        combined_path = self.get_mask_path(variant, image_name, mask_name=combined_mask_name)
+        create_segmentation_masks(image_path, mask_dir, combined_path)
 
     def create_multi_region_mask(
         self,
@@ -270,29 +361,18 @@ class COPDGeneVisit:
         state='EXP',
         recon='STD',
         mask_name='lung_regions',
-        connectivity=1
+        **kwargs
     ):
+        from ..preprocess.api import create_multi_region_mask
         image_name = self.get_image_name(state, recon)
+        input_paths = {
+            roi: self.get_mask_path(variant, image_name, roi)
+                for roi in segmentation.ALL_TASK_ROIS
+        }
+        output_path = self.get_mask_path(variant, image_name, mask_name)
+        create_multi_region_mask(input_paths, output_path, **kwargs)
 
-        region_arrays = []
-        for i, roi in enumerate(segmentation.ALL_TASK_ROIS):
-            print(f'[{image_name}] Processing roi mask: {roi}')
-            mask_path = self.get_mask_path(variant, image_name, mask_name=roi)
-            mask_nifti = nib.load(mask_path)
-            mask_array = mask_nifti.get_fdata().astype(int)
-            filtered_array = segmentation.filter_connected_components(
-                mask_array,
-                connectivity=connectivity,
-                max_components=(1 if roi in segmentation.TOTAL_TASK_ROIS else None)
-            )
-            region_arrays.append(filtered_array * (i + 1))
-
-        regions_array = np.max(region_arrays, axis=0).astype(np.float64)
-        regions_nifti = nib.nifti1.Nifti1Image(regions_array, mask_nifti.affine)
-        regions_path = self.get_mask_path(variant, image_name, mask_name=mask_name)
-        nib.save(regions_nifti, regions_path)
-
-    def create_anatomical_mesh(
+    def create_anatomical_meshes(
         self,
         variant='ISO',
         state='EXP',
@@ -302,33 +382,14 @@ class COPDGeneVisit:
         surface_tag='surface',
         **kwargs
     ):
-        import meshio
-
+        from ..preprocess.api import create_anatomical_meshes
         image_name = self.get_image_name(state, recon)
         mask_path = self.get_mask_path(variant, image_name, mask_name)
-
         mesh_dir = self.get_mesh_dir(variant, image_name)
         mesh_dir.mkdir(parents=True, exist_ok=True)
-
         volume_path = self.get_mesh_path(variant, image_name, mask_name, mesh_tag=volume_tag)
         surface_path = self.get_mesh_path(variant, image_name, mask_name, mesh_tag=surface_tag)
-
-        mask_nifti = nib.load(mask_path)
-        mask_array = mask_nifti.get_fdata().astype(int)
-        resolution = mask_nifti.header.get_zooms()[:3]
-        affine = mask_nifti.affine
-
-        print(f'[{image_name}] Creating anatomical mesh')
-        mesh_dict = meshing.generate_mesh_from_mask(mask_array, resolution, **kwargs)
-
-        print(f'[{image_name}] Applying affine to mesh')
-        volume_mesh = meshing.apply_affine_to_mesh(mesh_dict['tetra'], resolution, affine)
-        surface_mesh = meshing.apply_affine_to_mesh(mesh_dict['triangle'], resolution, affine)
-
-        meshio.xdmf.write(volume_path, volume_mesh)
-        meshio.xdmf.write(surface_path, surface_mesh)
-
-        return meshing.load_mesh_with_fenics(volume_path)
+        create_anatomical_meshes(mask_path, volume_path, surface_path, **kwargs)
 
     def create_displacement_field(
         self,
@@ -338,168 +399,15 @@ class COPDGeneVisit:
         recon='STD',
         mask_name='lung_combined_mask'
     ):
-        import torch
-        import torch.nn.functional as F
-        import corrfield
-
+        from ..preprocess.api import create_corrfield_displacement
         source_name = self.get_image_name(source_state, recon)
         target_name = self.get_image_name(target_state, recon)
-
         source_path = self.get_image_path(variant, source_name)
         target_path = self.get_image_path(variant, target_name)
         mask_path = self.get_mask_path(variant, target_name, mask_name)
-
         disp_path = self.get_disp_path(variant, target_name, source_name)
         disp_path.parent.mkdir(parents=True, exist_ok=True)
-
-        source_nifti = nib.load(source_path)
-        target_nifti = nib.load(target_path)
-        mask_nifti = nib.load(mask_path)
-
-        source_array = source_nifti.get_fdata()
-        target_array = target_nifti.get_fdata()
-        mask_array = mask_nifti.get_fdata()
-
-        source_tensor = torch.as_tensor(source_array, dtype=torch.float, device='cuda')
-        target_tensor = torch.as_tensor(target_array, dtype=torch.float, device='cuda')
-        mask_tensor = torch.as_tensor(mask_array, dtype=torch.int, device='cuda')
-
-        print(f'[{source_name} -> {target_name}] Creating displacement field')
-
-        disp_tensor_ijk = corrfield.corrfield.corrfield(
-            img_mov=source_tensor[None,None,...],
-            img_fix=target_tensor[None,None,...],
-            mask_fix=mask_tensor[None,None,...]
-        )[0][0]
-
-        # check registration error
-        target_shape = target_tensor.shape
-        disp_normalized = corrfield.utils.flow_pt(
-            disp_tensor_ijk[None,...],
-            shape=target_shape,
-            align_corners=True
+        create_corrfield_displacement(
+            source_path, target_path, mask_path, disp_path
         )
-        base = F.affine_grid(
-            torch.eye(3, 4, dtype=torch.float, device='cuda')[None,...],
-            size=(1,1,target_shape[0],target_shape[1],target_shape[2]),
-            align_corners=True
-        )
-        warped_tensor = F.grid_sample(
-            input=source_tensor[None,None,...],
-            grid=base + disp_normalized,
-            align_corners=True
-        )
-
-        def compute_error(t):
-            mask = (mask_tensor[None,...] > 0)
-            return torch.norm((t - target_tensor) * mask) / torch.norm(target_tensor * mask)
-
-        error_before = compute_error(source_tensor)
-        error_after  = compute_error(warped_tensor)
-
-        print(error_before)
-        print(error_after)
-
-        assert error_after < error_before, 'registration error did not decrease'
-
-        # convert from voxel to world coordinates (mm)
-        R = torch.as_tensor(target_nifti.affine[:3,:3], dtype=torch.float, device='cuda')
-        disp_tensor_world = torch.einsum('ij,dhwj->dhwi', R, disp_tensor_ijk)
-
-        disp_array = disp_tensor_world.detach().cpu().numpy()
-        disp_nifti = nib.nifti1.Nifti1Image(disp_array, target_nifti.affine)
-        disp_nifti.header.set_intent('vector', (), name='displacement_mm')
-        nib.save(disp_nifti, disp_path)
-
-
-class COPDGeneDataset:
-
-    @classmethod
-    def from_csv(cls, data_file, *args, **kwargs):
-        df = pd.read_csv(data_file, sep='\t', low_memory=False)
-        return cls(df, *args, **kwargs)
-
-    def __init__(self, df, data_root, visit_name='Phase-1'):
-        self.df = df
-        self.data_root = pathlib.Path(data_root)
-        self.visit_name = visit_name
-
-    def __len__(self):
-        return len(self.df)
-
-    def __getitem__(self, idx):
-        row = self.df.iloc[idx]
-        visit = COPDGeneVisit(self.data_root, row.sid, self.visit_name, row.ccenter)
-        return row, visit
-
-
-class COPDGene:
-
-    def __init__(self, data_root, subject_ids=None, visit_names=None):
-        self.data_root = pathlib.Path(data_root)
-        self.subject_ids = subject_ids or self.list_subjects()
-        self.subjects = []
-        for subject_id in self.subject_ids:
-            subject = COPDGeneSubject(self.data_root, subject_id, visit_names)
-            self.subjects.append(subject)
-
-    def __len__(self):
-        return len(self.subjects)
-
-    def __getitem__(self, idx):
-        return self.subjects[idx]
-
-    def __repr__(self):
-        return f'{type(self).__name__}(data_root={self.data_root}, #subjects={len(self)})'
-
-    @property
-    def image_root(self):
-        return self.data_root / 'Images'
-
-    def list_subjects(self):
-        return sorted([x.name for x in self.image_root.iterdir()])
-
-    def load_metadata(self, subdir):
-        metadata = []
-        for subject in self.subjects:
-            m = subject.load_metadata(subdir)
-            metadata.append(m)
-        return pd.concat(metadata)
-
-    def get_examples(
-        self,
-        image_dir='Resized',
-        mask_dir='TotalSegment',
-        mask_roi='lung_regions',
-        mesh_dir='pygalmesh',
-        mesh_version=10,
-        disp_dir='CorrField'
-    ):
-        examples = []
-        for subject in self.subjects:
-            for visit in subject.visits:
-                for fix_name in visit.list_images(image_dir):
-                    if '_SHARP_' in fix_name:
-                        continue
-                    if '_INSP_' in fix_name:
-                        mov_name = fix_name.replace('_INSP_', '_EXP_')
-                    elif '_EXP_' in fix_name:
-                        mov_name = fix_name.replace('_EXP_', '_INSP_')
-                    examples.append({
-                        'name': visit.image_file(image_dir, fix_name).name[:-7],
-                        'anat_file': visit.image_file(image_dir, fix_name),
-                        'disp_file': visit.disp_file(disp_dir, fix_name, mov_name),
-                        'mask_file': visit.mask_file(mask_dir, fix_name, mask_roi),
-                        'mesh_file': visit.mesh_file(mesh_dir, fix_name, mask_roi, mesh_version),
-                        'has_labels': True
-                    })
-        return examples
-
-
-def is_nifti_file(path):
-    try:
-        nib.load(path)
-        return True
-    except Exception:
-        return False
 

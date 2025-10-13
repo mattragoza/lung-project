@@ -15,14 +15,14 @@ def world_to_voxel_coords(points, affine):
     return np.linalg.solve(affine, points_h.T).T[:,:3]
 
 
-def compute_lame_params(E, nu):
-	assert 0 < nu < 0.5
+def compute_lame_parameters(E, nu):
+    assert 0 < nu < 0.5
     mu  = E / (2*(1 + nu))
     lam = E * nu / ((1 + nu)*(1 - 2*nu))
     return mu, lam
 
 
-def compute_ct_density(ct, m_atten_ratio=1.0, density_water=1000.0):
+def compute_density_from_ct(ct, m_atten_ratio=1.0, density_water=1000.0):
 
     # HU = 1000 (mu_x - mu_water) / mu_water
     # HU / 1000 = mu_x / mu_water - 1

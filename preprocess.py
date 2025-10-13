@@ -1,44 +1,55 @@
-import sys, os, argparse, pathlib, itertools
-
 import project
+import project.preprocessing.api as api
 
 
-def preprocess_visit(visit, variant='ISO', recon='STD', states=['INSP', 'EXP']):
-
-	target = 'EXP'
-	for source in states:
-		if source == target: continue
-		source_name = visit.build_image_name(source, recon)
-		target_name = visit.build_image_name(target, recon)
-		project.registration.resample_image(visit, variant, )
-
-	# generate segmentation masks and anatomical mesh
-	for state in states:
-		image_name = visit.build_image_name(state, recon)
-		project.registration.resample_images()
-		project.segmentation.run_segmentation_tasks(visit, 'ISO', image_name)
-		project.segmentation.create_lung_region_mask(visit, 'ISO', image_name)
-		project.meshing.generate_anatomical_mesh(visit, 'ISO', image_name)
-
-	# generate deformation field
-	for source, target in itertools.product(states, states): 
-		if source == target: continue
-		source_name = visit.build_image_name(source, recon)
-		target_name = visit.build_image_name(target, recon)
-		project.deformation.create_deformation_field(visit, variant, source_name, target_name)
+def ensure_step(func, output_path, **kwargs):
+	if not output_path.exists():
+		func(**kwargs)
+	print('skipping: {output_path} exists')
 
 
-@project.utils.main
-def preprocess(
-	data_file: pathlib.Path,
-	data_root: pathlib.Path,
-	subject_id: str='all',
-	visit_name: str='Phase-1',
-	recon: str='STD',
-	variant: str='RAW'
-):
-	ds = project.copdgene.COPDGeneDataset.from_csv(data_file, data_root, visit_name)
-	for row, visit in ds:
-		if row.sid == subject_id or subject_id == 'all':
-			preprocess_visit(visit, variant, recon)
+ds = project.datasets.copdgene.COPDGeneDataset(
+	data_root='data/COPDGene'
+)
+
+examples = ds.examples(
+	subjects=['16514P'],
+	visits=['Phase-1'],
+	variant='ISO',
+	state_pairs=[('EXP', 'INSP')],
+	recon='STD',
+	mask_name='lung_regions',
+	mesh_tag='volume'
+)
+
+for ex in examples:
+
+	api.resample_image_on_reference(
+		input_path=ex.paths['fixed_source'],
+		output_path=ex.paths['fixed_image'],
+		ref_path=ex.paths['ref_image']
+	)
+	api.resample_image_using_reference(
+		input_path=ex.paths['moving_source'],
+		output_path=ex.paths['moving_image'],
+		ref_path=ex.paths['ref_image']
+	)
+	api.create_segmentation_masks(
+		image_path=ex.paths['fixed_image'],
+		output_dir=ex.paths['fixed_mask'].parent
+	)
+	api.create_multi_region_mask(
+		mask_dir=ex.paths['fixed_mask'].parent,
+		output_path=ex.paths['fixed_mask']
+	)
+	api.create_anatomical_meshes(
+		mask_path=ex.paths['fixed_mesh'],
+		output_path=ex.paths['fixed_mesh'],
+	)
+	api.create_corrfield_displacement(
+		fixed_path=ex.paths['fixed_image'],
+		moving_path=ex.paths['moving_image'],
+		mask_path=ex.paths['fixed_mask'],
+		output_path=ex.paths['disp_field']
+	)
 

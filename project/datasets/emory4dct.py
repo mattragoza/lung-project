@@ -1,29 +1,11 @@
-import sys, os, re, yaml
+from typing import Optional, Any, Dict, List, Tuple, Iterable
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
-import nibabel as nib
-import xarray as xr
-#import hvplot.xarray
-#from tqdm import tqdm
-import torch
 
-from . import data, meshing
+from . import base
 
-ALL_CASES = [
-    'Case1Pack',
-    'Case2Pack',
-    'Case3Pack',
-    'Case4Pack',
-    'Case5Pack',
-    'Case6Pack',
-    'Case7Pack',
-    'Case8Deploy',
-    'Case9Pack',
-    'Case10Pack'
-]
-ALL_PHASES = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90]
-CASE_NAME_RE = re.compile(r'Case(\d+)(Pack|Deploy)')
 
 CASE_METADATA = [ # shape, resolution, num_features
     ((256, 256,  94), (0.97, 0.97, 2.50), 1280),
@@ -39,9 +21,140 @@ CASE_METADATA = [ # shape, resolution, num_features
 ]
 
 
-class Emory4DCT(object):
+class Emory4DCTDataset(base.BaseDataset):
+    '''
+    <data_root>/<subject>/
+        Images/
+            <image_name>.img
+        <variant>/
+            <image_name>.nii.gz
+            TotalSeg/
+                <image_name>/
+                    <mask_name>.nii.gz
+            pygalmesh/
+                <image_name>_<mask_name>_<mesh_tag>.xdmf
+            Corrfield/
+                case<sid>_<fixed_state>_<moving_state>.nii.gz
 
-    def __init__(self, data_root, case_names=ALL_CASES, phases=ALL_PHASES):
+    <image_name> = case<sid>_<state>.nii.gz
+    '''
+    VALID_STATES = [f'T{i:02d}' for i in range(0, 100, 10)]
+
+    def __init__(self, data_root: str|Path):
+        self.root = Path(data_root)
+
+    def subjects(self) -> List[str]:
+        if self.root.is_dir():
+            return sorted([p.name for p in self.root.iterdir() if p.is_dir()])
+        return []
+
+    def variants(self, subject: str, visit: str) -> List[str]:
+        subject_root = self.root / subject
+        if subject_root.is_dir():
+            found = []
+            for d in sorted(p for p in subject_root.iterdir() if p.is_dir()):
+                if d not in {'Sampled4D', 'ExtremePhases'}:
+                    found.append(d)
+            return found
+        return []
+
+    def visits(self, subject: str) -> List[str]:
+        return []
+
+    def states(self, subject: str, visit: str) -> List[str]:
+        return list(self.VALID_STATES)
+
+    def get_path(
+        self,
+        subject: str,
+        visit: Optional[str], 
+        variant: str,
+        state: Optional[str] = None,
+        asset_type: str = 'image',
+        **selectors
+    ):
+        subject_root = self.root / subject
+        variant_dir = self.root / subject / variant
+        sid = self._parse_subject_id(subject)
+
+        def image_name(st: str) -> str:
+            return f'case{sid}_{st}'
+
+        if asset_type != 'disp':
+            assert state in self.VALID_STATES
+
+        if asset_type == 'image':
+            if variant == 'Images': # Analyze 7.5 format
+                return variant_dir / f'{image_name(state)}.img'
+            return variant_dir / f'{image_name(state)}.nii.gz'
+
+        elif asset_type == 'mask':
+            mask_name = selectors['mask_name']
+            return variant_dir / 'TotalSegment' / image_name(state) / f'{mask_name}.nii.gz'
+
+        elif asset_type == 'mesh':
+            mask_name = selectors['mask_name']
+            mesh_tag = selectors['mesh_tag']
+            return variant_dir / 'pygalmesh' / f'{image_name(state)}_{mask_name}_{mesh_tag}.xdmf'
+
+        elif asset_type == 'disp':
+            fix = selectors['fixed_state']
+            mov = selectors['moving_state']
+            assert fix in self.VALID_STATES
+            assert mov in self.VALID_STATES
+            return variant_dir / 'CorrField' / f'case{sid}_{moving_state}_{fixed_state}.nii.gz'
+
+        elif asset_type == 'kpts':
+            return subject_root / 'Sampled4D' / f'case{sid}_4D-75_{state}.txt'
+
+        raise RuntimeError(f'unrecognized asset type: {asset_type}')
+
+    def _parse_subject_id(subject: str) -> int:
+        # expected format: Case<sid>_(Pack|Deploy)
+        parts = subject.split('_')
+        if len(parts) == 2 and parts[0].startswith('Case'):
+            return int(parts[0][4:])
+
+        raise RuntimeError(f'failed to parse subject id: {subject}')
+
+    def examples(
+        self,
+        subjects: Optional[List[str]] = None,
+        variant: str = 'NIFTI',
+        state_pairs: Optional[List[Tuple[str, str]]] = None,
+        mask_name: str = None,
+        mesh_tag: str = None,
+        source_variant: str = 'Images',
+        ref_state: str = 'T00'
+    ):
+        subjects = subjects or self.subjects()
+        for subj in subjects:
+            pairs = state_pairs or self.state_pairs(subj, None)
+            for fixed, moving in pairs:
+                paths = {}
+                paths['ref_image'] = self.get_path(subj, None, source_variant, ref_state, 'image')
+                paths['fixed_source'] = self.get_path(subj, None, source_variant, fixed, 'image')
+                paths['moving_source'] = self.get_path(subj, None, source_variant, moving, 'image')
+                paths['fixed_image'] = self.get_path(subj, None, variant, fixed, 'image')
+                paths['moving_image'] = self.get_path(subj, None, variant, moving, 'image')
+                paths['fixed_mask'] = self.get_path(subj, None, variant, fixed, 'mask', mask_name=mask_name)
+                paths['fixed_mesh'] = self.get_path(subj, None, variant, fixed, 'mesh', mask_name=mask_name, mesh_tag=mesh_tag)
+                paths['disp_field'] = self.get_path(subj, None, variant, None, 'disp', fixed_state=fixed, moving_state=moving)
+                yield base.Example(
+                    dataset='Emory4DCT',
+                    subject=subj,
+                    visit=None,
+                    variant=variant,
+                    fixed_state=fixed,
+                    moving_state=moving,
+                    paths=paths,
+                    metadata={}
+                )
+
+
+class Emory4DCT: # DEPRECATED
+
+    def __init__(self, data_root, case_names, phases):
         self.data_root = Path(data_root)
         self.case_names = as_iterable(case_names)
         self.phases = as_iterable(phases)
@@ -127,7 +240,7 @@ class Emory4DCT(object):
         return examples
 
 
-class Emory4DCTCase(object):
+class Emory4DCTCase: # DEPRECATED
     
     def __init__(self, data_root, case_name, phases):
         self.data_root = Path(data_root)
@@ -204,7 +317,7 @@ class Emory4DCTCase(object):
         images = []
         for phase in self.phases:
             img_file = self.image_file(phase)
-            image = load_img_file(img_file, shape, dtype=np.int16)
+            image = load_img_file(img_file, shape)
             images.append(image)
 
         # stack images and apply shift
@@ -436,47 +549,4 @@ class Emory4DCTCase(object):
         return selection
 
 
-def is_iterable(obj):
-    return hasattr(obj, '__iter__') and not isinstance(obj, str)
 
-
-def as_iterable(obj):
-    return obj if is_iterable(obj) else [obj]
-
-
-def load_yaml_file(yaml_file):
-    '''
-    Read a YAML configuration file.
-    '''
-    print(f'Loading {yaml_file}')
-    with open(yaml_file) as f:
-        return yaml.safe_load(f)
-
-
-def load_xyz_file(xyz_file, dtype=float):
-    '''
-    Read landmark xyz coordinates from text file.
-    '''
-    print(f'Loading {xyz_file}')
-    with open(xyz_file) as f:
-        data = [line.strip().split() for line in f]
-    return np.array(data, dtype=dtype)
-
-
-def load_img_file(img_file, shape, dtype, verbose=True):
-    '''
-    Read CT image from file in Analyze 7.5 format.
-    
-    https://stackoverflow.com/questions/27507928/loading-analyze-7-5-format-images-in-python
-    '''
-    if verbose:
-        print(f'Loading {img_file}')
-    data = np.fromfile(img_file, dtype)
-    data = data.reshape(shape)
-    itemsize = data.dtype.itemsize
-    data.strides = (
-        itemsize,
-        itemsize * shape[0],
-        itemsize * shape[0] * shape[1]
-    )
-    return data.copy()
