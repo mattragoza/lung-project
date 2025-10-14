@@ -1,28 +1,99 @@
 import numpy as np
+import torch
+
+
+def _as_tensor(a, b: torch.Tensor) -> torch.Tensor:
+    return torch.as_tensor(a, dtype=b.dtype, device=b.device)
+
+
+def _homogeneous(points):
+    '''
+    Args:
+        points: (..., D) input coords
+    Returns:
+        (..., D+1) homogeneous coords
+    '''
+    if isinstance(points, torch.Tensor):
+        ones = torch.ones_like(points[...,:1])
+        return torch.cat([points, ones], dim=-1)
+    else:
+        points = np.asarray(points)
+        ones = np.ones_like(points[...,:1])
+        return np.concatenate([points, ones], axis=-1)
 
 
 def voxel_to_world_coords(points, affine):
-    assert points.ndim == 2 and points.shape[1] == 3
-    assert affine.shape == (4, 4) and np.allclose(affine[3], [0,0,0,1])
-    points_h = np.c_[points, np.ones(points.shape[0])]
-    return (affine @ points_h.T).T[:,:3]
+    '''
+    Args:
+        points: (N, 3) voxel coordinates
+        affine: (4, 4) voxel -> world mapping
+    Returns:
+        (N, 3) world coordinates
+    '''
+    assert affine.shape == (4, 4)
+    if isinstance(points, torch.Tensor):
+        A = _as_tensor(affine, points)
+    else:
+        A = np.asarray(affine)
+    output = (A @ _homogeneous(points).T).T
+    return output[:,:3] / output[:,3:4]
 
 
 def world_to_voxel_coords(points, affine):
-    assert points.ndim == 2 and points.shape[1] == 3
-    assert affine.shape == (4, 4) and np.allclose(affine[3], [0,0,0,1])
-    points_h = np.c_[points, np.ones(points.shape[0])]
-    return np.linalg.solve(affine, points_h.T).T[:,:3]
+    '''
+    Args:
+        points: (N, 3) world coordinates
+        affine: (4, 4) voxel -> world mapping
+    Returns:
+        (N, 3) voxel coordinates
+    '''
+    assert affine.shape == (4, 4)
+    if isinstance(points, torch.Tensor):
+        A = _as_tensor(affine, points)
+        H = _homogeneous(points)
+        output = torch.linalg.solve(A, H.T).T
+    else:
+        A = np.asarray(affine)
+        H = _homogeneous(points)
+        output = np.linalg.solve(A, H.T).T
+    return output[:,:3] / output[:,3:4]
 
 
-def compute_lame_parameters(E, nu):
-    assert 0 < nu < 0.5
+def normalize_voxel_coords(points, shape, align_corners=True, flip_order=False):
+    '''
+    Args:
+        points: (N, D) voxel coordinates
+        shape: length D tuple of ints
+    Returns:
+        (N, D) coords normalized to [-1, 1]
+    '''
+    if isinstance(points, torch.Tensor):
+        S = _as_tensor(shape, points)
+    else:
+        points = np.asarray(points)
+        S = np.asarray(shape)
+
+    if align_corners:
+        output = (points / (S - 1)) * 2. - 1.
+    else:
+        output = ((points + 0.5) / S) * 2. - 1.
+
+    if isinstance(points, torch.Tensor) and flip_order:
+        return output.flip(-1)
+    elif flip_order:
+        return output[...,::-1]
+    else:
+        return output
+
+
+def compute_lame_parameters(E, nu=0.4):
+    assert 0 < nu < 0.5, nu
     mu  = E / (2*(1 + nu))
     lam = E * nu / ((1 + nu)*(1 - 2*nu))
     return mu, lam
 
 
-def compute_density_from_ct(ct, m_atten_ratio=1.0, density_water=1000.0):
+def compute_density_from_ct(ct, m_atten_ratio=1., density_water=1000.):
 
     # HU = 1000 (mu_x - mu_water) / mu_water
     # HU / 1000 = mu_x / mu_water - 1
@@ -39,4 +110,8 @@ def compute_density_from_ct(ct, m_atten_ratio=1.0, density_water=1000.0):
     # where m_atten_ratio = m_atten_x / m_atten_water
     assert m_atten_ratio > 0
     return (ct / 1000 + 1) * density_water / m_atten_ratio
+
+
+def compute_emphysema_from_ct(ct, threshold=-950):
+    return (ct <= threshold)
 

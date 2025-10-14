@@ -24,9 +24,10 @@ class COPDGeneDataset(base.BaseDataset):
     <image_name> = <subject>_<state>_<recon>_<site>_COPD
     '''
     VALID_STATES = ['EXP', 'INSP']
+    DEFAULT_VISIT = 'Phase-1'
     DEFAULT_RECON = 'STD'
 
-    def __init__(self, data_root: str|Path):
+    def __init__(self, data_root: str | Path):
         self.root = Path(data_root)
         self._site_cache = {}
 
@@ -117,13 +118,15 @@ class COPDGeneDataset(base.BaseDataset):
         visit: str = None,
         variant: str = 'ISO',
         state_pairs: Optional[List[Tuple[str, str]]] = None,
-        recon: str = 'STD',
+        recon: str = None,
         mask_name: str = 'lung_regions',
         mesh_tag: str = 'volume',
         source_variant: str = 'RAW',
         ref_state: str = 'EXP'
     ):
         subjects = subjects or self.subjects()
+        visit = visit or self.DEFAULT_VISIT
+        recon = recon or self.DEFAULT_RECON
         for subj in subjects:
             pairs = state_pairs or self.state_pairs(subj, visit)
             for fixed, moving in pairs:

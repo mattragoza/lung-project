@@ -15,6 +15,13 @@ def as_iterable(obj):
     return obj if is_iterable(obj) else [obj]
 
 
+def print_tensor_info(*args, **kwargs):
+    for i, v in enumerate(args):
+        print(f'{i}: {v.shape} {v.dtype} {v.device}')
+    for k, v in kwargs.items():
+        print(f'{k}: {v.shape} {v.dtype} {v.device}')
+
+
 def get_random_seed(max_seed):
     time.sleep((time.time() % 1) / 1000)
     return int(time.time() * 1e6) % 4294967295 # 2^32 - 1

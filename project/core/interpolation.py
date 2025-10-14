@@ -2,25 +2,36 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from . import transforms
 
-def interpolate_image(image, points, mode='bilinear'):
+
+def interpolate_image(image, points, mode='bilinear', padding='border'):
     '''
     Args:
-        image:  (X, Y, Z, C) input image tensor
-        points: (N, 3) tensor of voxel indices (ijk)
+        image:  (C, X, Y, Z) input image tensor
+        points: (N, 3) tensor of voxel coordinates,
+            where component order == image dim order
     Returns:
-        (N, C) tensor of interpolated values
+        (N, C) tensor of interpolated image values
     '''
-    import corrfield
-    points_pt = corrfield.utils.kpts_pt(points, image.shape[:3], align_corners=True)
-
-    return F.grid_sample(
-        input=image.permute(3, 0, 1, 2).unsqueeze(0),
-        grid=points_pt.unsqueeze(0).unsqueeze(0).unsqueeze(0),
+    normalized = transforms.normalize_voxel_coords(
+        points,
+        image.shape[1:],
+        align_corners=True,
+        flip_order=True
+    )
+    output = F.grid_sample(
+        input=image[None,:,:,:,:],           # (B, C, X, Y, Z)
+        grid=normalized[None,None,None,:,:], # (B, L, M, N, 3)
         mode=mode,
-        padding_mode='border',
+        padding_mode=padding,
         align_corners=True
-    ).permute(0, 2, 3, 4, 1).squeeze(0).squeeze(0).squeeze(0)
+    )
+    # (B, C, L, M, N) -> (N, C)
+    return output[0,:,0,0,:].T
+
+
+## DEPRECATED
 
 
 def my_interpolate_image(

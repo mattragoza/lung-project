@@ -2,13 +2,17 @@ import nibabel as nib
 import pyvista as pv
 
 
-def view_mesh(mesh):
-	p = pv.Plotter()
-	p.add_mesh(
-	    pv.from_meshio(mesh),
-	    scalars='label',
-	    cmap='Set1',
-	    clim=(0, 8)
-	)
-	p.show()
+def get_opacity_values(vmin, vmax, center, width, low=0.0, high=1.0, n=201):
+    x = np.linspace(vmin, vmax, n)
+    a = low + (high - low) * _sigmoid((x - center) / width)
+    return a.tolist()
+
+
+def _sigmoid(x):
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def _gaussian(x):
+    return np.exp(-x**2)
+
 
