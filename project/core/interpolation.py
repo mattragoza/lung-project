@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from . import transforms
 
 
-def interpolate_image(image, points, mode='bilinear', padding='border'):
+def interpolate_image(image, points, mode='bilinear', padding='border', align_corners=True, flip_order=True):
     '''
     Args:
         image:  (C, X, Y, Z) input image tensor
@@ -17,15 +17,15 @@ def interpolate_image(image, points, mode='bilinear', padding='border'):
     normalized = transforms.normalize_voxel_coords(
         points,
         image.shape[1:],
-        align_corners=True,
-        flip_order=True
+        align_corners=align_corners,
+        flip_order=flip_order
     )
     output = F.grid_sample(
         input=image[None,:,:,:,:],           # (B, C, X, Y, Z)
         grid=normalized[None,None,None,:,:], # (B, L, M, N, 3)
         mode=mode,
         padding_mode=padding,
-        align_corners=True
+        align_corners=align_corners
     )
     # (B, C, L, M, N) -> (N, C)
     return output[0,:,0,0,:].T

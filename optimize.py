@@ -20,6 +20,8 @@ nu = 0.5
 max_iter = 1000
 lr = 1e-3
 
+mm_to_m = 1e-3
+
 for ex in project.datasets.base.TorchDataset(examples):
 	image  = ex['image']
 	mask   = ex['mask']
@@ -31,14 +33,11 @@ for ex in project.datasets.base.TorchDataset(examples):
 	points = torch.as_tensor(points, dtype=image.dtype, device=image.device)
 
 	image_vals = project.core.interpolation.interpolate_image(image, points)
-	u_obs_vals = project.core.interpolation.interpolate_image(disp, points)
+	u_obs_vals = project.core.interpolation.interpolate_image(disp, points) * mm_to_m
 	rho_vals = project.core.transforms.compute_density_from_ct(image_vals)
 
-	solver = project.solvers.warp.WarpSolver(mesh, relative=True)
-	solver.set_fixed(rho_vals, u_obs_vals)
-	solver.assemble_f()
-
-	module = project.solvers.base.PDESolverModule(solver)
+	solver = project.solvers.warp.WarpFEMSolver(mesh, relative_loss=True)
+	module = project.solvers.base.PDESolverModule(solver, rho_vals, u_obs_vals)
 
 	theta = torch.ones_like(image_vals, dtype=torch.float32, requires_grad=True)
 	optim = torch.optim.Adam([theta], lr=lr)
