@@ -1,11 +1,5 @@
 import project
-
-
-def ensure_step(func, output_path, **kwargs):
-	if not output_path.exists():
-		func(**kwargs)
-	print('skipping: {output_path} exists')
-
+import project.preprocessing.api as api
 
 ds = project.datasets.copdgene.COPDGeneDataset(
 	data_root='data/COPDGene'

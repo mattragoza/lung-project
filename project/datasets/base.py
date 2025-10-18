@@ -11,25 +11,15 @@ import meshio
 
 @dataclass
 class Example:
-    dataset: str
-    subject: str
-    visit: str
-    variant: str
-    fixed_state: str
-    moving_state: str
-    paths: Dict[str, Path] = None
-    metadata: Dict[str, Any] = None
 
-    def __str__(self):
-        lines = []
-        for key, val in vars(self).items():
-            if isinstance(val, dict):
-                lines.append(f'{key.ljust(12)}')
-                for k, v in val.items():
-                    lines.append(f'    {repr(k).ljust(15)} : {repr(v)}')
-            else:   
-                lines.append(f'{key.ljust(12)} : {repr(val)}')
-        return '\n'.join(lines)
+    dataset:  str
+    subject:  str
+    variant:  Optional[str] = None
+    visit:    Optional[str] = None
+    fixed_state:  Optional[str] = None
+    moving_state: Optional[str] = None
+    paths:    Dict[str, Path] = None
+    metadata: Dict[str, Any]  = None
 
 
 class BaseDataset:
@@ -53,8 +43,8 @@ class BaseDataset:
     def get_path(
         self,
         subject: str,
-        visit: str,
         variant: str,
+        visit: str,
         state: str,
         asset_type: str,
         **selectors
@@ -68,7 +58,10 @@ class BaseDataset:
 class TorchDataset(torch.utils.data.Dataset):
 
     def __init__(
-        self, examples: List[Example], dtype=torch.float32, device='cuda'
+        self,
+        examples: List[Example],
+        dtype=torch.float32,
+        device='cuda'
     ):
         self.examples = examples
         self.dtype = dtype
@@ -84,31 +77,29 @@ class TorchDataset(torch.utils.data.Dataset):
         mask_nifti  = nib.load(ex.paths['fixed_mask'])
         disp_nifti  = nib.load(ex.paths['disp_field'])
 
-        affine_array = np.array(image_nifti.affine)
+        affine = np.array(image_nifti.affine)
 
         def as_tensor(a):
             return torch.as_tensor(a, dtype=self.dtype, device=self.device)
 
-        image_tensor = as_tensor(image_nifti.get_fdata()).unsqueeze(0)
-        mask_tensor  = as_tensor(mask_nifti.get_fdata()).unsqueeze(0)
-        disp_tensor  = as_tensor(disp_nifti.get_fdata()).permute(3,0,1,2)
+        image = as_tensor(image_nifti.get_fdata()).unsqueeze(0)
+        mask  = as_tensor(mask_nifti.get_fdata()).unsqueeze(0)
+        disp  = as_tensor(disp_nifti.get_fdata()).permute(3,0,1,2)
 
-        elast_path = ex.paths.get('elast_field')
-        if elast_path:
-            elast_nifti  = load_nifti(elast_path)
-            elast_tensor = as_tensor(elast_nifti).unsqueeze(0)
-        else:
-            elast_tensor = None
+        elast = None
+        if 'elast_field' in ex.paths:
+            elast_nifti = load_nifti(ex.paths['elast_field'])
+            elast = as_tensor(elast_nifti).unsqueeze(0)
 
-        mesh_io = meshio.read(ex.paths['fixed_mesh'])
+        mesh = meshio.read(ex.paths['fixed_mesh'])
 
         return {
-            'affine': affine_array,
-            'image':  image_tensor,
-            'mask':   mask_tensor,
-            'disp':   disp_tensor,
-            'elast':  elast_tensor,
-            'mesh':   mesh_io
+            'affine':  affine,
+            'image':   image,
+            'mask':    mask,
+            'disp':    disp,
+            'elast':   elast,
+            'mesh':    mesh,
         }
 
 

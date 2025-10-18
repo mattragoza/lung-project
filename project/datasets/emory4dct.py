@@ -67,8 +67,8 @@ class Emory4DCTDataset(base.BaseDataset):
     def get_path(
         self,
         subject: str,
-        visit: Optional[str], 
         variant: str,
+        visit: Optional[str], 
         state: Optional[str] = None,
         asset_type: str = 'image',
         **selectors
@@ -132,19 +132,19 @@ class Emory4DCTDataset(base.BaseDataset):
             pairs = state_pairs or self.state_pairs(subj, None)
             for fixed, moving in pairs:
                 paths = {}
-                paths['ref_image'] = self.get_path(subj, None, source_variant, ref_state, 'image')
-                paths['fixed_source'] = self.get_path(subj, None, source_variant, fixed, 'image')
-                paths['moving_source'] = self.get_path(subj, None, source_variant, moving, 'image')
-                paths['fixed_image'] = self.get_path(subj, None, variant, fixed, 'image')
-                paths['moving_image'] = self.get_path(subj, None, variant, moving, 'image')
-                paths['fixed_mask'] = self.get_path(subj, None, variant, fixed, 'mask', mask_name=mask_name)
-                paths['fixed_mesh'] = self.get_path(subj, None, variant, fixed, 'mesh', mask_name=mask_name, mesh_tag=mesh_tag)
-                paths['disp_field'] = self.get_path(subj, None, variant, None, 'disp', fixed_state=fixed, moving_state=moving)
+                paths['ref_image'] = self.get_path(subj, source_variant, None, ref_state, 'image')
+                paths['fixed_source'] = self.get_path(subj, source_variant, None, fixed, 'image')
+                paths['moving_source'] = self.get_path(subj, source_variant, None, moving, 'image')
+                paths['fixed_image'] = self.get_path(subj, variant, None, fixed, 'image')
+                paths['moving_image'] = self.get_path(subj, variant, None, moving, 'image')
+                paths['fixed_mask'] = self.get_path(subj, variant, None, fixed, 'mask', mask_name=mask_name)
+                paths['fixed_mesh'] = self.get_path(subj, variant, None, fixed, 'mesh', mask_name=mask_name, mesh_tag=mesh_tag)
+                paths['disp_field'] = self.get_path(subj, variant, None, None, 'disp', fixed_state=fixed, moving_state=moving)
                 yield base.Example(
                     dataset='Emory4DCT',
                     subject=subj,
-                    visit=None,
                     variant=variant,
+                    visit=None,
                     fixed_state=fixed,
                     moving_state=moving,
                     paths=paths,

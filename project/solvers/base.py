@@ -53,6 +53,20 @@ class PDESolver:
 		raise NotImplementedError
 
 
+class PDESolverModule(torch.nn.Module):
+
+	def __init__(self, solver: PDESolver, rho: torch.Tensor, u_obs: torch.Tensor):
+		super().__init__()
+		solver.assemble_projector()
+		solver.set_fixed(rho, u_obs)
+		solver.assemble_forcing()
+		solver.assemble_lifting()
+		self.solver = solver
+
+	def forward(self, mu: torch.Tensor, lam: torch.Tensor):
+		return PDESolverFn.apply(self.solver, mu, lam)
+
+
 class PDESolverFn(torch.autograd.Function):
 
 	@staticmethod
@@ -67,22 +81,8 @@ class PDESolverFn(torch.autograd.Function):
 		return loss
 
 	@staticmethod
-	def backward(ctx, grad_out):
+	def backward(ctx, grad_out: torch.Tensor):
 		ctx.solver.adjoint_backward(grad_out)
 		grad = ctx.solver.params_grad()
 		return None, grad['mu'], grad['lam']
-
-
-class PDESolverModule(torch.nn.Module):
-
-	def __init__(self, solver: PDESolver, rho: torch.Tensor, u_obs: torch.Tensor):
-		super().__init__()
-		solver.assemble_projector()
-		solver.set_fixed(rho, u_obs)
-		solver.assemble_forcing()
-		solver.assemble_lifting()
-		self.solver = solver
-
-	def forward(self, mu, lam):
-		return PDESolverFn.apply(self.solver, mu, lam)
 

@@ -1,7 +1,11 @@
+import sys
 import numpy as np
 import torch
-import fenics as fe
-import fenics_adjoint as fa
+try:
+    import fenics as fe
+    import fenics_adjoint as fa
+except Exception as e:
+    print(f'Failed to import fenics: {e}', file=sys.stderr)
 
 
 class FenicsFEMSolver:

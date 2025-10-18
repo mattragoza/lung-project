@@ -1,1 +1,1 @@
-from . import base, copdgene, emory4dct
+from . import base, copdgene, emory4dct, shapenet

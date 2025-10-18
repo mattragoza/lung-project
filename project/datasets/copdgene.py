@@ -55,8 +55,8 @@ class COPDGeneDataset(base.BaseDataset):
     def get_path(
         self,
         subject: str,
-        visit: str,
         variant: str,
+        visit: str,
         state: Optional[str] = None,
         recon: Optional[str] = None,
         asset_type: str = 'image',
@@ -131,14 +131,14 @@ class COPDGeneDataset(base.BaseDataset):
             pairs = state_pairs or self.state_pairs(subj, visit)
             for fixed, moving in pairs:
                 paths = {}
-                paths['ref_image'] = self.get_path(subj, visit, source_variant, ref_state, recon, 'image')
-                paths['fixed_source'] = self.get_path(subj, visit, source_variant, fixed, recon, 'image')
-                paths['moving_source'] = self.get_path(subj, visit, source_variant, moving, recon, 'image')
-                paths['fixed_image'] = self.get_path(subj, visit, variant, fixed, recon, 'image')
-                paths['moving_image'] = self.get_path(subj, visit, variant, moving, recon, 'image')
-                paths['fixed_mask'] = self.get_path(subj, visit, variant, fixed, recon, 'mask', mask_name=mask_name)
-                paths['fixed_mesh'] = self.get_path(subj, visit, variant, fixed, recon, 'mesh', mask_name=mask_name, mesh_tag=mesh_tag)
-                paths['disp_field'] = self.get_path(subj, visit, variant, None, recon, 'disp', fixed_state=fixed, moving_state=moving)
+                paths['ref_image'] = self.get_path(subj, source_variant, visit, ref_state, recon, 'image')
+                paths['fixed_source'] = self.get_path(subj, source_variant, visit, fixed, recon, 'image')
+                paths['moving_source'] = self.get_path(subj, source_variant, visit, moving, recon, 'image')
+                paths['fixed_image'] = self.get_path(subj, variant, visit, fixed, recon, 'image')
+                paths['moving_image'] = self.get_path(subj, variant, visit, moving, recon, 'image')
+                paths['fixed_mask'] = self.get_path(subj, variant, visit, fixed, recon, 'mask', mask_name=mask_name)
+                paths['fixed_mesh'] = self.get_path(subj, variant, visit, fixed, recon, 'mesh', mask_name=mask_name, mesh_tag=mesh_tag)
+                paths['disp_field'] = self.get_path(subj, variant, visit, None, recon, 'disp', fixed_state=fixed, moving_state=moving)
                 yield base.Example(
                     dataset='COPDGene',
                     subject=subj,

@@ -6,14 +6,20 @@ import ipywidgets
 def show_image_slices(
     array,
     idx=None,
-    imshow_kws=None,
-    line_kws=None,
+    ax_height=2,
+    ax_width=2,
+    spacing=(0.5, 0.75), # hw
+    padding=(0.75, 0.5, 0.5, 0.25), # lrbt
+    cbar_width=0.25,
+    cbar_spacing=0.5,
     title=None,
-    colors='rgb'
+    colors='rgb',
+    linewidth=1.5,
+    interact=True,
+    **imshow_kws
 ):
     assert array.ndim == 3, 'array must be 3D'
     I, J, K = array.shape
-
     if idx is None:
         idx = (I//2, J//2, K//2)
     i, j, k = map(int, idx)
@@ -22,11 +28,11 @@ def show_image_slices(
     color_dict = get_color_dict(brightness=0.5, saturation=1.0)
     colors = as_iterable(colors, length=3, string_ok=True)
     colors = [color_dict.get(c, c) for c in colors]
-    i_line_kws = with_defaults(line_kws, color=colors[0], linewidth=1.5)
-    j_line_kws = with_defaults(line_kws, color=colors[1], linewidth=1.5)
-    k_line_kws = with_defaults(line_kws, color=colors[2], linewidth=1.5)
+    i_line_kws = dict(color=colors[0], linewidth=linewidth)
+    j_line_kws = dict(color=colors[1], linewidth=linewidth)
+    k_line_kws = dict(color=colors[2], linewidth=linewidth)
   
-    fig, axes = subplot_grid(1, 3, ax_height=3, ax_width=3, spacing=2/3, pad=1/3)
+    fig, axes, cbar_ax = subplot_grid(1, 3, ax_height, ax_width, spacing, padding, cbar_width, cbar_spacing)
     if title:
         fig.suptitle(title)
 
@@ -37,6 +43,10 @@ def show_image_slices(
     im_i = ax_i.imshow(array[i,:,:].T, origin='lower', **imshow_kws)
     im_j = ax_j.imshow(array[:,j,:].T, origin='lower', **imshow_kws)
     im_k = ax_k.imshow(array[:,:,k].T, origin='lower', **imshow_kws)
+
+    plt.colorbar(im_k, cax=cbar_ax)
+    cbar_ax.yaxis.set_ticks_position('left')
+    cbar_ax.yaxis.set_label_position('left')
 
     set_ax_spine_props(ax_i, **i_line_kws)
     set_ax_spine_props(ax_j, **j_line_kws)
@@ -101,7 +111,10 @@ def show_image_slices(
             update_i(event.xdata)
             update_j(event.ydata)
 
-    cid_click = fig.canvas.mpl_connect('button_press_event', on_click)
+    if interact:
+        fig.canvas.mpl_connect('button_press_event', on_click)
+
+    return fig
 
 
 def subplot_grid(
@@ -110,15 +123,16 @@ def subplot_grid(
     ax_height,
     ax_width,
     spacing=0.3,
-    pad=0.0,
+    padding=0.0,
     cbar_width=0.0,
+    cbar_spacing=0.0,
     **subplot_kws
 ):
     ax_heights = as_iterable(ax_height, length=n_rows)
     ax_widths  = as_iterable(ax_width,  length=n_cols)
 
     h_spacing, w_spacing = as_iterable(spacing, length=2)
-    l_pad, r_pad, b_pad, t_pad = as_iterable(pad, length=4)
+    l_pad, r_pad, b_pad, t_pad = as_iterable(padding, length=4)
 
     assert len(ax_heights) == n_rows
     assert len(ax_widths)  == n_cols
@@ -134,7 +148,7 @@ def subplot_grid(
 
     extra_width = 0
     if cbar_width > 0:
-        extra_width = cbar_width + w_spacing
+        extra_width = cbar_width + cbar_spacing
         fig_width += extra_width
 
     mean_ax_height = total_ax_height / n_rows
@@ -158,9 +172,9 @@ def subplot_grid(
     )
 
     if cbar_width > 0:
-        cbar_left = total_ax_width + total_w_spacing + l_pad
+        cbar_left = total_ax_width + total_w_spacing + l_pad + cbar_spacing
         cbar_bottom = b_pad
-        cbar_height = 1.0 - (b_pad + t_padding)
+        cbar_height = total_ax_height
         cbar_ax = fig.add_axes([
             cbar_left   / fig_width,
             cbar_bottom / fig_height,
