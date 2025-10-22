@@ -61,61 +61,59 @@ def run_segmentation_tasks(visit, variant, image_name):
 
 
 def filter_connected_components(
-    mask,
-    connectivity=1,
+    input_mask,
     min_count=10,
     min_percent=0,
-    keep_largest=True,
     max_components=None,
+    keep_largest=True,
+    connectivity=1,
     verbose=True
 ):
-    assert np.issubdtype(mask.dtype, np.integer), mask.dtype
-
     # label connected regions and measure their size
-    labeled_mask, num_labels = skimage.measure.label(
-        mask,
-        background=0,
-        return_num=True,
-        connectivity=connectivity
+    labeled, input_components = skimage.measure.label(
+        (input_mask != 0), connectivity=connectivity, return_num=True
     )
-    labels, counts = np.unique(labeled_mask, return_counts=True)
     if verbose:
-        print(f'  # {connectivity}-connected inputs components: {num_labels}')
-    
-    total_voxels = counts[1:].sum() # exclude background
+        print(f'Input {connectivity}-connected components: {input_components}')
 
-    filtered_mask = np.zeros_like(mask, dtype=mask.dtype)
-    total_components = 0
-    total_dropped = 0
+    labels, counts = np.unique(labeled[labeled > 0], return_counts=True)
 
-    for idx in np.argsort(-counts[1:]):
-        label = labels[idx+1]
-        count = counts[idx+1]
-        percent = count / total_voxels * 100
-        if verbose > 1:
-            print(f'    Component {label} has {count} voxels ({percent:.4f}%): ', end='')
-        component_check = (max_components and total_components >= max_components)
-        if count >= min_count and percent >= min_percent and not component_check:
-            filtered_mask[labeled_mask == label] = 1
-            total_components += 1
+    total = counts.sum()
+    if total == 0:
+        return np.zeros_like(input_mask, dtype=bool)
+
+    percents = counts / total * 100.
+    size_order = np.argsort(-counts) # largest to smallest
+
+    if verbose:
+        print(f'  Voxel counts:   {counts[size_order]} {total}')
+        #print(f'  Voxel percents: {percents[size_order]}')
+
+    output_labels = []
+    output_components = 0
+    voxels_dropped = 0
+
+    for rank, i in enumerate(size_order):
+        l, c, p = int(labels[i]), int(counts[i]), float(percents[i])
+
+        size_ok = (c >= min_count) and (p >= min_percent)
+        hit_cap = max_components and (output_components >= max_components)
+        keep = (size_ok and not hit_cap) or (keep_largest and rank == 0)
+
+        if keep:
+            output_labels.append(l)
+            output_components += 1
         else:
-            total_dropped += count
+            voxels_dropped += c
 
-    if keep_largest and filtered_mask.sum() == 0 and num_labels > 0:
-        idx = np.argmax(counts[1:])
-        label = labels[idx+1]
-        count = counts[idx+1]
-        percent = count / total_voxels * 100
-        filtered_mask = (labeled_mask == label)
-        total_dropped -= count
+    output_mask = np.isin(labeled, output_labels)
 
     if verbose:
-        percent = total_dropped / total_voxels * 100
-        num_final = count_connected_components(filtered_mask, connectivity)
-        print(f'    {total_dropped} voxels were dropped ({percent:.4f}%)')
-        print(f'  # {connectivity}-connected output components: {num_final}')
+        pct_dropped = voxels_dropped / total * 100.
+        print(f'Output {connectivity}-connected components: {output_components}')
+        print(f'  Voxels dropped: {voxels_dropped} ({pct_dropped:.4f}%)')
 
-    return filtered_mask
+    return output_mask
 
 
 def count_connected_components(mask, connectivity=None):

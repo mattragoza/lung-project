@@ -87,10 +87,8 @@ def pprint(
             out += f'\n{item_tab}{key_str} {val_str}'
 
         if len(items) > max_items:
-            out += f'\n{_tab}└── <{len(items) - max_items} more items>'
-
-    elif items and False:
-        out += f'\n{_tab}└── <{len(items)} items>'
+            not_shown = len(items) - max_items
+            out += f'\n{_tab}└── <{not_shown} more items>'
 
     return out if ret_string else print(out)
 

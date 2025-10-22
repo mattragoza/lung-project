@@ -45,12 +45,6 @@ def assign_cell_labels(mesh, mask, resolution, new_key='label', old_key='medit:r
     )
 
 
-def count_labeled_cells(mesh, cell_type, label_key, label_value):
-    cell_labels = mesh.cell_data_dict[label_key][cell_type]
-    cell_count = np.sum(cell_labels == label_value)
-    return cell_count
-
-
 def construct_label_map(mesh, mask, resolution, label_key='medit:ref'):
 
     tetrahedra = mesh.cells_dict['tetra']
@@ -68,6 +62,12 @@ def construct_label_map(mesh, mask, resolution, label_key='medit:ref'):
         label_map[mesh_label] = most_common
 
     return label_map
+
+
+def count_labeled_cells(mesh, cell_type, label_key, label_value):
+    cell_labels = mesh.cell_data_dict[label_key][cell_type]
+    cell_count = np.sum(cell_labels == label_value)
+    return cell_count
 
 
 def remove_unused_points(mesh):

@@ -9,9 +9,9 @@ def show_image_slices(
     ax_height=2,
     ax_width=2,
     spacing=(0.5, 0.75), # hw
-    padding=(0.75, 0.5, 0.5, 0.25), # lrbt
+    padding=(0.75, 0.75, 0.5, 0.25), # lrbt
     cbar_width=0.25,
-    cbar_spacing=0.5,
+    cbar_spacing=0.25,
     title=None,
     colors='rgb',
     linewidth=1.5,
@@ -45,8 +45,8 @@ def show_image_slices(
     im_k = ax_k.imshow(array[:,:,k].T, origin='lower', **imshow_kws)
 
     plt.colorbar(im_k, cax=cbar_ax)
-    cbar_ax.yaxis.set_ticks_position('left')
-    cbar_ax.yaxis.set_label_position('left')
+    #cbar_ax.yaxis.set_ticks_position('left')
+    #cbar_ax.yaxis.set_label_position('left')
 
     set_ax_spine_props(ax_i, **i_line_kws)
     set_ax_spine_props(ax_j, **j_line_kws)
