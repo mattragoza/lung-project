@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 
-def _as_tensor(a, b: torch.Tensor) -> torch.Tensor:
+def _as_tensor(a, b):
     return torch.as_tensor(a, dtype=b.dtype, device=b.device)
 
 
@@ -20,6 +20,17 @@ def _homogeneous(points):
         points = np.asarray(points)
         ones = np.ones_like(points[...,:1])
         return np.concatenate([points, ones], axis=-1)
+
+
+def build_affine_matrix(origin, spacing):
+    ox, oy, oz = origin
+    sx, sy, sz = spacing
+    return np.array([
+        [sx, 0., 0., ox],
+        [0., sy, 0., oy],
+        [0., 0., sz, oz],
+        [0., 0., 0., 1.],
+    ], dtype=float)
 
 
 def voxel_to_world_coords(points, affine):
@@ -80,10 +91,11 @@ def normalize_voxel_coords(points, shape, align_corners=True, flip_order=False):
 
     if isinstance(points, torch.Tensor) and flip_order:
         return output.flip(-1)
+
     elif flip_order:
         return output[...,::-1]
-    else:
-        return output
+
+    return output
 
 
 def compute_lame_parameters(E, nu=0.4):

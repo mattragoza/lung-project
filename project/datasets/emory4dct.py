@@ -1,8 +1,6 @@
 from typing import Optional, Any, Dict, List, Tuple, Iterable
 from pathlib import Path
-
 import numpy as np
-import pandas as pd
 
 from . import base
 
@@ -200,6 +198,7 @@ class Emory4DCT: # DEPRECATED
             case.load_landmarks()
 
     def describe(self):
+        import pandas as pd
         stats = []
         for case in tqdm(self.cases):
             case_stats = case.describe()

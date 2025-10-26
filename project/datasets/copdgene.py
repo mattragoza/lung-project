@@ -1,8 +1,6 @@
 from typing import Optional, Any, Dict, List, Tuple, Iterable
 from pathlib import Path
-
 import numpy as np
-import pandas as pd
 
 from . import base
 
@@ -134,11 +132,14 @@ class COPDGeneDataset(base.BaseDataset):
                 paths['ref_image'] = self.get_path(subj, source_variant, visit, ref_state, recon, 'image')
                 paths['fixed_source'] = self.get_path(subj, source_variant, visit, fixed, recon, 'image')
                 paths['moving_source'] = self.get_path(subj, source_variant, visit, moving, recon, 'image')
+
                 paths['fixed_image'] = self.get_path(subj, variant, visit, fixed, recon, 'image')
                 paths['moving_image'] = self.get_path(subj, variant, visit, moving, recon, 'image')
-                paths['fixed_mask'] = self.get_path(subj, variant, visit, fixed, recon, 'mask', mask_name=mask_name)
-                paths['fixed_mesh'] = self.get_path(subj, variant, visit, fixed, recon, 'mesh', mask_name=mask_name, mesh_tag=mesh_tag)
+
+                paths['region_mask'] = self.get_path(subj, variant, visit, fixed, recon, 'mask', mask_name=mask_name)
+                paths['volume_mesh'] = self.get_path(subj, variant, visit, fixed, recon, 'mesh', mask_name=mask_name, mesh_tag=mesh_tag)
                 paths['disp_field'] = self.get_path(subj, variant, visit, None, recon, 'disp', fixed_state=fixed, moving_state=moving)
+
                 yield base.Example(
                     dataset='COPDGene',
                     subject=subj,
@@ -244,6 +245,7 @@ class COPDGeneVisit: # DEPRECATED
     # Metadata loaders
 
     def load_metadata_from_filenames(self, variant, filters=None):
+        import pandas as pd
         rows = []
         for image_name in self.list_images(variant):
             parsed = self.parse_image_name(image_name)
@@ -260,6 +262,7 @@ class COPDGeneVisit: # DEPRECATED
         return pd.DataFrame(rows)
 
     def load_metadata_from_headers(self, variant, filters=None):
+        import pandas as pd
         rows = []
         for t in self.load_metadata_from_filenames(variant, filters).itertuples():
             image_path = self.get_image_path(variant, t.image_name)

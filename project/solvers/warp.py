@@ -1,9 +1,10 @@
+from __future__ import annotations
 import numpy as np
 import torch
+
 import warp as wp
 import warp.fem
 import warp.optim.linear
-import meshio
 
 from . import base
 
@@ -17,29 +18,62 @@ def _maybe_zero_grad(a: wp.array):
         a.grad.zero_()
 
 
+def rasterize_field(src: wp.fem.Field, shape, affine, device='cuda'):
+    I, J, K = shape
+    C = wp.types.type_length(src.dtype)
+
+    A = np.asarray(affine, dtype=np.float32)
+    spacing = np.linalg.norm(A[:3,:3], axis=0)
+    origin  = A[:3,3]
+
+    grid = wp.fem.Grid3D(
+        res=wp.vec3i(shape),
+        bounds_lo=wp.vec3f(origin),
+        bounds_hi=wp.vec3f(origin + spacing * np.asarray(shape))
+    )
+    dst_domain = wp.fem.Cells(grid)
+
+    space = wp.fem.make_polynomial_space(grid, degree=0, dtype=src.dtype)
+    dst = space.make_field()
+
+    src_nc = wp.fem.NonconformingField(dst_domain, src)
+
+    wp.fem.interpolate(
+        src_nc,
+        dest=dst,
+        domain=dst_domain,
+        device=device
+    )
+    return wp.to_torch(dst.dof_values).reshape(I, J, K, C)
+
+
 class WarpFEMSolver(base.PDESolver):
 
     def __init__(
         self,
         mesh: meshio.Mesh,
-        reg_weight=5e-2,
-        eps_reg=1e-4,
-        eps_div=1e-12,
-        cg_tol=1e-4,
+        reg_weight: float=5e-2,
+        eps_reg: float=1e-4,
+        eps_div: float=1e-12,
+        cg_tol: float=1e-5,
+        unit_m: float=1e-3,
         relative_loss=True
     ):
-        geometry = wp.fem.Tetmesh(
+        wp.init()
+
+        # convert mesh units to meters
+        self.geometry = wp.fem.Tetmesh(
             wp.array(mesh.cells_dict['tetra'], dtype=wp.int32),
-            wp.array(mesh.points * 1e-3, dtype=wp.vec3f) # mm -> m
+            wp.array(mesh.points * unit_m, dtype=wp.vec3f)
         )
     
         # integration domains
-        self.domain = wp.fem.Cells(geometry)
-        self.boundary = wp.fem.BoundarySides(geometry)
+        self.domain = wp.fem.Cells(self.geometry)
+        self.boundary = wp.fem.BoundarySides(self.geometry)
 
         # function spaces
-        self.S = wp.fem.make_polynomial_space(geometry, degree=1, dtype=wp.float32)
-        self.V = wp.fem.make_polynomial_space(geometry, degree=1, dtype=wp.vec3f)
+        self.S = wp.fem.make_polynomial_space(self.geometry, degree=1, dtype=wp.float32)
+        self.V = wp.fem.make_polynomial_space(self.geometry, degree=1, dtype=wp.vec3f)
 
         # trial and test functions
         self.u_trial = wp.fem.make_trial(self.V, domain=self.domain)
@@ -68,17 +102,20 @@ class WarpFEMSolver(base.PDESolver):
         self.reg_weight = reg_weight
         self.eps_reg = eps_reg
         self.eps_div = eps_div
-        self.cg_tol  = cg_tol
+        self.cg_tol = cg_tol
 
-    def set_params(self, mu: torch.Tensor, lam: torch.Tensor):
-        self.mu_field.dof_values  = _as_warp_array(mu, dtype=wp.float32, requires_grad=True)
+    def set_observed(self, u_obs: torch.Tensor):
+        self.u_obs_field.dof_values = _as_warp_array(u_obs, dtype=wp.vec3f, requires_grad=False)
+        self.u0 = self.f_tilde = None
+
+    def set_density(self, rho: torch.Tensor):
+        self.rho_field.dof_values = _as_warp_array(rho, dtype=wp.float32, requires_grad=False)
+        self.f = self.f_tilde = None
+
+    def set_elasticity(self, mu: torch.Tensor, lam: torch.Tensor):
+        self.mu_field.dof_values = _as_warp_array(mu, dtype=wp.float32, requires_grad=True)
         self.lam_field.dof_values = _as_warp_array(lam, dtype=wp.float32, requires_grad=True)
         self.K = self.M = self.f_tilde = None
-
-    def set_fixed(self, rho: torch.Tensor, u_obs: torch.Tensor):
-        self.rho_field.dof_values   = _as_warp_array(rho, dtype=wp.float32, requires_grad=False)
-        self.u_obs_field.dof_values = _as_warp_array(u_obs, dtype=wp.vec3f, requires_grad=False)
-        self.f = self.u0 = self.f_tilde = None
 
     def assemble_projector(self):
         self.P = wp.fem.integrate(
@@ -121,10 +158,10 @@ class WarpFEMSolver(base.PDESolver):
         self.u0 = self.P @ self.u_obs_field.dof_values
         self.f_tilde = None
 
-    def assemble_shifted_rhs(self):
+    def assemble_rhs_shift(self):
         self.f_tilde = self.f - (self.K @ self.u0)
 
-    def solve_forward(self):
+    def solve_forward(self, ret_tensor=False):
         wp.fem.project_linear_system(
             self.K,
             self.f_tilde,
@@ -143,6 +180,9 @@ class WarpFEMSolver(base.PDESolver):
         self.forward_it = it
         self.forward_res = res
         self.forward_tol = tol
+
+        if ret_tensor:
+            return wp.to_torch(self.u_sim_field.dof_values)
 
     def solve_adjoint(self):
         wp.fem.project_linear_system(
@@ -184,23 +224,19 @@ class WarpFEMSolver(base.PDESolver):
         denom = wp.empty(1, dtype=wp.float32, requires_grad=True)
         wp.fem.integrate(
             error_form,
-            fields={'y_pred': self.u_sim_field, 'y_true': self.u_obs_field},
+            fields={'u': self.u_sim_field, 'v': self.u_obs_field},
             domain=self.domain,
             output=numer
         )
         if self.relative_loss:
             wp.fem.integrate(
-                norm_form,
-                fields={'y_true': self.u_obs_field},
+                norm2_form,
+                fields={'u': self.u_obs_field},
                 domain=self.domain,
                 output=denom
             )
         else:
-            wp.fem.integrate(
-                volume_form,
-                domain=self.domain,
-                output=denom
-            )
+            wp.fem.integrate(volume_form, domain=self.domain, output=denom)
 
         data_term = numer / (denom + self.eps_div)
 
@@ -233,6 +269,12 @@ class WarpFEMSolver(base.PDESolver):
     def adjoint_backward(self, grad_out):
         self.loss.grad = wp.from_torch(grad_out)
         self.tape.backward()
+
+    def displacement(self):
+        return wp.to_torch(self.u_sim_field.dof_values)
+
+    def loss_scalar(self):
+        return wp.to_torch(self.loss)
 
     def params_grad(self):
         return {
@@ -299,15 +341,15 @@ def inner_form(s: wp.fem.Sample, u: wp.fem.Field, v: wp.fem.Field):
 
 
 @wp.fem.integrand
-def error_form(s: wp.fem.Sample, y_pred: wp.fem.Field, y_true: wp.fem.Field):
-    error = y_pred(s) - y_true(s)
-    return wp.dot(error, error)
+def error_form(s: wp.fem.Sample, u: wp.fem.Field, v: wp.fem.Field):
+    e_s = u(s) - v(s)
+    return wp.dot(e_s, e_s)
 
 
 @wp.fem.integrand
-def norm_form(s: wp.fem.Sample, y_true: wp.fem.Field):
-    y_s = y_true(s)
-    return wp.dot(y_s, y_s)
+def norm2_form(s: wp.fem.Sample, u: wp.fem.Field):
+    u_s = u(s)
+    return wp.dot(u_s, u_s)
 
 
 @wp.fem.integrand
@@ -321,5 +363,6 @@ def reg_form(s: wp.fem.Sample, mu: wp.fem.Field, eps_reg: float, eps_div: float)
     g_mu = wp.fem.grad(mu, s)
     g_phi = g_mu / (mu(s) + eps_div)
     return wp.sqrt(wp.dot(g_phi, g_phi) + eps_reg*eps_reg)
+
 
 

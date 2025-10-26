@@ -24,7 +24,7 @@ def mindssc(img, delta=1, sigma=1):
     
     # define comparison mask
     x, y = torch.meshgrid(
-        torch.arange(6, device=device), torch.arange(6, device=device)
+        torch.arange(6, device=device), torch.arange(6, device=device), indexing='ij'
     )
     mask = ((x > y).view(-1) & (dist == 2).view(-1))
     

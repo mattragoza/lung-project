@@ -1,69 +1,83 @@
-from pathlib import Path
 import numpy as np
-import nibabel as nib
-import SimpleITK as sitk
-import meshio
-import yaml
+
+from . import utils
 
 
-def load_image(path: str|Path, using='nibabel'):
-	if using == 'nibabel':
-		return nib.load(path)
-	elif using == 'simpleitk':
-		return sitk.ReadImage(path)
-	raise RuntimeError(using)
+def load_nibabel(path):
+    import nibabel as nib
+    utils.log(f'Loading {path}')
+    return nib.load(path)
 
 
-def load_mesh(path: str|Path, using='meshio'):
-	if using == 'meshio':
-		return meshio.read(path)
-	elif using == 'fenics':
-		return load_mesh_with_fenics(path)
-	raise RuntimeError(using)
+def save_nibabel(path, array, affine):
+    import nibabel as nib
+    utils.log(f'Saving {path}')
+    nifti = nib.nifti1.Nifti1Image(array, affine)
+    nib.save(nifti, path)
 
 
-def load_mesh_with_fenics(mesh_file, label_key='label'):
+def load_simpleitk(path):
+    import SimpleITK as sitk
+    utils.log(f'Loading {path}')
+    return sitk.ReadImage(path)
+
+
+def save_simpleitk(path, image):
+    import SimpleITK as sitk
+    utils.log(f'Saving {path}')
+    sitk.WriteImage(image, path)
+
+
+def load_binvox(path):
+    import binvox as bv
+    utils.log(f'Loading {path}')
+    return bv.Binvox.read(path, mode='dense')
+
+
+def load_meshio(path):
+    import meshio
+    utils.log(f'Loading {path}')
+    return meshio.read(path)
+
+
+def save_meshio(path, mesh):
+    import meshio
+    utils.log(f'Saving {path}')
+    meshio.xdmf.write(path, mesh)
+
+
+def load_trimesh(path, resolver=None):
+    import trimesh
+    utils.log(f'Loading {path}')
+    return trimesh.load_scene(path, resolver=resolver, process=False)
+
+
+def load_imageio(path, quiet=False):
+    import imageio
+    if not quiet:
+        utils.log(f'Loading {path}')
+    return imageio.v2.imread(path)
+
+
+def load_fenics(path, label_key='label'):
     import fenics as fe
     from mpi4py import MPI
-    import dolfin
-    mesh = fe.Mesh()
+    utils.log(f'Loading {path}')
+    mesh, cell_labels = fe.Mesh(), None
     with fe.XDMFFile(MPI.COMM_WORLD, str(mesh_file)) as f:
         f.read(mesh)
         dim = mesh.geometry().dim()
         if label_key:
-            cell_labels = dolfin.MeshFunction('size_t', mesh, dim)
+            cell_labels = fe.MeshFunction('size_t', mesh, dim) # was dolfin
             f.read(cell_labels, label_key)
-        else:
-            cell_labels = None
     return mesh, cell_labels
 
 
-def load_yaml_file(yaml_file):
-    '''
-    Read a YAML configuration file.
-    '''
-    print(f'Loading {yaml_file}')
-    with open(yaml_file) as f:
-        return yaml.safe_load(f)
-
-
-def load_xyz_file(xyz_file, dtype=float):
-    '''
-    Read landmark xyz coordinates from text file.
-    '''
-    print(f'Loading {xyz_file}')
-    with open(xyz_file) as f:
-        data = [line.strip().split() for line in f]
-    return np.array(data, dtype=dtype)
-
-
-def load_img_file(img_file, shape, dtype=np.int16):
-    '''
-    Read CT image from file in Analyze 7.5 format.
-    
-    https://stackoverflow.com/questions/27507928/loading-analyze-7-5-format-images-in-python
-    '''
-    array = np.fromfile(img_file, dtype).reshape(shape)
+def load_analyze75(img_file, shape, dtype=None):
+    # source: https://stackoverflow.com/questions/27507928/loading-analyze-7-5-format-images-in-python
+    utils.log(f'Loading {path}')
+    dtype = dtype or np.int16
+    array = np.fromfile(img_file, dtype=dtype).reshape(shape)
     item_size = array.dtype.itemsize
     array.strides = (
         item_size,
@@ -71,3 +85,18 @@ def load_img_file(img_file, shape, dtype=np.int16):
         item_size * shape[0] * shape[1]
     )
     return array.copy()
+
+
+def load_yaml(path):
+    import yaml
+    utils.log(f'Loading {path}')
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+def load_xyz(path, dtype=float):
+    utils.log(f'Loading {path}')
+    with open(path) as f:
+        data = [line.strip().split() for line in f]
+    return np.array(data, dtype=dtype)
+

@@ -1,3 +1,4 @@
+import numpy as np
 from scipy.sparse import csr_matrix, csgraph
 import torch
 import torch.nn.functional as F
@@ -13,7 +14,7 @@ def minimum_spanning_tree(dist):
     mst = csgraph.minimum_spanning_tree(csr_matrix(dist[0].cpu().numpy()))
     bfo = csgraph.breadth_first_order(mst, 0, directed=False)
     edges = torch.tensor(
-        [bfo[1][bfo[0]][1:], bfo[0][1:]], dtype=torch.long, device=device
+        np.array([bfo[1][bfo[0]][1:], bfo[0][1:]]), dtype=torch.long, device=device
     ).t().view(1, -1, 2)
 
     level = torch.zeros((1, N, 1), dtype=torch.long, device=device)

@@ -18,8 +18,16 @@ def show_image_slices(
     interact=True,
     **imshow_kws
 ):
-    assert array.ndim == 3, 'array must be 3D'
-    I, J, K = array.shape
+    if array.ndim == 4:
+        C, I, J, K = array.shape
+        assert C == 3
+        rgb = True
+    elif array.ndim == 3:
+        I, J, K = array.shape
+        rgb = False
+    else:
+        raise ValueError(array.shape)
+
     if idx is None:
         idx = (I//2, J//2, K//2)
     i, j, k = map(int, idx)
@@ -40,9 +48,14 @@ def show_image_slices(
     ax_j = axes[0,1]
     ax_k = axes[0,2]
 
-    im_i = ax_i.imshow(array[i,:,:].T, origin='lower', **imshow_kws)
-    im_j = ax_j.imshow(array[:,j,:].T, origin='lower', **imshow_kws)
-    im_k = ax_k.imshow(array[:,:,k].T, origin='lower', **imshow_kws)
+    if rgb:
+        im_i = ax_i.imshow(array[:,i,:,:].T, origin='lower', **imshow_kws)
+        im_j = ax_j.imshow(array[:,:,j,:].T, origin='lower', **imshow_kws)
+        im_k = ax_k.imshow(array[:,:,:,k].T, origin='lower', **imshow_kws)
+    else:
+        im_i = ax_i.imshow(array[i,:,:].T, origin='lower', **imshow_kws)
+        im_j = ax_j.imshow(array[:,j,:].T, origin='lower', **imshow_kws)
+        im_k = ax_k.imshow(array[:,:,k].T, origin='lower', **imshow_kws)
 
     plt.colorbar(im_k, cax=cbar_ax)
     #cbar_ax.yaxis.set_ticks_position('left')

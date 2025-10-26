@@ -1,163 +1,397 @@
-# preprocessing.api
+import numpy as np
+
+from ..core import fileio, utils
+
+
+def _is_non_empty_dir(d):
+    return d.is_dir() and any(p.is_file() for p in d.iterdir())
+
+
+def _check_output(func, *args, **kwargs):
+    '''
+    Wrapper to only call a function if its output
+    location does not already exist.
+    '''
+    output_path = kwargs.get('output_path')
+    output_dir  = kwargs.get('output_dir')
+
+    checked_output = None
+    output_exists = False
+
+    if output_path is not None:
+        checked_output = output_path
+        output_exists  = output_path.is_file()
+
+    elif output_dir is not None:
+        checked_output = output_dir
+        output_exists  = _is_non_empty_dir(output_dir)
+
+    if not output_exists:
+        return func(*args, **kwargs)
+    
+    utils.log(f'Skipping {func.__name__}: Output {checked_output} exists')
+    
+
+# ----- full pipelines -----
+
+
+def preprocess_copdgene(ex, config):
+    _check_output(
+        resample_image_on_reference,
+        reference_path=ex.paths['ref_image'],
+        input_path=ex.paths['fixed_source'],
+        output_path=ex.paths['fixed_image'],
+    )
+    _check_output(
+        resample_image_on_reference,
+        reference_path=ex.paths['ref_image'],
+        input_path=ex.paths['moving_source'],
+        output_path=ex.paths['moving_image'],
+    )
+    _check_output(
+        create_segmentation_masks,
+        image_path=ex.paths['fixed_image'],
+        output_dir=ex.paths['region_mask'].parent
+    )
+    _check_output(
+        create_lung_region_mask,
+        mask_dir=ex.paths['region_mask'].parent,
+        output_path=ex.paths['region_mask']
+    )
+    _check_output(
+        create_volume_mesh_from_mask,
+        mask_path=ex.paths['region_mask'],
+        output_path=ex.paths['volume_mesh'],
+        use_affine_spacing=False,
+        pygalmesh_kws=dict(
+            max_facet_distance=0.9,
+            max_cell_circumradius=8.0,
+        )
+    )
+    _check_output(
+        register_displacement_field,
+        fixed_path=ex.paths['fixed_image'],
+        moving_path=ex.paths['moving_image'],
+        mask_path=ex.paths['region_mask'],
+        output_path=ex.paths['disp_field']
+    )
+
+
+def preprocess_shapenet(ex, config):
+    _check_output(
+        preprocess_binary_mask,
+        mask_path=ex.paths['source_mask'],
+        mesh_path=ex.paths['source_mesh'],
+        output_path=ex.paths['binary_mask']
+    )
+    _check_output(
+        preprocess_surface_mesh,
+        input_path=ex.paths['source_mesh'],
+        output_path=ex.paths['surface_mesh']
+    )
+    _check_output(
+        create_mesh_region_mask,
+        mask_path=ex.paths['binary_mask'],
+        mesh_path=ex.paths['source_mesh'],
+        output_path=ex.paths['region_mask']
+    )
+    _check_output(
+        create_volume_mesh_from_mask,
+        mask_path=ex.paths['region_mask'],
+        output_path=ex.paths['volume_mesh'],
+        use_affine_spacing=False,
+        pygalmesh_kws=dict(
+            max_facet_distance=0.75,
+            max_cell_circumradius=5.0,
+            lloyd=True,
+            odt=True,
+        )
+    )
+    _check_output(
+        create_material_fields,
+        mask_path=ex.paths['region_mask'],
+        density_path=ex.paths['density_field'],
+        elastic_path=ex.paths['elastic_field'],
+        output_path=ex.paths['material_mask']
+    )
+    _check_output(
+        simulate_displacement_field,
+        mesh_path=ex.paths['volume_mesh'],
+        density_path=ex.paths['density_field'],
+        elastic_path=ex.paths['elastic_field'],
+        nodes_path=ex.paths['node_values'],
+        output_path=ex.paths['disp_field'],
+        unit_m=ex.metadata['unit'],
+        nu_value=0.4
+    )
+    _check_output(
+        generate_volumetric_image,
+        mask_path=ex.paths['material_mask'],
+        output_path=ex.paths['input_image'],
+        annots_path='data/ShapeNetSem/texture_annotations_2025-10-25.csv'
+    )
+
+
+# ----- discrete steps -----
+
 
 def resample_image_on_reference(
     input_path,
     output_path,
-    ref_path,
-    spacing=[1.0, 1.0, 1.0],
-    anchor='center',
+    reference_path,
+    spacing=(1., 1., 1.),
     interp='bspline',
-    default=-1000
+    default=-1000.
 ):
-    import SimpleITK as sitk
-    from . import registration
+    from . import resampling
+    input_image = fileio.load_simpleitk(input_path)
+    ref_image = fileio.load_simpleitk(reference_path)
 
-    print('Creating reference grid')
-    ref_image = sitk.ReadImage(ref_path)
-    ref_grid = registration.create_reference_grid(ref_image, spacing, anchor)
+    utils.log('Creating reference grid')
+    grid = resampling.create_reference_grid(ref_image, spacing, anchor='center')
 
-    print('Resampling image on grid')
-    input_image = sitk.ReadImage(input_path)
-    output_image = registration.resample_image_on_grid(input_image, ref_grid, interp, default)
-    sitk.WriteImage(output_image, output_path)
+    utils.log('Resampling image on grid')
+    output_image = resampling.resample_image(input_image, grid, interp, default)
 
-    print('Done')
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_simpleitk(output_path, output_image)
+    utils.log('Done')
 
 
 def create_segmentation_masks(image_path, output_dir, combined_path=None):
-    import nibabel as nib
-    import totalsegmentator as ts
-    import totalsegmentator.python_api
-    import totalsegmentator.libs
     from . import segmentation
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print('Running TotalSegmentator task: total')
-    ts.python_api.totalsegmentator(
-        image_path, output_dir, task='total', roi_subset=segmentation.TOTAL_TASK_ROIS
-    )
+    utils.log('Running TotalSegmentator task: total')
+    ret = segmentation.run_total_segmentator(image_path, output_dir)
+    utils.pprint(ret)
 
-    print('Running TotalSegmentator task: lung_vessels')
-    ts.python_api.totalsegmentator(image_path, output_dir, task='lung_vessels')
+    utils.log('Running TotalSegmentator task: lung_vessels')
+    ret = segmentation.run_vessel_segmentation(image_path, output_dir)
+    utils.pprint(ret)
 
     if combined_path:
-        print('Combining segmentation masks: lung')
-        combined_mask = ts.libs.combine_masks(output_dir, class_type='lung')
-        nib.save(combined_mask, combined_path)
+        utils.log('Combining segmentation masks: lung')
+        combined = segmentation.combine_segmentation_masks(output_dir, class_type='lung')
+        fileio.save_nibabel(combined_path, combined.get_fdata(), combined.affine)
 
-    print('Done')
+    utils.log('Done')
 
 
-def create_multi_region_mask(mask_dir, output_path, connectivity=1, min_count=10):
-    import numpy as np
-    import nibabel as nib
-    from . import segmentation
+def create_lung_region_mask(mask_dir, output_path, min_count=30):
+    from . import segmentation, mask_cleanup
+    all_rois = list(segmentation.ALL_TASK_ROIS)
+    lobe_rois = set(segmentation.TOTAL_TASK_ROIS)
 
-    region_arrays = []
-    for i, roi_name in enumerate(segmentation.ALL_TASK_ROIS):
+    if not mask_dir.is_dir():
+        raise RuntimeError(f'{mask_dir} is not a valid directory')
 
-        print(f'Processing segmentation mask: {roi_name}')
-        mask_path = mask_dir / f'{roi_name}.nii.gz'
-        mask_nifti = nib.load(mask_path)
-        mask_array = mask_nifti.get_fdata().astype(int)
-        filtered_array = segmentation.filter_connected_components(
-            mask_array,
-            connectivity=connectivity,
+    label_arrays = []
+    for label, roi in enumerate(all_rois, start=1): # reserve 0 for background
+
+        mask_path = mask_dir / f'{roi}.nii.gz'
+        nifti = fileio.load_nibabel(mask_path)
+        mask_array, affine = nifti.get_fdata(), nifti.affine
+
+        utils.log(f'Filtering segmentation mask: {roi}')
+        max_comps = 1 if roi in lobe_rois else None
+        filt_array = mask_cleanup.filter_connected_components(
+            (mask_array != 0),
             min_count=min_count,
-            max_components=(1 if roi_name in segmentation.TOTAL_TASK_ROIS else None)
-        )
-        region_arrays.append(filtered_array * (i + 1))
+            max_components=max_comps
+        ).astype(np.uint8)
+        label_arrays.append(filt_array * label)
 
-    multi_array = np.max(region_arrays, axis=0).astype(np.float64)
-    multi_nifti = nib.nifti1.Nifti1Image(multi_array, mask_nifti.affine)
-    nib.save(multi_nifti, output_path)
+    utils.log('Combining anatomical region masks')
+    multi_array = np.max(label_arrays, axis=0)
 
-    print('Done')
+    utils.log('Cleaning up anatomical region mask')
+    multi_array *= mask_cleanup.cleanup_binary_mask(multi_array > 0)
+
+    fileio.save_nibabel(output_path, multi_array.astype(np.float32), affine)
+    utils.log('Done')
 
 
-def create_anatomical_mesh(
+def create_volume_mesh_from_mask(
     mask_path,
     output_path,
-    max_facet_distance=1.0,
-    max_cell_circumradius=20.0
-
+    use_affine_spacing=True,
+    pygalmesh_kws=None
 ):
-    import nibabel as nib
+    from . import volume_meshing
+    nifti = fileio.load_nibabel(mask_path)
+
+    utils.log('Generating volume mesh from mask')
+    mesh = volume_meshing.generate_mesh_from_mask(
+        mask=nifti.get_fdata(), 
+        affine=nifti.affine,
+        use_affine_spacing=use_affine_spacing,
+        pygalmesh_kws=pygalmesh_kws
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_meshio(output_path, mesh)
+    utils.log('Done')
+
+
+def register_displacement_field(
+    fixed_path, moving_path, mask_path, output_path, device='cuda'
+):
+    from . import registration
+
+    fixed_nifti  = fileio.load_nibabel(fixed_path)
+    moving_nifti = fileio.load_nibabel(moving_path)
+    mask_nifti   = fileio.load_nibabel(mask_path)
+
+    fixed_array  = fixed_nifti.get_fdata()
+    moving_array = moving_nifti.get_fdata()
+    mask_array   = mask_nifti.get_fdata() > 0 # ensure binary
+
+    utils.log('Estimating displacement field by registration')
+    disp_voxel, warped_array = registration.register_corrfield(
+        image_mov=moving_array,
+        image_fix=fixed_array,
+        mask_fix=mask_array,
+        device=device
+    )
+
+    utils.log('Mapping displacement field to world coordinates')
+    affine = fixed_nifti.affine # apply linear transform only
+    disp_world = np.einsum('wv,ijkv->ijkw', affine[:3,:3], disp_voxel)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(output_path, disp_world.astype(np.float32), affine)
+    utils.log('Done')
+
+
+# --- shapenet processing ---
+
+
+def preprocess_binary_mask(mask_path, mesh_path, output_path):
+    from . import affine_fitting, mask_cleanup
+
+    binvox = fileio.load_binvox(mask_path)
+    mesh   = fileio.load_meshio(mesh_path)
+
+    utils.log('Inferring affine from mesh bounding box')
+    affine = affine_fitting.infer_binvox_affine(binvox, mesh.points)
+
+    utils.log('Cleaning up binary mask')
+    mask = mask_cleanup.cleanup_binary_mask(binvox.numpy())
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(output_path, mask.astype(np.uint8), affine)
+    utils.log('Done')
+
+
+def preprocess_surface_mesh(input_path, output_path):
+    from . import surface_meshing
     import meshio
-    from . import meshing
+    mesh = fileio.load_trimesh(input_path).to_mesh()
 
-    mask_nifti = nib.load(mask_path)
-    mask_array = mask_nifti.get_fdata() #.astype(int)
-    resolution = mask_nifti.header.get_zooms()[:3]
+    utils.log('Repairing surface mesh')
+    mesh = surface_meshing.repair_surface_mesh(mesh)
 
-    mesh_dict = meshing.generate_mesh_from_mask(
-        mask_array,
-        resolution,
-        pygalmesh_kws={
-            'max_facet_distance': max_facet_distance,
-            'max_cell_circumradius': max_cell_circumradius,
-            'seed': 0
-        }
+    mesh = meshio.Mesh(points=mesh.vertices, cells=[('triangle', mesh.faces)])
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_meshio(output_path, mesh)
+    utils.log('Done')
+
+
+def create_mesh_region_mask(mask_path, mesh_path, output_path):
+    from . import surface_meshing, mask_cleanup
+
+    nifti = fileio.load_nibabel(mask_path)
+    scene = fileio.load_trimesh(mesh_path)
+    mask, affine = nifti.get_fdata(), nifti.affine
+
+    utils.log('Extracting labels from mesh')
+    mesh, labels = surface_meshing.extract_face_labels(scene)
+
+    utils.log('Assigning labels to voxels')
+    regions = surface_meshing.assign_voxel_labels(mask, affine, mesh, labels)
+
+    utils.log('Cleaning up region mask')
+    regions = mask_cleanup.cleanup_region_mask(
+        regions, min_count=1000, keep_largest=False
     )
-    mesh = meshing.apply_affine_to_mesh(mesh_dict['tetra'], resolution, mask_nifti.affine)
-    meshio.xdmf.write(output_path, mesh)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(output_path, regions.astype(np.int16), affine)
+    utils.log('Done')
 
-    print('Done')
+
+def create_material_fields(mask_path, density_path, elastic_path, output_path):
+    from . import materials
+
+    nifti = fileio.load_nibabel(mask_path)
+    region_mask, affine = nifti.get_fdata(), nifti.affine
+
+    utils.log('Assigning material properties to regions')
+    m_mask, d_mask, e_mask = materials.assign_material_properties(region_mask)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    density_path.parent.mkdir(parents=True, exist_ok=True)
+    elastic_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fileio.save_nibabel(density_path, d_mask.astype(np.float32), affine)
+    fileio.save_nibabel(elastic_path, e_mask.astype(np.float32), affine)
+    fileio.save_nibabel(output_path, m_mask.astype(np.int16), affine)
 
 
-def create_corrfield_displacement(fixed_path, moving_path, mask_path, output_path):
-    import nibabel as nib
-    import torch
-    import torch.nn.functional as F
-    import corrfield
+def simulate_displacement_field(
+    mesh_path,
+    density_path,
+    elastic_path,
+    nodes_path,
+    output_path,
+    nu_value=0.4,
+    unit_m=1e-3,
+    solver_kws=None
+):
+    from . import simulation
 
-    fixed_nifti = nib.load(fixed_path)
-    moving_nifti = nib.load(moving_path)
-    mask_nifti = nib.load(mask_path)
+    mesh = fileio.load_meshio(mesh_path)
+    density_nifti = fileio.load_nibabel(density_path)
+    elastic_nifti = fileio.load_nibabel(elastic_path)
 
-    fixed_tensor = torch.as_tensor(fixed_nifti.get_fdata(), dtype=torch.float, device='cuda')
-    moving_tensor = torch.as_tensor(moving_nifti.get_fdata(), dtype=torch.float, device='cuda')
-    mask_tensor = torch.as_tensor(mask_nifti.get_fdata(), dtype=torch.int, device='cuda')
+    affine = density_nifti.affine
+    rho_field = density_nifti.get_fdata()
+    E_field = elastic_nifti.get_fdata()
 
-    disp_tensor_ijk = corrfield.corrfield.corrfield(
-        img_mov=moving_tensor[None,None,...],
-        img_fix=fixed_tensor[None,None,...],
-        mask_fix=mask_tensor[None,None,...]
-    )[0][0]
-
-    # check registration error
-    X,Y,Z = fixed_tensor.shape
-    disp_tensor_pt = corrfield.utils.flow_pt(
-        disp_tensor_ijk[None,...],
-        shape=(X,Y,Z),
-        align_corners=True
+    utils.log('Simulating displacement using material fields')
+    disp_field, node_values = simulation.simulate_forward(
+        mesh, affine, rho_field, E_field, nu_value, unit_m, solver_kws
     )
-    base = F.affine_grid(
-        torch.eye(3, 4, dtype=torch.float, device='cuda')[None,...],
-        size=(1,1,X,Y,Z),
-        align_corners=True
-    )
-    warped_tensor = F.grid_sample(
-        input=moving_tensor[None,None,...],
-        grid=base + disp_tensor_pt,
-        align_corners=True
-    )
-    def compute_error(t):
-        m = (mask_tensor[None,...] > 0)
-        return torch.norm((t - fixed_tensor)*m) / torch.norm(fixed_tensor*m)
+    print(disp_field.shape, disp_field.dtype)
 
-    error_before = compute_error(moving_tensor)
-    error_after  = compute_error(warped_tensor)
-    print(error_before, error_after)
-    assert error_after < error_before, 'registration error did not decrease'
+    for k, v in node_values.items():
+        print(k, v.shape, v.dtype)
+        mesh.point_data[k] = v.astype(np.float32)
 
-    # convert from voxel to world coordinates (mm)
-    R = torch.as_tensor(fixed_nifti.affine[:3,:3], dtype=torch.float, device='cuda')
-    disp_tensor_xyz = torch.einsum('ij,dhwj->dhwi', R, disp_tensor_ijk)
+    nodes_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_meshio(nodes_path, mesh)
 
-    disp_array = disp_tensor_xyz.detach().cpu().numpy()
-    disp_nifti = nib.nifti1.Nifti1Image(disp_array, fixed_nifti.affine)
-    disp_nifti.header.set_intent('vector', (), name='displacement_mm')
-    nib.save(disp_nifti, output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(output_path, disp_field, affine)
 
-    print('Done')
+
+def generate_volumetric_image(mask_path, output_path, annots_path):
+    from . import materials, texturing
+    import pandas as pd
+
+    nifti = fileio.load_nibabel(mask_path)
+    mask = nifti.get_fdata().astype(int)
+    affine = nifti.affine
+
+    mats = materials.build_material_catalog()
+
+    utils.log('Building texture cache')
+    tex = texturing.build_texture_cache(annots_path)
+
+    utils.log('Generating textured volumetric image')
+    image = texturing.generate_volumetric_image(mask, affine, tex, mats)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(output_path, image, nifti.affine)
+

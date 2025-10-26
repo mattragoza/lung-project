@@ -7,6 +7,17 @@ import numpy as np
 import pandas as pd
 import torch
 
+VERBOSE = True
+
+
+def log(msg):
+    if VERBOSE:
+        print(msg, file=sys.stdout, flush=True)
+
+
+def warn(msg):
+    print(msg, file=sys.stderr, flush=True)
+
 
 def pprint(
     obj,
@@ -99,13 +110,6 @@ def is_iterable(obj):
 
 def as_iterable(obj):
     return obj if is_iterable(obj) else [obj]
-
-
-def print_tensor_info(*args, **kwargs):
-    for i, v in enumerate(args):
-        print(f'{i}: {v.shape} {v.dtype} {v.device}')
-    for k, v in kwargs.items():
-        print(f'{k}: {v.shape} {v.dtype} {v.device}')
 
 
 def get_random_seed(max_seed):

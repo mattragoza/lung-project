@@ -1,34 +1,71 @@
 import numpy as np
 import torch
-import torch.nn.functional as F
-
-from . import transforms
 
 
-def interpolate_image(image, points, mode='bilinear', padding='border', align_corners=True, flip_order=True):
+def interpolate_image(
+    image: torch.Tensor,
+    points: torch.Tensor,
+    mode: str='bilinear',
+    padding: str='border',
+    align_corners: bool=True,
+    reshape: bool=True
+):
     '''
     Args:
-        image:  (C, X, Y, Z) input image tensor
+        image:  (C, I, J, K) input image tensor
         points: (N, 3) tensor of voxel coordinates,
             where component order == image dim order
     Returns:
         (N, C) tensor of interpolated image values
     '''
-    normalized = transforms.normalize_voxel_coords(
+    from . import transforms
+    import torch.nn.functional as F
+
+    points = transforms.normalize_voxel_coords(
         points,
         image.shape[1:],
         align_corners=align_corners,
-        flip_order=flip_order
+        flip_order=True
     )
     output = F.grid_sample(
-        input=image[None,:,:,:,:],           # (B, C, X, Y, Z)
-        grid=normalized[None,None,None,:,:], # (B, L, M, N, 3)
+        input=image[None,:,:,:,:],       # (B, C, I, J, K)
+        grid=points[None,None,None,:,:], # (B, L, M, N, 3)
         mode=mode,
         padding_mode=padding,
         align_corners=align_corners
+    ) # (B, C, L, M, N)
+    if reshape:
+        return output[0,:,0,0,:].T # (N, C)
+    else:
+        return output[0] # (C, L, M, N)
+
+
+def deform_image(
+    image: torch.Tensor,
+    disp: torch.Tensor,
+    mode: str='bilinear',
+    padding: str='border'
+):
+    '''
+    Args:
+        image: (C, I, J, K) input image tensor
+        disp:  (L, M, N, 3) displacement tensor,
+            in terms of voxel coordinates
+    Returns:
+        (C, L, M, N)
+    '''
+    import torch
+
+    grid = torch.cartesian_prod(
+        torch.arange(disp.shape[0]),
+        torch.arange(disp.shape[1]),
+        torch.arange(disp.shape[2]),
     )
-    # (B, C, L, M, N) -> (N, C)
-    return output[0,:,0,0,:].T
+    points = (grid + disp).view(-1, 3)
+
+    return interpolate_image(
+        image, points, mode, padding, align_corners=True, reshape=False
+    )
 
 
 ## DEPRECATED
@@ -52,6 +89,8 @@ def my_interpolate_image(
         kernel_size: kernel window half-size
         kernel_type: 'flat', 'tent', or 'bell'
     '''
+    import torch
+
     C, X, Y, Z = image.shape
     N, D = points.shape
     assert D == 3, 'points must be 3D'
@@ -126,6 +165,7 @@ def image_to_dofs(image, resolution, V, kernel_radius):
     Returns:
         dofs: (N, C) torch.Tensor
     '''
+    import torch
     C, X, Y, Z = image.shape
     
     points = V.tabulate_dof_coordinates()
@@ -159,6 +199,7 @@ def dofs_to_image(dofs, V, image_shape, resolution):
     Returns:
         image: (C, X, Y, Z) torch.Tensor
     '''
+    import numpy as np
     import fenics as fe
     import torch_fenics
 

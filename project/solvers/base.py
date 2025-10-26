@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 import torch
-import meshio
 
 
 class PDESolver:
@@ -7,10 +8,13 @@ class PDESolver:
 	def __init__(self, mesh: meshio.Mesh):
 		raise NotImplementedError
 
-	def set_params(self, mu: torch.Tensor, lam: torch.Tensor):
+	def set_observed(self, u_obs: torch.Tensor):
 		raise NotImplementedError
 
-	def set_fixed(self, rho: torch.Tensor, u_obs: torch.Tensor):
+	def set_density(self, rho: torch.Tensor):
+		raise NotImplementedError
+
+	def set_elasticity(self, mu: torch.Tensor, lam: torch.Tensor):
 		raise NotImplementedError
 
 	def assemble_projector(self):
@@ -25,7 +29,7 @@ class PDESolver:
 	def assemble_lifting(self):
 		raise NotImplementedError
 
-	def assemble_shifted_rhs(self):
+	def assemble_rhs_shift(self):
 		raise NotImplementedError
 
 	def solve_forward(self):
@@ -58,7 +62,8 @@ class PDESolverModule(torch.nn.Module):
 	def __init__(self, solver: PDESolver, rho: torch.Tensor, u_obs: torch.Tensor):
 		super().__init__()
 		solver.assemble_projector()
-		solver.set_fixed(rho, u_obs)
+		solver.set_density(rho)
+		solver.set_observed(u_obs)
 		solver.assemble_forcing()
 		solver.assemble_lifting()
 		self.solver = solver
@@ -72,9 +77,9 @@ class PDESolverFn(torch.autograd.Function):
 	@staticmethod
 	def forward(ctx, solver: PDESolver, mu: torch.Tensor, lam: torch.Tensor):
 		solver.zero_grad()
-		solver.set_params(mu, lam)
+		solver.set_elasticity(mu, lam)
 		solver.assemble_stiffness()
-		solver.assemble_shifted_rhs()
+		solver.assemble_rhs_shift()
 		solver.solve_forward()
 		loss = solver.adjoint_forward()
 		ctx.solver = solver

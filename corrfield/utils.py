@@ -73,7 +73,8 @@ def get_disp(disp_step, disp_radius, shape, device):
                 disp_step * disp_radius + 1,
                 disp_step,
                 device=device
-            )
+            ),
+            indexing='ij'
         ),
         dim=3
     ).view(1, -1, 3)
@@ -89,7 +90,8 @@ def get_patch(patch_step, patch_radius, shape, device):
         torch.meshgrid(
             torch.arange(0, 2 * patch_radius + 1, patch_step, device=device),
             torch.arange(0, 2 * patch_radius + 1, patch_step, device=device),
-            torch.arange(0, 2 * patch_radius + 1, patch_step, device=device)
+            torch.arange(0, 2 * patch_radius + 1, patch_step, device=device),
+            indexing='ij'
         ),
         dim=3
     ).view(1, -1, 3) - patch_radius
