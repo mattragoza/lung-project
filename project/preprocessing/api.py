@@ -128,7 +128,7 @@ def preprocess_shapenet(ex, config):
         generate_volumetric_image,
         mask_path=ex.paths['material_mask'],
         output_path=ex.paths['input_image'],
-        annots_path='data/ShapeNetSem/texture_annotations_2025-10-25.csv'
+        annot_path='data/ShapeNetSem/texture_annotations_2025-10-25.csv'
     )
 
 
@@ -376,22 +376,25 @@ def simulate_displacement_field(
     fileio.save_nibabel(output_path, disp_field, affine)
 
 
-def generate_volumetric_image(mask_path, output_path, annots_path):
+def generate_volumetric_image(
+    mask_path, output_path, annot_path, tex_kws=None, gen_kws=None
+):
     from . import materials, texturing
-    import pandas as pd
 
     nifti = fileio.load_nibabel(mask_path)
     mask = nifti.get_fdata().astype(int)
     affine = nifti.affine
 
-    mats = materials.build_material_catalog()
+    utils.log('Building material catalog')
+    mat_df = materials.build_material_catalog()
 
     utils.log('Building texture cache')
-    tex = texturing.build_texture_cache(annots_path)
+    tex_cache = texturing.build_texture_cache(annot_path, **(tex_kws or {}))
 
     utils.log('Generating textured volumetric image')
-    image = texturing.generate_volumetric_image(mask, affine, tex, mats)
-
+    image = texturing.generate_volumetric_image(
+        mask, affine, mat_df, tex_cache, **(gen_kws or {})
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, image, nifti.affine)
 

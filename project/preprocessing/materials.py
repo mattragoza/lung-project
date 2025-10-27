@@ -7,8 +7,8 @@ from ..core import utils
 DATA_COLUMNS = ['key', 'val', 'freq']
 
 DENSITY_DATA = [ # kg/m^3
-    ('Dense', 500., 0.75),
-    ('Porous', 50., 0.25),
+    ('Dense',  500., 0.75),
+    ('Porous', 250., 0.25),
 ]
 ELASTIC_DATA = [ # Pa
     ('Hard',   9e3, 0.25),
@@ -137,6 +137,7 @@ def assign_materials_to_regions(
 def assign_material_properties(region_mask):
     region_mask = region_mask.astype(int, copy=False)
 
+    utils.log('Building material catalog')
     mats = build_material_catalog(include_background=True)
     prior = mats.loc[1:, 'material_freq'].to_numpy() # exclude background
     utils.log(mats)
