@@ -15,7 +15,7 @@ def _affine_origin(A):
 
 
 def _affine_spacing(A):
-    return np.linalg.norm(_affine_linear(A), axis=1)
+    return np.linalg.norm(_affine_linear(A), axis=0)
 
 
 def generate_mesh_from_mask(

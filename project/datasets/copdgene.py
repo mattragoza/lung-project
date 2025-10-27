@@ -1,8 +1,21 @@
 from typing import Optional, Any, Dict, List, Tuple, Iterable
 from pathlib import Path
-import numpy as np
+from functools import lru_cache
 
 from . import base
+
+
+def _parse_image_name(name: str):
+    # expected format: <subject>_<state>_<recon>_<site>_COPD
+    parts = name.split('_')
+    if len(parts) == 5 and parts[4] == 'COPD':
+        return {
+            'subject': parts[0],
+            'state': parts[1], 
+            'recon': parts[2],
+            'site': parts[3],
+        }
+    raise RuntimeError(f'failed to parse image name: {name}')
 
 
 class COPDGeneDataset(base.BaseDataset):
@@ -21,138 +34,150 @@ class COPDGeneDataset(base.BaseDataset):
 
     <image_name> = <subject>_<state>_<recon>_<site>_COPD
     '''
-    VALID_STATES = ['EXP', 'INSP']
     DEFAULT_VISIT = 'Phase-1'
+    SOURCE_VARIANT = 'Images'
     DEFAULT_RECON = 'STD'
+    VALID_RECONS = ['STD', 'SHARP', 'B35f']
+    DEFAULT_STATE = 'EXP'
+    VALID_STATES = ['EXP', 'INSP']
 
-    def __init__(self, data_root: str | Path):
+    def __init__(self, data_root: str|Path):
         self.root = Path(data_root)
-        self._site_cache = {}
+
+    def variants(self) -> List[str]:
+        variants_dir = self.root
+        if variants_dir.is_dir():
+            return sorted([p.name for p in variants_dir.iterdir() if p.is_dir()])
+        return []
 
     def subjects(self) -> List[str]:
-        image_root = self.root / 'Images'
-        if image_root.is_dir():
-            return sorted([p.name for p in image_root.iterdir()])
+        subjects_dir = self.root / 'Images'
+        if subjects_dir.is_dir():
+            return sorted([p.name for p in subjects_dir.iterdir() if p.is_dir()])
         return []
     
     def visits(self, subject: str) -> List[str]:
-        subject_dir = self.root / 'Images' / subject
-        if subject_dir.is_dir():
-            return sorted([p.name for p in subject_dir.iterdir()])
+        visits_dir = self.root / 'Images' / subject
+        if visits_dir.is_dir():
+            return sorted([p.name for p in visits_dir.iterdir() if p.is_dir()])
         return []
 
-    def states(self, subject: str, visit: str) -> List[str]:
+    @lru_cache
+    def site_code(self, subject: str, visit: str):
+        image_dir = self.root / 'Images' / subject / visit / 'RAW'
+        for nii_file in sorted(image_dir.glob('*.nii.gz')):
+            try:
+                return _parse_image_name(nii_file.name[:-7])['site']
+            except RuntimeError:
+                continue
+        raise RuntimeError(f'failed to infer site code: {subject} / {visit}')
+
+    def recons(self) -> List[str]:
+        return list(self.VALID_RECONS)
+
+    def states(self) -> List[str]:
         return list(self.VALID_STATES)
 
-    def variants(self, subject: str, visit: str) -> List[str]:
-        visit_dir = self.root / 'Images' / subject / visit
-        if visit_dir.is_dir():
-            return sorted([p.name for p in visit_dir.iterdir() if p.is_dir()])
-        return []
+    def state_pairs(self) -> Iterable[Tuple[str, str]]:
+        from itertools import permutations
+        return permutations(self.states(), 2)
 
-    def get_path(
+    def path(
         self,
         subject: str,
         variant: str,
         visit: str,
-        state: Optional[str] = None,
-        recon: Optional[str] = None,
-        asset_type: str = 'image',
+        state: str,
+        recon: str,
+        asset_type: str,
         **selectors
     ):
-        base_dir = self.root / 'Images' / subject / visit / variant
-
-        if asset_type != 'disp':
-            assert state in self.VALID_STATES, str(state)
-
+        visit = visit or self.DEFAULT_VISIT
+        state = state or self.DEFAULT_STATE
         recon = recon or self.DEFAULT_RECON
-        site = self._infer_site_code(subject, visit)
 
-        def image_name(st: str) -> str:
-            return f'{subject}_{st}_{recon}_{site}_COPD'
+        site = self.site_code(subject, visit)
 
-        if asset_type == 'image':
-            return base_dir / f'{image_name(state)}.nii.gz'
+        variant_dir = self.root / 'Images' / subject / visit / variant
 
-        elif asset_type == 'mask':
-            mask_name = selectors['mask_name']
-            return base_dir / 'TotalSegmentator' / image_name(state) / f'{mask_name}.nii.gz'
+        def image_name(stat: str) -> str:
+            return f'{subject}_{stat}_{recon}_{site}_COPD'
 
-        elif asset_type == 'mesh':
-            mask_name = selectors['mask_name']
-            mesh_tag = selectors['mesh_tag']
-            return base_dir / 'pygalmesh' / image_name(state) / f'{mask_name}_{mesh_tag}.xdmf'
+        if variant == self.SOURCE_VARIANT:
+            if asset_type == 'image':
+                return self.root / 'Images' / subject / visit / 'RAW' / f'{image_name(state)}.nii.gz'
+        else:
+            base_dir = self.root / variant / subject / visit
 
-        elif asset_type == 'disp':
-            fix = selectors['fixed_state']
-            mov = selectors['moving_state']
-            assert fix in self.VALID_STATES, fix
-            assert mov in self.VALID_STATES, mov
-            return base_dir / 'CorrField' / f'{image_name(fix)}__{image_name(mov)}.nii.gz'
+            if asset_type == 'image':
+                return base_dir / 'images' / f'{image_name(state)}.nii.gz'
+
+            elif asset_type == 'mask':
+                mask_tag = selectors['mask_tag']
+                return base_dir / 'masks' / image_name(state) / f'{mask_tag}.nii.gz'
+
+            elif asset_type == 'mesh':
+                mesh_tag = selectors['mesh_tag']
+                return base_dir / 'meshes' / image_name(state) / f'{mesh_tag}.xdmf'
+
+            elif asset_type == 'disp':
+                fix_state = selectors['fixed_state']
+                mov_state = selectors['moving_state']
+                assert fix_state in self.VALID_STATES, fix_state
+                assert mov_state in self.VALID_STATES, mov_state
+                return base_dir / 'disps' / image_name(state) / f'{fix_state}_to_{mov_state}.nii.gz'
 
         raise RuntimeError(f'unrecognized asset type: {asset_type}')
 
-    def _infer_site_code(self, subject, visit):
-        key = (subject, visit)
-        if key in self._site_cache:
-            return self._site_cache[key]
-
-        visit_dir = self.root / 'Images' / subject / visit
-        for variant in self.variants(subject, visit):
-            variant_dir = visit_dir / variant
-            for nii_file in sorted(variant_dir.glob('*.nii.gz')):
-                name = nii_file.name[:-7]
-                parts = name.split('_')
-                # expected format: <subject>_<state>_<recon>_<site>_COPD
-                if len(parts) == 5 and parts[0] == subject and parts[1] in self.VALID_STATES:
-                    self._site_cache[key] = parts[3]
-                    return self._site_cache[key]
-
-        raise RuntimeError(f'failed to infer site code: {subject} {visit}')
-
     def examples(
         self,
-        subjects: Optional[List[str]] = None,
-        visit: str = None,
-        variant: str = 'ISO',
+        subjects:    List[str],
+        variant:     str,
+        visit:       Optional[str] = None,
         state_pairs: Optional[List[Tuple[str, str]]] = None,
-        recon: str = None,
-        mask_name: str = 'lung_regions',
-        mesh_tag: str = 'volume',
-        source_variant: str = 'RAW',
-        ref_state: str = 'EXP'
+        recon:       Optional[str] = None,
     ):
-        subjects = subjects or self.subjects()
         visit = visit or self.DEFAULT_VISIT
         recon = recon or self.DEFAULT_RECON
-        for subj in subjects:
-            pairs = state_pairs or self.state_pairs(subj, visit)
+
+        for subj in subjects or self.subjects():
+            pairs = state_pairs or self.state_pairs()
             for fixed, moving in pairs:
+                meta = {}
+                meta['visit'] = visit
+                meta['recon'] = recon
+                meta['states'] = {'fixed': fixed, 'moving': moving}
+
                 paths = {}
-                paths['ref_image'] = self.get_path(subj, source_variant, visit, ref_state, recon, 'image')
-                paths['fixed_source'] = self.get_path(subj, source_variant, visit, fixed, recon, 'image')
-                paths['moving_source'] = self.get_path(subj, source_variant, visit, moving, recon, 'image')
+                paths['source_ref'] = self.path(subj, self.SOURCE_VARIANT, visit, self.DEFAULT_STATE, recon, asset_type='image')
+                paths['source_fixed'] = self.path(subj, self.SOURCE_VARIANT, visit, fixed, recon, asset_type='image')
+                paths['source_moving'] = self.path(subj, self.SOURCE_VARIANT, visit, moving, recon, asset_type='image')
 
-                paths['fixed_image'] = self.get_path(subj, variant, visit, fixed, recon, 'image')
-                paths['moving_image'] = self.get_path(subj, variant, visit, moving, recon, 'image')
+                paths['fixed_image']  = self.path(subj, variant, visit, fixed, recon, asset_type='image')
+                paths['moving_image'] = self.path(subj, variant, visit, moving, recon, asset_type='image')
 
-                paths['region_mask'] = self.get_path(subj, variant, visit, fixed, recon, 'mask', mask_name=mask_name)
-                paths['volume_mesh'] = self.get_path(subj, variant, visit, fixed, recon, 'mesh', mask_name=mask_name, mesh_tag=mesh_tag)
-                paths['disp_field'] = self.get_path(subj, variant, visit, None, recon, 'disp', fixed_state=fixed, moving_state=moving)
+                paths['binary_mask']  = self.path(subj, variant, visit, fixed, recon, asset_type='mask', mask_tag='lung_combined')
+                paths['region_mask'] = self.path(subj, variant, visit, fixed, recon, asset_type='mask', mask_tag='lung_regions')
+
+                paths['surface_mesh'] = self.path(subj, variant, visit, fixed, recon, asset_type='mesh', mesh_tag='lung_surface')
+                paths['volume_mesh'] = self.path(subj, variant, visit, fixed, recon, asset_type='mesh', mesh_tag='lung_volume')
+
+                paths['disp_field']  = self.path(subj, variant, visit, fixed, recon, asset_type='disp', fixed_state=fixed, moving_state=moving)
+                paths['input_image'] = paths['fixed_image']
 
                 yield base.Example(
                     dataset='COPDGene',
                     subject=subj,
-                    visit=visit,
                     variant=variant,
-                    fixed_state=fixed,
-                    moving_state=moving,
                     paths=paths,
-                    metadata={'recon': recon}
+                    metadata=meta
                 )
 
 
-class COPDGeneVisit: # DEPRECATED
+# --- DEPRECATED ---
+
+
+class COPDGeneVisit:
 
     def __init__(self, data_root, subject_id, visit_name, site_code=None):
         self.data_root  = pathlib.Path(data_root)

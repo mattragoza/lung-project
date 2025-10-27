@@ -24,8 +24,8 @@ class TorchDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         ex = self.examples[idx]
 
-        image_nifti = fileio.load_nibabel(ex.paths['fixed_image'])
-        mask_nifti  = fileio.load_nibabel(ex.paths['fixed_mask'])
+        image_nifti = fileio.load_nibabel(ex.paths['input_image'])
+        mask_nifti  = fileio.load_nibabel(ex.paths['region_mask'])
         disp_nifti  = fileio.load_nibabel(ex.paths['disp_field'])
 
         affine = np.array(image_nifti.affine)
@@ -42,7 +42,7 @@ class TorchDataset(torch.utils.data.Dataset):
             elast_nifti = fileio.load_nibabel(ex.paths['elast_field'])
             elast = _as_tensor(elast_nifti).unsqueeze(0)
 
-        mesh = fileio.load_meshio(ex.paths['fixed_mesh'])
+        mesh = fileio.load_meshio(ex.paths['volume_mesh'])
 
         return {
             'affine':  affine,

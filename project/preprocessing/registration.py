@@ -37,7 +37,7 @@ def register_corrfield(
     image_fix: np.ndarray,
     mask_fix: np.ndarray,
     device: str='cuda'
-): -> np.ndarray
+) -> np.ndarray:
     '''
     Args:
         image_mov: (I, J, K) array

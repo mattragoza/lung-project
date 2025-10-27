@@ -3,33 +3,21 @@ import numpy as np
 from ..core import fileio, utils
 
 
-def _is_non_empty_dir(d):
-    return d.is_dir() and any(p.is_file() for p in d.iterdir())
-
-
 def _check_output(func, *args, **kwargs):
     '''
-    Wrapper to only call a function if its output
-    location does not already exist.
+    Wrapper to call a function only if its output path
+    does not already exist.
     '''
-    output_path = kwargs.get('output_path')
-    output_dir  = kwargs.get('output_dir')
-
-    checked_output = None
     output_exists = False
+    output_path = kwargs.get('output_path')
 
     if output_path is not None:
-        checked_output = output_path
-        output_exists  = output_path.is_file()
-
-    elif output_dir is not None:
-        checked_output = output_dir
-        output_exists  = _is_non_empty_dir(output_dir)
+        output_exists = output_path.is_file()
 
     if not output_exists:
         return func(*args, **kwargs)
     
-    utils.log(f'Skipping {func.__name__}: Output {checked_output} exists')
+    utils.log(f'Skipping {func.__name__}: Output {output_path} exists')
     
 
 # ----- full pipelines -----
@@ -38,24 +26,24 @@ def _check_output(func, *args, **kwargs):
 def preprocess_copdgene(ex, config):
     _check_output(
         resample_image_on_reference,
-        reference_path=ex.paths['ref_image'],
-        input_path=ex.paths['fixed_source'],
+        reference_path=ex.paths['source_ref'],
+        input_path=ex.paths['source_fixed'],
         output_path=ex.paths['fixed_image'],
     )
     _check_output(
         resample_image_on_reference,
-        reference_path=ex.paths['ref_image'],
-        input_path=ex.paths['moving_source'],
+        reference_path=ex.paths['source_ref'],
+        input_path=ex.paths['source_moving'],
         output_path=ex.paths['moving_image'],
     )
     _check_output(
         create_segmentation_masks,
         image_path=ex.paths['fixed_image'],
-        output_dir=ex.paths['region_mask'].parent
+        output_path=ex.paths['binary_mask'],
     )
     _check_output(
         create_lung_region_mask,
-        mask_dir=ex.paths['region_mask'].parent,
+        mask_dir=ex.paths['binary_mask'].parent,
         output_path=ex.paths['region_mask']
     )
     _check_output(
@@ -158,22 +146,21 @@ def resample_image_on_reference(
     utils.log('Done')
 
 
-def create_segmentation_masks(image_path, output_dir, combined_path=None):
+def create_segmentation_masks(image_path, output_path):
     from . import segmentation
-    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_dir = output_path.parent
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
 
     utils.log('Running TotalSegmentator task: total')
     ret = segmentation.run_total_segmentator(image_path, output_dir)
-    utils.pprint(ret)
 
     utils.log('Running TotalSegmentator task: lung_vessels')
     ret = segmentation.run_vessel_segmentation(image_path, output_dir)
-    utils.pprint(ret)
 
-    if combined_path:
-        utils.log('Combining segmentation masks: lung')
-        combined = segmentation.combine_segmentation_masks(output_dir, class_type='lung')
-        fileio.save_nibabel(combined_path, combined.get_fdata(), combined.affine)
+    utils.log('Combining segmentation masks: lung')
+    nifti = segmentation.combine_segmentation_masks(output_dir, class_type='lung')
+    fileio.save_nibabel(output_path, nifti.get_fdata(), nifti.affine)
 
     utils.log('Done')
 
