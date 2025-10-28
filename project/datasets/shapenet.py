@@ -12,6 +12,10 @@ def _parse_sid_code(subj: str):
     raise RuntimeError(f'failed to parse subject ID code: {subj}')
 
 
+def _parse_category(s: str) -> List[str]:
+    return [c.strip() for c in str(s).split(',')]
+
+
 def _parse_aligned_dims(s: str) -> np.ndarray:
     parts = s.replace('\\,', ',').split(',')
     return np.array([float(p) for p in parts])

@@ -7,7 +7,13 @@ import numpy as np
 import pandas as pd
 import torch
 
+
 VERBOSE = True
+
+
+def set_verbose(val: bool):
+    global VERBOSE
+    VERBOSE = val
 
 
 def log(msg):

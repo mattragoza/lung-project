@@ -2,9 +2,6 @@ from typing import Optional, Any, Dict, List, Tuple, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-import torch
-
 
 @dataclass
 class Example:
@@ -27,7 +24,7 @@ class BaseDataset:
         self,
         subject: str,
         variant: str,
-        *, # everything after this must be a keyword arg
+        *, # all args after this are keyword-only
         asset_type: str,
         **selectors
     ) -> Path:
