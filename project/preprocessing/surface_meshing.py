@@ -48,11 +48,9 @@ def get_mesh_info(mesh: trimesh.Trimesh) -> Dict[str, Any]:
         watertight=mesh.is_watertight,
         components=num_components,
         angles=dict(
-            min=float(angles.min()),
             p05=float(np.percentile(angles, 5)),
             p50=float(np.percentile(angles, 50)),
             p95=float(np.percentile(angles, 95)),
-            max=float(angles.max()),
         ),
 
     )

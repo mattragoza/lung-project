@@ -10,39 +10,42 @@ def _namespace(dct, name):
     return {f'{name}.{k}': v for k, v in dct.items()}
 
 
-def _as_list(obj):
-    return obj if isinstance(obj, list) else [obj]
+def _as_tuple(obj):
+    return obj if isinstance(obj, tuple) else (obj,)
 
 
 def _pass(metrics):
-    reasons = metrics.get('reasons', [])
+    reasons = metrics.get('reasons', ())
     return {**metrics, 'valid': len(reasons) == 0, 'reasons': reasons}
 
 
 def _fail(metrics, reason):
-    reasons = metrics.get('reasons', []) + _as_list(reason)
+    reasons = metrics.get('reasons', ()) + _as_tuple(reason)
     return {**metrics, 'valid': False, 'reasons': reasons}
 
 
-def validate_example(ex):
+def validate_example(ex, metadata=True, paths=True, artifacts=True):
     metrics = {'subject': ex.subject}
 
-    m = validate_metadata(ex.metadata)
-    metrics.update(_namespace(m, name='metadata'))
+    if metadata:
+        m = validate_metadata(ex.metadata)
+        metrics.update(_namespace(m, name='metadata'))
 
-    m, artifacts = validate_paths(ex.paths)
-    metrics.update(_namespace(m, name='paths'))
+    if paths or artifacts:
+        m, arts = validate_paths(ex.paths, load=True)
+        metrics.update(_namespace(m, name='paths'))
 
-    m = validate_artifacts(artifacts)
-    metrics.update(_namespace(m, name='artifacts'))
+    if artifacts:
+        m = validate_artifacts(arts)
+        metrics.update(_namespace(m, name='artifacts'))
 
-    if not metrics['metadata.valid']:
+    if metadata and not metrics['metadata.valid']:
         metrics = _fail(metrics, reason=metrics['metadata.reasons'])
 
-    if not metrics['paths.valid']:
+    if paths and not metrics['paths.valid']:
         metrics = _fail(metrics, reason=metrics['paths.reasons'])
 
-    if not metrics['artifacts.valid']:
+    if artifacts and not metrics['artifacts.valid']:
         metrics = _fail(metrics, reason=metrics['artifacts.reasons'])
 
     return _pass(metrics)
@@ -147,15 +150,15 @@ def validate_dims(dims_raw):
     return _pass(metrics)
 
 
-def validate_paths(paths):
+def validate_paths(paths, load=False):
     from .core import fileio
     metrics, artifacts = {}, {}
 
-    m, a = validate_path(paths.get('source_mesh'), fileio.load_trimesh)
+    m, a = validate_path(paths.get('source_mesh'), load and fileio.load_trimesh)
     metrics.update(_namespace(m, name='source_mesh'))
     artifacts['source_mesh'] = a
 
-    m, a = validate_path(paths.get('source_mask'), fileio.load_binvox)
+    m, a = validate_path(paths.get('source_mask'), load and fileio.load_binvox)
     metrics.update(_namespace(m, name='source_mask'))
     artifacts['source_mask'] = a
 
@@ -168,25 +171,27 @@ def validate_paths(paths):
     return _pass(metrics), artifacts
 
 
-def validate_path(path, loader):
+def validate_path(path, loader=None):
     metrics = {}
+    loaded = None
 
     if _missing(path):
-        return _fail(metrics, reason='missing path'), None
+        return _fail(metrics, reason='missing path'), loaded
 
     metrics['exists'] = path.is_file()
     if not metrics['exists']:
-        return _fail(metrics, reason='file does not exist'), None
+        return _fail(metrics, reason='file does not exist'), loaded
 
     metrics['fsize'] = path.stat().st_size
     if metrics['fsize'] == 0:
-        return _fail(metrics, reason='file size is zero'), None
+        return _fail(metrics, reason='file size is zero'), loaded
 
-    try:
-        loaded = loader(path)
-    except Exception as e:
-        metrics['exc'] = e
-        return _fail(metrics, reason='failed to load'), None
+    if loader:
+        try:
+            loaded = loader(path)
+        except Exception as e:
+            metrics['exc'] = e
+            return _fail(metrics, reason='failed to load'), loaded
 
     return _pass(metrics), loaded
 
@@ -214,10 +219,14 @@ def validate_artifacts(artifacts):
 
 def validate_trimesh_scene(scene):
     from .preprocessing import surface_meshing
+    import trimesh
     metrics = {}
 
     if _missing(scene):
         return _fail(metrics, reason='missing scene')
+
+    if not isinstance(scene, trimesh.Scene):
+        return _fail(metrics, reason='not a trimesh scene')
 
     metrics['geometries'] = len(scene.geometry)
     if metrics['geometries'] == 1:
@@ -279,6 +288,10 @@ def validate_triangular_mesh(mesh):
     metrics['is_watertight'] = mesh.is_watertight
     #metrics['components'] = len(mesh.split(only_watertight=False))
     metrics['surface_area'] = float(mesh.area)
+
+    if metrics['vertices'] < 4:
+        return _fail(metrics, 'fewer than 4 vertices')
+
     metrics['volume'] = float(mesh.volume)
 
     if np.isclose(metrics['volume'], 0.):
@@ -290,6 +303,7 @@ def validate_triangular_mesh(mesh):
 
 
 def validate_binvox_object(bv):
+    from .preprocessing import mask_cleanup
     import binvox
     metrics = {}
 
@@ -299,8 +313,10 @@ def validate_binvox_object(bv):
     if not isinstance(bv, binvox.Binvox):
         return _fail(metrics, reason='not a binvox object')
 
+    metrics['dims'] = np.asarray(bv.dims)
     metrics['translate'] = np.asarray(bv.translate)
     metrics['scale'] = float(bv.scale)
+    metrics['axis_order'] = bv.axis_order
 
     try:
         array = bv.numpy()
@@ -311,13 +327,23 @@ def validate_binvox_object(bv):
     m = validate_binary_mask(array)
     metrics.update(_namespace(m, name='array'))
 
-    if not metrics['array.valid']:
-        return _fail(metrics, reason=metrics['array.reasons'])
+    try:
+        cleaned = mask_cleanup.cleanup_binary_mask(array)
+    except Exception as e:
+        metrics['exc'] = e
+        cleaned = None
+
+    m = validate_binary_mask(cleaned)
+    metrics.update(_namespace(m, name='clean'))
+
+    if not (metrics['array.valid'] or metrics['clean.valid']):
+        return _fail(metrics, reason=metrics['array.reasons'] + metrics['clean.reasons'])
 
     return _pass(metrics)
 
 
 def validate_binary_mask(mask):
+    from .preprocessing import mask_cleanup
     metrics = {}
 
     if not isinstance(mask, np.ndarray):
@@ -342,6 +368,18 @@ def validate_binary_mask(mask):
 
     if metrics['nonzero'] == 0:
         return _fail(metrics, reason='all zero voxels')
+
+    metrics['components'] = mask_cleanup.count_connected_components(mask)
+
+    p5, p50, p95 = mask_cleanup.compute_thickness_metrics(mask, p=[5, 50, 95])
+    metrics['thickness_p5']  = p5
+    metrics['thickness_p50'] = p50
+    metrics['thickness_p95'] = p95
+
+    p5, p50, p95 = mask_cleanup.compute_cross_section_metrics(mask)
+    metrics['area_p5']  = p5
+    metrics['area_p50'] = p50
+    metrics['area_p95'] = p95
 
     return _pass(metrics)
 

@@ -98,3 +98,20 @@ def count_connected_components(mask, connectivity=1):
         connectivity=connectivity
     )[1]
 
+
+def compute_thickness_metrics(mask, p=[5, 50, 95]):
+    m = mask != 0
+    edt = scipy.ndimage.distance_transform_edt(m)
+    dist = edt[m] # distance to nearest boundary
+    return np.percentile(dist, p)
+
+
+def compute_cross_section_metrics(mask, p=[5, 50, 95]):
+    I, J, K = mask.shape
+    m = mask != 0
+    a0 = mask.mean(axis=(1,2))
+    a1 = mask.mean(axis=(0,2))
+    a2 = mask.mean(axis=(0,1))
+    a = np.concatenate([a0, a1, a2])
+    return np.percentile(a[a > 0], p)
+

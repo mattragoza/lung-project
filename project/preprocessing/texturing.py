@@ -56,17 +56,16 @@ class TextureSampler:
             w.writerows(self.log)
 
 
-
-def show_image(img, title=None, ax=None):
+def show_image(array, title=None, ax=None):
     import matplotlib.pyplot as plt
     if ax is None:
         fig, ax = plt.subplots()
-    if img.ndim == 2:
-        ret = ax.imshow(img, cmap='gray')
-    elif img.ndim == 3:
-        ret = ax.imshow(img)
+    if array.ndim == 2:
+        ret = ax.imshow(array, cmap='gray')
+    elif array.ndim == 3:
+        ret = ax.imshow(array)
     else:
-        raise ValueError(f'cannot show array shape {img.shape} as image')
+        raise ValueError(f'cannot show array shape {array.shape} as image')
     if title:
         ax.set_title(title)
     ax.axis('off')

@@ -45,7 +45,7 @@ def main(argv):
     config = json.load(args.config) if args.config else {}
 
     for ex in ds.examples(subjects, args.variant, **config.get('examples', {})):
-        project.core.utils.pprint(ex, max_depth=2)
+        project.core.utils.pprint(ex, max_depth=2, max_items=20)
         if not args.dry_run:
             run_pipeline(ex, config.get('pipeline', {}))
 
