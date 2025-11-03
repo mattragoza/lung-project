@@ -2,7 +2,7 @@ import numpy as np
 import scipy
 import skimage
 
-from ..core import utils
+from ..core import utils, transforms
 
 
 def cleanup_binary_mask(mask):
@@ -114,4 +114,39 @@ def compute_cross_section_metrics(mask, p=[5, 50, 95]):
     a2 = mask.mean(axis=(0,1))
     a = np.concatenate([a0, a1, a2])
     return np.percentile(a[a > 0], p)
+
+
+
+def pad_array_and_affine(array, affine, pad):
+    array = np.pad(array, pad, mode='constant', constant_values=0)
+    origin = np.array(affine[:3,3])
+    spacing = np.diag(affine[:3,:3])
+    affine = transforms.build_affine_matrix(origin - pad * spacing, spacing)
+    return array, affine
+
+
+def center_array_and_affine(array, affine):
+    if array.ndim != 3:
+        raise ValueError('array must be 3D')
+
+    center_old = scipy.ndimage.center_of_mass(array)
+    center_old = np.asarray(center_old, dtype=float)
+    center_new = (np.array(array.shape, dtype=float) - 1) / 2
+
+    delta = center_new - center_old
+    delta_int = np.round(delta).astype(int)
+    delta_rem = delta - delta_int.astype(float)
+
+    shifted = scipy.ndimage.shift(
+        input=array,
+        shift=delta_int,
+        order=0,
+        mode='constant',
+        cval=0,
+        prefilter=False
+    )
+    A = affine.astype(float, copy=True)
+    A[:3,3] -= A[:3,:3] @ delta_int
+
+    return shifted, A
 

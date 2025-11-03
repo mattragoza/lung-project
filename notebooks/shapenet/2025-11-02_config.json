@@ -1,0 +1,45 @@
+{
+	"examples": {},
+	"pipeline": {
+		"preprocess_binary_mask": {
+			"pad_factor": 0.37
+		},
+		"preprocess_surface_mesh": {},
+		"create_mesh_region_mask": {},
+		"create_volume_mesh_from_mask": {
+			"use_affine_spacing": false,
+			"pygalmesh_kws": {
+				"max_facet_distance": 0.75,
+				"max_cell_circumradius": 5.0,
+				"lloyd": true,
+				"odt": true
+			}
+		},
+		"create_material_fields": {},
+		"simulate_displacement_field": {
+			"nu_value": 0.4,
+			"solver_kws": {}
+		},
+		"generate_volumetric_image": {
+			"annot_path": "/ocean/projects/asc170022p/mtragoza/lung-project/notebooks/shapenet/2025-10-25_annotations.csv",
+			"tex_kws": {
+				"iqr_mult": 4.0
+			},
+			"gen_kws": {
+				"weights": [0.0, 0.0, 1.0],
+				"bias_0": -1000.0,
+				"bias_d": 1000.0,
+				"bias_e": 0.0,
+				"range_0": 250.0,
+				"range_d": 0.0,
+				"range_e": 250.0,
+				"t_noise_corr": 1.0,
+				"t_noise_std": 0.1,
+				"b_noise_corr": 64.0,
+				"b_noise_std": 0.1,
+				"s_noise_std": 10.0,
+				"seed": 0
+			}
+		}
+	}
+}

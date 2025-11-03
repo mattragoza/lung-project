@@ -136,10 +136,16 @@ def query_face_labels(
     query = trimesh.proximity.ProximityQuery(mesh)
     points = np.asarray(points, dtype=np.float32)
     output = np.empty(len(points), dtype=int)
+
+    def _most_common_value(arr):
+        values, counts = np.unique(arr, return_counts=True)
+        return values[np.argmax(counts)]
     
     for start in tqdm.tqdm(range(0, len(points), chunk_size), file=sys.stdout):
         end = min(start + chunk_size, len(points))
-        _, _, face_inds = query.on_surface(points[start:end])
+        #_, _, face_inds = query.on_surface(points[start:end])
+        candidates = trimesh.proximity.nearby_faces(mesh, points[start:end])
+        face_inds = np.array([_most_common_value(c) for c in candidates], dtype=int)
         output[start:end] = labels[face_inds]
     
     return output

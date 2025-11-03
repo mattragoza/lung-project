@@ -110,6 +110,10 @@ def pprint(
     return out if ret_string else print(out)
 
 
+def missing(val):
+    return pd.isna(val) or str(val).strip() == ''
+
+
 def is_iterable(obj):
     return hasattr(obj, '__iter__') and not isinstance(obj, str)
 

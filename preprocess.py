@@ -1,6 +1,5 @@
-import sys, os, json
-import project.datasets
-import project.preprocessing
+import sys, os
+import project
 
 CONFIG = {
     'copdgene': {
@@ -21,9 +20,9 @@ def parse_args(argv):
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument('--dataset', required=True)
+    p.add_argument('--subject', default=None, help='Subject IDs to preprocess (comma-separated)')
     p.add_argument('--data_root', default=None, help='Dataset root directory')
-    p.add_argument('--subject', nargs='*', help='Subject IDs to preprocess')
-    p.add_argument('--variant', default='TEST', help='Output subdirectory name')
+    p.add_argument('--variant', default='TEST', help='Output directory name')
     p.add_argument('--config', help='Path to JSON configuration file')
     p.add_argument('--dry_run', action='store_true')
     return p.parse_args(argv)
@@ -36,18 +35,28 @@ def main(argv):
     run_pipeline = CONFIG[args.dataset]['pipeline_fn']
 
     data_root = args.data_root or CONFIG[args.dataset]['default_root']
-    subjects = args.subject or [CONFIG[args.dataset]['default_subj']]
+
+    if args.subject:
+        subjects = args.subject.split(',')
+    else:
+        subjects = [CONFIG[args.dataset]['default_subj']]
+
+    print(subjects)
 
     if not os.path.isdir(data_root):
         raise RuntimeError(f'{data_root} is not a valid directory')
 
     ds = dataset_cls(data_root)
-    config = json.load(args.config) if args.config else {}
 
-    for ex in ds.examples(subjects, args.variant, **config.get('examples', {})):
+    config = project.core.fileio.load_json(args.config) if args.config else {}
+    examples_cfg = config.get('examples', {})
+    pipeline_cfg = config.get('pipeline', {})
+
+    for ex in ds.examples(subjects, variant=args.variant, **examples_cfg):
+        print(f'Preprocessing subject: {ex.subject}')
         project.core.utils.pprint(ex, max_depth=2, max_items=20)
         if not args.dry_run:
-            run_pipeline(ex, config.get('pipeline', {}))
+            run_pipeline(ex, pipeline_cfg)
 
 
 if __name__ == '__main__':

@@ -87,6 +87,13 @@ def load_analyze75(img_file, shape, dtype=None):
     return array.copy()
 
 
+def load_json(path):
+    import json
+    utils.log(f'Loading {path}')
+    with open(path) as f:
+        return json.load(f)
+
+
 def load_yaml(path):
     import yaml
     utils.log(f'Loading {path}')

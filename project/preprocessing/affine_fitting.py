@@ -68,11 +68,3 @@ def relative_error(a, b, eps=1e-12):
     from numpy.linalg import norm
     return norm(a - b) / (norm(b) + eps)
 
-
-def pad_array_and_affine(array, affine, pad=1):
-    array = np.pad(array, pad, mode='constant', constant_values=0)
-    origin = np.array(affine[:3,3])
-    spacing = np.diag(affine[:3,:3])
-    affine = build_affine_matrix(origin - pad * spacing, spacing)
-    return array, affine
-

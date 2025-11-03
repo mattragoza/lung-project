@@ -24,7 +24,18 @@ def _fail(metrics, reason):
     return {**metrics, 'valid': False, 'reasons': reasons}
 
 
-def validate_example(ex, metadata=True, paths=True, artifacts=True):
+def validate_example(
+    ex, metadata: bool=True, paths: bool=True, artifacts: bool=True
+):
+    '''
+    Args:
+        ex: Example object from shapenet dataset
+        metadata: If True, validate example metadata
+        paths: If True, validate paths and file loading
+        artifacts: If True, validate mesh and mask data
+    Returns:
+        Dict[str, Any] validation metrics
+    '''
     metrics = {'subject': ex.subject}
 
     if metadata:
@@ -54,13 +65,17 @@ def validate_example(ex, metadata=True, paths=True, artifacts=True):
 def validate_metadata(md):
     metrics = {}
 
-    m = validate_category(md.get('category'))
+    raw = md.get('raw')
+    if _missing(raw):
+        return _fail(metrics, reason='missing raw metadata')
+
+    m = validate_category(raw.get('category'))
     metrics.update(_namespace(m, name='category'))
 
-    m = validate_unit(md.get('unit'))
+    m = validate_unit(raw.get('unit'))
     metrics.update(_namespace(m, name='unit'))
 
-    m = validate_dims(md.get('aligned.dims'))
+    m = validate_dims(raw.get('dims'))
     metrics.update(_namespace(m, name='dims'))
 
     if not metrics['category.valid']:
@@ -71,9 +86,6 @@ def validate_metadata(md):
 
     if not metrics['dims.valid']:
         metrics = _fail(metrics, reason=metrics['dims.reasons'])
-
-    if metrics['dims.valid'] and metrics['unit.valid']:
-        metrics['dims_by_unit'] = metrics['dims.value'] / metrics['unit.value']
 
     return _pass(metrics)
 
@@ -92,7 +104,11 @@ def validate_category(cat_raw):
         return _fail(metrics, reason='failed to parse category')
 
     metrics['set'] = set(cat)
-    metrics['len'] = len(cat)
+    metrics['len'] = len(metrics['set'])
+
+    filtered = [c for c in cat if not c.startswith('_')]
+    metrics['set_f'] = set(filtered)
+    metrics['len_f'] = len(metrics['set_f'])
 
     return _pass(metrics)
 
@@ -139,13 +155,17 @@ def validate_dims(dims_raw):
     if dims.shape != (3,):
         return _fail(metrics, reason='invalid dims shape')
 
+    # aligned.dims seems to be stored as (x,z,y) in cm
+    metrics['xyz_m'] = dims[[0,2,1]] / 100.
+
     if not np.isfinite(dims).all():
         return _fail(metrics, reason='non-finite dim(s)')
 
     if (dims <= 0).any():
         return _fail(metrics, reason='non-positive dim(s)')
 
-    metrics['product'] = float(np.prod(dims))
+    metrics['prod']   = float(np.prod(dims))
+    metrics['prod_m'] = float(np.prod(dims / 100.))
 
     return _pass(metrics)
 
@@ -154,11 +174,13 @@ def validate_paths(paths, load=False):
     from .core import fileio
     metrics, artifacts = {}, {}
 
-    m, a = validate_path(paths.get('source_mesh'), load and fileio.load_trimesh)
+    loader = fileio.load_trimesh if load else None
+    m, a = validate_path(paths.get('source_mesh'), loader)
     metrics.update(_namespace(m, name='source_mesh'))
     artifacts['source_mesh'] = a
 
-    m, a = validate_path(paths.get('source_mask'), load and fileio.load_binvox)
+    loader = fileio.load_binvox if load else None
+    m, a = validate_path(paths.get('source_mask'), loader)
     metrics.update(_namespace(m, name='source_mask'))
     artifacts['source_mask'] = a
 
@@ -187,6 +209,7 @@ def validate_path(path, loader=None):
         return _fail(metrics, reason='file size is zero'), loaded
 
     if loader:
+        assert hasattr(loader, '__call__') # don't catch this
         try:
             loaded = loader(path)
         except Exception as e:
@@ -229,7 +252,7 @@ def validate_trimesh_scene(scene):
         return _fail(metrics, reason='not a trimesh scene')
 
     metrics['geometries'] = len(scene.geometry)
-    if metrics['geometries'] == 1:
+    if metrics['geometries'] == 1: # not fatal
         metrics = _fail(metrics, reason='single geometry')
 
     try:
@@ -279,15 +302,16 @@ def validate_triangular_mesh(mesh):
     if metrics['faces'] == 0:
         return _fail(metrics, reason='zero faces')
 
+    metrics['surface_area']  = float(mesh.area)
+
     # count boundary, interior, and non-manifold edges
     edge_types = surface_meshing.count_edge_types(mesh.faces)
     for k, v in edge_types.items():
         metrics[k + '_edges'] = v
 
     metrics['euler_number'] = mesh.euler_number 
-    metrics['is_watertight'] = mesh.is_watertight
-    #metrics['components'] = len(mesh.split(only_watertight=False))
-    metrics['surface_area'] = float(mesh.area)
+    metrics['watertight']   = mesh.is_watertight
+    metrics['components']   = len(mesh.split(only_watertight=False))
 
     if metrics['vertices'] < 4:
         return _fail(metrics, 'fewer than 4 vertices')
@@ -297,7 +321,8 @@ def validate_triangular_mesh(mesh):
     if np.isclose(metrics['volume'], 0.):
         return _fail(metrics, 'zero volume')
 
-    metrics['convexity'] = metrics['volume'] / float(mesh.convex_hull.volume)
+    metrics['ch_volume'] = float(mesh.convex_hull.volume)
+    metrics['convexity'] = metrics['volume'] / metrics['ch_volume']
 
     return _pass(metrics)
 
@@ -368,6 +393,9 @@ def validate_binary_mask(mask):
 
     if metrics['nonzero'] == 0:
         return _fail(metrics, reason='all zero voxels')
+
+    if metrics['nonzero'] == 1:
+        return _fail(metrics, reason='one nonzero voxel')
 
     metrics['components'] = mask_cleanup.count_connected_components(mask)
 

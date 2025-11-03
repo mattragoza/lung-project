@@ -8,8 +8,8 @@ class Example:
     dataset:  str
     subject:  str
     variant:  str
-    paths:    Dict[str, Path] = None
-    metadata: Dict[str, Any]  = None
+    paths:    Dict[str, Path]
+    metadata: Dict[str, Any]
 
 
 class BaseDataset:
@@ -32,8 +32,8 @@ class BaseDataset:
 
     def examples(
         self,
-        subjects: List[str],
-        variant: str,
+        subjects: Optional[List[str]]=None,
+        variant: Optional[str]=None,
         **kwargs
     ) -> Iterable[Example]:
         raise NotImplementedError

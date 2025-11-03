@@ -8,8 +8,8 @@ def _check_output(func, *args, **kwargs):
     Wrapper to call a function only if its output path
     does not already exist.
     '''
-    output_exists = False
     output_path = kwargs.get('output_path')
+    output_exists = False
 
     if output_path is not None:
         output_exists = output_path.is_file()
@@ -70,37 +70,35 @@ def preprocess_shapenet(ex, config):
         preprocess_binary_mask,
         mask_path=ex.paths['source_mask'],
         mesh_path=ex.paths['source_mesh'],
-        output_path=ex.paths['binary_mask']
+        output_path=ex.paths['binary_mask'],
+        **(config.get('preprocess_binary_mask') or {})
     )
     _check_output(
         preprocess_surface_mesh,
         input_path=ex.paths['source_mesh'],
-        output_path=ex.paths['surface_mesh']
+        output_path=ex.paths['surface_mesh'],
+        **(config.get('preprocess_surface_mesh') or {})
     )
     _check_output(
         create_mesh_region_mask,
         mask_path=ex.paths['binary_mask'],
         mesh_path=ex.paths['source_mesh'],
-        output_path=ex.paths['region_mask']
+        output_path=ex.paths['region_mask'],
+        **(config.get('create_mesh_region_mask') or {})
     )
     _check_output(
         create_volume_mesh_from_mask,
         mask_path=ex.paths['region_mask'],
         output_path=ex.paths['volume_mesh'],
-        use_affine_spacing=False,
-        pygalmesh_kws=dict(
-            max_facet_distance=0.75,
-            max_cell_circumradius=5.0,
-            lloyd=True,
-            odt=True,
-        )
+        **(config.get('create_volume_mesh_from_mask') or {})
     )
     _check_output(
         create_material_fields,
         mask_path=ex.paths['region_mask'],
         density_path=ex.paths['density_field'],
         elastic_path=ex.paths['elastic_field'],
-        output_path=ex.paths['material_mask']
+        output_path=ex.paths['material_mask'],
+        **(config.get('create_material_fields') or {})
     )
     _check_output(
         simulate_displacement_field,
@@ -110,13 +108,13 @@ def preprocess_shapenet(ex, config):
         nodes_path=ex.paths['node_values'],
         output_path=ex.paths['disp_field'],
         unit_m=ex.metadata['unit'],
-        nu_value=0.4
+        **(config.get('simulate_displacement_field') or {})
     )
     _check_output(
         generate_volumetric_image,
         mask_path=ex.paths['material_mask'],
         output_path=ex.paths['input_image'],
-        annot_path='data/ShapeNetSem/texture_annotations_2025-10-25.csv'
+        **(config.get('generate_volumetric_image') or {})
     )
 
 
@@ -254,17 +252,25 @@ def register_displacement_field(
 # --- shapenet processing ---
 
 
-def preprocess_binary_mask(mask_path, mesh_path, output_path):
+def preprocess_binary_mask(mask_path, mesh_path, output_path, pad_factor=0.37):
     from . import affine_fitting, mask_cleanup
 
     binvox = fileio.load_binvox(mask_path)
-    mesh   = fileio.load_meshio(mesh_path)
+    mesh = fileio.load_meshio(mesh_path)
 
     utils.log('Inferring affine from mesh bounding box')
     affine = affine_fitting.infer_binvox_affine(binvox, mesh.points)
 
     utils.log('Cleaning up binary mask')
     mask = mask_cleanup.cleanup_binary_mask(binvox.numpy())
+
+    utils.log('Centering binary mask')
+    mask, affine = mask_cleanup.center_array_and_affine(mask, affine)
+
+    if pad_factor > 0:
+        pad = int(np.ceil(pad_factor * max(mask.shape)))
+        utils.log(f'Padding binary mask by {pad:d} ({pad_factor*100}%)')
+        mask, affine = mask_cleanup.pad_array_and_affine(mask, affine, pad)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, mask.astype(np.uint8), affine)
@@ -286,7 +292,7 @@ def preprocess_surface_mesh(input_path, output_path):
     utils.log('Done')
 
 
-def create_mesh_region_mask(mask_path, mesh_path, output_path):
+def create_mesh_region_mask(mask_path, mesh_path, output_path, clean=True):
     from . import surface_meshing, mask_cleanup
 
     nifti = fileio.load_nibabel(mask_path)
@@ -299,10 +305,12 @@ def create_mesh_region_mask(mask_path, mesh_path, output_path):
     utils.log('Assigning labels to voxels')
     regions = surface_meshing.assign_voxel_labels(mask, affine, mesh, labels)
 
-    utils.log('Cleaning up region mask')
-    regions = mask_cleanup.cleanup_region_mask(
-        regions, min_count=1000, keep_largest=False
-    )
+    if clean:
+        utils.log('Cleaning up region mask')
+        regions = mask_cleanup.cleanup_region_mask(
+            regions, min_count=1000, keep_largest=False
+        )
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, regions.astype(np.int16), affine)
     utils.log('Done')
