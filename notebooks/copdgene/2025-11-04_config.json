@@ -1,0 +1,45 @@
+{
+	"dataset": "copdgene",
+	"data_root": "data/COPDGene",
+	"examples": {
+		"visit": "Phase-1",
+		"state_pairs": [
+			["EXP", "INSP"]
+		],
+		"recon": "STD"
+	},
+	"pipeline": {
+		"resample_image_on_reference": {
+			"spacing": [1.0, 1.0, 1.0],
+			"interp": "bspline",
+			"default": -1000
+		},
+		"create_segmentation_masks": {},
+		"create_lung_region_mask": {
+			"min_count": 30
+		},
+		"create_volume_mesh_from_mask": {
+			"use_affine_spacing": true,
+			"pygalmesh_kws": {
+				"max_facet_distance": 0.9,
+				"max_cell_circumradius": 8.0,
+				"lloyd": false,
+				"odt": false
+			}
+		},
+		"register_displacement_field": {}
+	},
+	"optimize": {
+		"nu_value": 0.4,
+		"solver_kws": {"reg_weight": 5e-4},
+		"global_kws": {
+			"max_iter": 100,
+			"lbfgs_kws": {}
+		},
+		"local_kws": {
+			"max_iter": 100,
+			"lbfgs_kws": {}
+		}
+	},
+	"train": {}
+}
