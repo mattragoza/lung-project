@@ -1,6 +1,6 @@
 import numpy as np
 
-from ..core import fileio, utils
+from ..core import fileio, utils, metrics
 
 
 def _check_output(func, *args, **kwargs):
@@ -29,39 +29,40 @@ def preprocess_copdgene(ex, config):
         reference_path=ex.paths['source_ref'],
         input_path=ex.paths['source_fixed'],
         output_path=ex.paths['fixed_image'],
+        **(config.get('resample_image_on_reference') or {})
     )
     _check_output(
         resample_image_on_reference,
         reference_path=ex.paths['source_ref'],
         input_path=ex.paths['source_moving'],
         output_path=ex.paths['moving_image'],
+        **(config.get('resample_image_on_reference') or {})
     )
     _check_output(
         create_segmentation_masks,
         image_path=ex.paths['fixed_image'],
         output_path=ex.paths['binary_mask'],
+        **(config.get('create_segmentation_masks') or {})
     )
     _check_output(
         create_lung_region_mask,
         mask_dir=ex.paths['binary_mask'].parent,
-        output_path=ex.paths['region_mask']
+        output_path=ex.paths['region_mask'],
+        **(config.get('create_lung_region_mask') or {})
     )
     _check_output(
         create_volume_mesh_from_mask,
         mask_path=ex.paths['region_mask'],
         output_path=ex.paths['volume_mesh'],
-        use_affine_spacing=False,
-        pygalmesh_kws=dict(
-            max_facet_distance=0.9,
-            max_cell_circumradius=8.0,
-        )
+        **(config.get('create_volume_mesh_from_mask') or {})
     )
     _check_output(
         register_displacement_field,
         fixed_path=ex.paths['fixed_image'],
         moving_path=ex.paths['moving_image'],
         mask_path=ex.paths['region_mask'],
-        output_path=ex.paths['disp_field']
+        output_path=ex.paths['disp_field'],
+        **(config.get('register_displacement_field') or {}),
     )
 
 
@@ -125,7 +126,7 @@ def resample_image_on_reference(
     input_path,
     output_path,
     reference_path,
-    spacing=(1., 1., 1.),
+    spacing=(1.0, 1.0, 1.0),
     interp='bspline',
     default=-1000.
 ):
@@ -350,13 +351,17 @@ def simulate_displacement_field(
     density_nifti = fileio.load_nibabel(density_path)
     elastic_nifti = fileio.load_nibabel(elastic_path)
 
-    affine = density_nifti.affine
-    rho_field = density_nifti.get_fdata()
-    E_field = elastic_nifti.get_fdata()
+    affine_d = density_nifti.affine
+    affine_e = elastic_nifti.affine
+    assert np.allclose(affine_d, affine_e)
+
+    rho_field = density_nifti.get_fdata().astype(np.float32)
+    E_field   = elastic_nifti.get_fdata().astype(np.float32)
+    assert rho_field.shape == E_field.shape
 
     utils.log('Simulating displacement using material fields')
-    disp_field, node_values = simulation.simulate_forward(
-        mesh, affine, rho_field, E_field, nu_value, unit_m, solver_kws
+    disp_field, node_values = simulation.simulate_displacement(
+        mesh, affine_d, rho_field, E_field, nu_value, unit_m, solver_kws
     )
     print(disp_field.shape, disp_field.dtype)
 
@@ -368,7 +373,62 @@ def simulate_displacement_field(
     fileio.save_meshio(nodes_path, mesh)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_nibabel(output_path, disp_field, affine)
+    fileio.save_nibabel(output_path, disp_field, affine_d)
+
+
+def optimize_elasticity_field(
+    input_nodes_path,
+    input_mask_path,
+    output_nodes_path,
+    output_path,
+    nu_value=0.4,
+    unit_m=1e-3,
+    solver_kws=None,
+    global_kws=None,
+    local_kws=None,
+):
+    from . import simulation
+
+    mesh = fileio.load_meshio(input_nodes_path)
+    rho_nodes = mesh.point_data['rho']
+    u_true_nodes = mesh.point_data['u'] # world units
+    E_true_nodes = mesh.point_data['E'] # Pa
+
+    nifti = fileio.load_nibabel(input_mask_path)
+
+    utils.log('Optimizing elasticity to match observed displacment')
+    E_field, node_values = simulation.optimize_elasticity(
+        mesh=mesh,
+        shape=nifti.get_fdata().shape,
+        affine=nifti.affine,
+        rho_nodes=rho_nodes,
+        E_nodes=E_true_nodes,
+        u_obs_nodes=u_true_nodes,
+        nu_value=nu_value,
+        unit_m=unit_m,
+        solver_kws=solver_kws,
+        global_kws=global_kws,
+        local_kws=local_kws
+    )
+    # save new keys in mesh file
+    for k, v in node_values.items():
+        print(k, v.shape, v.dtype)
+        mesh.point_data[k] = v.astype(np.float32)
+
+    # compute basic metrics
+    u_rel_rmse = metrics.relative_rmse(mesh.point_data['u_opt'], mesh.point_data['u'])
+    E_rel_rmse = metrics.relative_rmse(mesh.point_data['E_opt'], mesh.point_data['E'])
+    E_log_error = metrics.log_scale_error(mesh.point_data['E_opt'], mesh.point_data['E'])
+
+    utils.log(f'u rel RMSE:  {u_rel_rmse * 100:.4f}%')
+    utils.log(f'E rel RMSE:  {E_rel_rmse * 100:.4f}%')
+    utils.log(f'E log error: {E_log_error:.4f}')
+
+    output_nodes_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_meshio(output_nodes_path, mesh)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(output_path, E_field, nifti.affine)
 
 
 def generate_volumetric_image(

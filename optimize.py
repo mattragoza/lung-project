@@ -1,53 +1,69 @@
+import sys, os
 import project
+import warp as wp
+wp.config.quiet = True
 
-ds = project.datasets.copdgene.COPDGeneDataset(
-	data_root='data/COPDGene'
-)
 
-examples = ds.examples(
-	subjects=['16514P'],
-	visits=['Phase-1'],
-	variant='ISO',
-	state_pairs=[('EXP', 'INSP')],
-	recon='STD',
-	mask_name='lung_regions',
-	mesh_tag='volume'
-)
+CONFIG = {
+    'copdgene': {
+        'dataset_cls': project.datasets.copdgene.COPDGeneDataset,
+        'default_root': 'data/COPDGene',
+        'default_subj': '16514P'
+    },
+    'shapenet': {
+        'dataset_cls': project.datasets.shapenet.ShapeNetDataset,
+        'default_root': 'data/ShapeNetSem',
+        'default_subj': 'wss.101354f9d8dede686f7b08d9de913afe'
+    }
+}
 
-E0 = 3e3
-nu = 0.5
+def parse_args(argv):
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument('--dataset', required=True)
+    p.add_argument('--subject', default=None, help='Subject IDs to preprocess (comma-separated)')
+    p.add_argument('--data_root', default=None, help='Dataset root directory')
+    p.add_argument('--variant', default='TEST', help='Preprocessed data variant')
+    p.add_argument('--config', help='Path to JSON configuration file')
+    return p.parse_args(argv)
 
-max_iter = 1000
-lr = 1e-3
 
-mm_to_m = 1e-3
+def main(argv):
+    args = parse_args(argv)
 
-for ex in project.datasets.base.TorchDataset(examples):
-	image  = ex['image']
-	mask   = ex['mask']
-	disp   = ex['disp']
-	mesh   = ex['mesh']
-	affine = ex['affine']
+    dataset_cls = CONFIG[args.dataset]['dataset_cls']
+    run_optimize = project.preprocessing.api.optimize_elasticity_field
+    data_root = args.data_root or CONFIG[args.dataset]['default_root']
 
-	points = project.core.transforms.world_to_voxel_coords(mesh.points, affine)
-	points = torch.as_tensor(points, dtype=image.dtype, device=image.device)
+    if args.subject:
+        subjects = args.subject.split(',')
+    else:
+        subjects = [CONFIG[args.dataset]['default_subj']]
 
-	image_vals = project.core.interpolation.interpolate_image(image, points)
-	u_obs_vals = project.core.interpolation.interpolate_image(disp, points) * mm_to_m
-	rho_vals = project.core.transforms.compute_density_from_ct(image_vals)
+    print(subjects)
 
-	solver = project.solvers.warp.WarpFEMSolver(mesh, relative_loss=True)
-	module = project.solvers.base.PDESolverModule(solver, rho_vals, u_obs_vals)
+    if not os.path.isdir(data_root):
+        raise RuntimeError(f'{data_root} is not a valid directory')
 
-	theta = torch.ones_like(image_vals, dtype=torch.float32, requires_grad=True)
-	optim = torch.optim.Adam([theta], lr=lr)
+    ds = dataset_cls(data_root)
 
-	for i in range(max_iter):
-		optim.zero_grad()
-		E_vals = E0 * torch.exp(theta)
-		mu_vals, lam_vals = project.core.transforms.compute_lame_parameters(E_vals, nu)
-		loss = module.forward(mu_vals, lam_vals)
-		grad_norm = theta.grad.norm()
-		loss.backward()
-		print(f'iteration {i} | loss={loss.item():.8e} | grad_norm={grad_norm.item():.8e}')
-		optim.step()
+    config = project.core.fileio.load_json(args.config) if args.config else {}
+    examples_cfg = config.get('examples', {})
+    optimize_cfg = config.get('optimize', {})
+    
+    for ex in ds.examples(subjects, args.variant, **examples_cfg):
+        print(f'Optimizing E field for subject: {ex.subject}')
+        project.core.utils.pprint(ex, max_depth=2, max_items=20)
+        run_optimize(
+            input_nodes_path=ex.paths['node_values'],
+            input_mask_path=ex.paths['region_mask'],
+            output_nodes_path=ex.paths['node_values_opt'],
+            output_path=ex.paths['elastic_field_opt'],
+            unit_m=ex.metadata['unit'],
+            **optimize_cfg
+        )
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
+

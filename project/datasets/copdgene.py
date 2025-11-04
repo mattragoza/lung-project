@@ -165,6 +165,10 @@ class COPDGeneDataset(base.BaseDataset):
                     paths['disp_field']  = self.path(subj, variant, visit, fixed, recon, asset_type='disp', fixed_state=fixed, moving_state=moving)
                     paths['input_image'] = paths['fixed_image']
 
+                    paths['node_values'] = self.path(subj, variant, asset_type='mesh', mesh_tag='node_values')
+                    paths['node_values_opt'] = self.path(subj, variant, asset_type='mesh', mesh_tag='node_values_opt')
+                    paths['elastic_field_opt'] = self.path(subj, variant, asset_type='field', field_tag='elasticity_opt')
+
                 yield base.Example(
                     dataset='COPDGene',
                     subject=subj,

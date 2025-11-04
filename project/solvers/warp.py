@@ -18,32 +18,31 @@ def _maybe_zero_grad(a: wp.array):
         a.grad.zero_()
 
 
-def rasterize_field(src: wp.fem.Field, shape, affine, device='cuda'):
+def rasterize_field(src: wp.fem.Field, shape, bounds, background=0.0):
+    '''
+    Args:
+        src: Warp FEM field to rasterize on voxel grid
+        shape: (I, J, K) voxel grid shape
+        bounds: Lower and upper grid bounds
+    Returns:
+        (I, J, K, C) rasterized field tensor
+    '''
     I, J, K = shape
     C = wp.types.type_length(src.dtype)
 
-    A = np.asarray(affine, dtype=np.float32)
-    spacing = np.linalg.norm(A[:3,:3], axis=0)
-    origin  = A[:3,3]
-
     grid = wp.fem.Grid3D(
         res=wp.vec3i(shape),
-        bounds_lo=wp.vec3f(origin),
-        bounds_hi=wp.vec3f(origin + spacing * np.asarray(shape))
+        bounds_lo=wp.vec3f(bounds[0]),
+        bounds_hi=wp.vec3f(bounds[1])
     )
     dst_domain = wp.fem.Cells(grid)
 
     space = wp.fem.make_polynomial_space(grid, degree=0, dtype=src.dtype)
     dst = space.make_field()
 
-    src_nc = wp.fem.NonconformingField(dst_domain, src)
+    src_nc = wp.fem.NonconformingField(dst_domain, src, background)
+    wp.fem.interpolate(src_nc, dest=dst)
 
-    wp.fem.interpolate(
-        src_nc,
-        dest=dst,
-        domain=dst_domain,
-        device=device
-    )
     return wp.to_torch(dst.dof_values).reshape(I, J, K, C)
 
 
@@ -52,8 +51,8 @@ class WarpFEMSolver(base.PDESolver):
     def __init__(
         self,
         mesh: meshio.Mesh,
-        reg_weight: float=5e-2,
-        eps_reg: float=1e-4,
+        reg_weight: float=0.0, # 5e-2,
+        eps_reg: float=None,
         eps_div: float=1e-12,
         cg_tol: float=1e-5,
         unit_m: float=1e-3,
@@ -66,6 +65,7 @@ class WarpFEMSolver(base.PDESolver):
             wp.array(mesh.cells_dict['tetra'], dtype=wp.int32),
             wp.array(mesh.points * unit_m, dtype=wp.vec3f)
         )
+        self.geometry.build_bvh()
     
         # integration domains
         self.domain = wp.fem.Cells(self.geometry)
@@ -100,7 +100,7 @@ class WarpFEMSolver(base.PDESolver):
         # hyperparameters
         self.relative_loss = relative_loss
         self.reg_weight = reg_weight
-        self.eps_reg = eps_reg
+        self.eps_reg = eps_reg or 1. / unit_m
         self.eps_div = eps_div
         self.cg_tol = cg_tol
 
@@ -243,7 +243,7 @@ class WarpFEMSolver(base.PDESolver):
         reg_term = wp.empty(1, dtype=wp.float32, requires_grad=True)
         wp.fem.integrate(
             reg_form,
-            fields={'mu': self.mu_field},
+            fields={'mu': self.mu_field, 'lam': self.lam_field},
             values={'eps_reg': self.eps_reg, 'eps_div': self.eps_div},
             domain=self.domain,
             output=reg_term
@@ -359,10 +359,7 @@ def volume_form(s: wp.fem.Sample):
 
 @wp.fem.integrand
 def reg_form(s: wp.fem.Sample, mu: wp.fem.Field, eps_reg: float, eps_div: float):
-    # grad phi = grad log mu = (grad mu) / mu
-    g_mu = wp.fem.grad(mu, s)
-    g_phi = g_mu / (mu(s) + eps_div)
-    return wp.sqrt(wp.dot(g_phi, g_phi) + eps_reg*eps_reg)
-
-
+    # grad phi = grad log E = (grad E) / E = (grad k mu)/(k mu) = (grad mu) / mu
+    grad_phi = wp.fem.grad(mu, s) / (mu(s) + eps_div)
+    return wp.sqrt(wp.dot(grad_phi, grad_phi) + eps_reg * eps_reg)
 

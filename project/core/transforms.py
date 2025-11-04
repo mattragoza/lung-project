@@ -33,6 +33,14 @@ def build_affine_matrix(origin, spacing):
     ], dtype=float)
 
 
+def get_affine_origin(affine):
+    return affine[:3,3]
+
+
+def get_affine_spacing(affine):
+    return np.linalg.norm(affine[:3,:3], axis=0)
+
+
 def voxel_to_world_coords(points, affine):
     '''
     Args:
@@ -98,11 +106,36 @@ def normalize_voxel_coords(points, shape, align_corners=True, flip_order=False):
     return output
 
 
+def get_grid_bounds(origin, spacing, shape, align_corners=True):
+    
+    origin  = np.asarray(origin)
+    spacing = np.asarray(spacing)
+    shape   = np.asarray(shape)
+
+    if align_corners:
+        lo = origin
+        hi = origin + (shape - 1.0) * spacing
+    else:
+        lo = origin - 0.5 * spacing
+        hi = origin + (shape - 0.5) * spacing
+    
+    return lo, hi
+
+
 def compute_lame_parameters(E, nu=0.4):
     assert 0 < nu < 0.5, nu
     mu  = E / (2*(1 + nu))
     lam = E * nu / ((1 + nu)*(1 - 2*nu))
     return mu, lam
+
+
+def compute_youngs_modulus(mu, nu=0.4):
+    assert 0 < nu < 0.5, nu
+    return 2*(1 + nu)*mu
+
+
+def parameterize_youngs_modulus(theta_global, theta_local):
+    return torch.pow(10, theta_global + theta_local - theta_local.mean())
 
 
 def compute_density_from_ct(ct, m_atten_ratio=1., density_water=1000.):

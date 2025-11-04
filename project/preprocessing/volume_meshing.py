@@ -39,7 +39,7 @@ def generate_mesh_from_mask(
         pygalmesh_kws: Meshing params passed to pyglamesh
         random_seed: int
     Returns:
-        meshio.Mesh
+        meshio.Mesh, in world coordinates
     '''
     import pygalmesh
 

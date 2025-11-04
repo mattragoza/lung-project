@@ -1,5 +1,10 @@
 {
-	"examples": {},
+	"dataset": "shapenet",
+	"data_root": "/ocean/projects/asc170022p/mtragoza/lung-project/data/ShapeNetSem",
+	"examples": {
+		"unit_policy": "prefer_metadata",
+		"default_unit": 1e-2
+	},
 	"pipeline": {
 		"preprocess_binary_mask": {
 			"pad_factor": 0.37
@@ -41,5 +46,18 @@
 				"seed": 0
 			}
 		}
-	}
+	},
+	"optimize": {
+		"nu_value": 0.4,
+		"solver_kws": {"reg_weight": 1e-5},
+		"global_kws": {
+			"max_iter": 100,
+			"lbfgs_kws": {}
+		},
+		"local_kws": {
+			"max_iter": 100,
+			"lbfgs_kws": {}
+		}
+	},
+	"train": {}
 }
