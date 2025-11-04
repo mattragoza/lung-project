@@ -4,13 +4,13 @@ import project
 CONFIG = {
     'copdgene': {
         'dataset_cls': project.datasets.copdgene.COPDGeneDataset,
-        'pipeline_fn': project.preprocessing.api.preprocess_copdgene,
+        'preprocess_fn': project.preprocessing.api.preprocess_copdgene,
         'default_root': 'data/COPDGene',
         'default_subj': '16514P'
     },
     'shapenet': {
         'dataset_cls': project.datasets.shapenet.ShapeNetDataset,
-        'pipeline_fn': project.preprocessing.api.preprocess_shapenet,
+        'preprocess_fn': project.preprocessing.api.preprocess_shapenet,
         'default_root': 'data/ShapeNetSem',
         'default_subj': 'wss.101354f9d8dede686f7b08d9de913afe'
     }
@@ -32,7 +32,7 @@ def main(argv):
     args = parse_args(argv)
 
     dataset_cls = CONFIG[args.dataset]['dataset_cls']
-    run_pipeline = CONFIG[args.dataset]['pipeline_fn']
+    run_preprocess = CONFIG[args.dataset]['preprocess_fn']
 
     data_root = args.data_root or CONFIG[args.dataset]['default_root']
 
@@ -50,13 +50,13 @@ def main(argv):
 
     config = project.core.fileio.load_json(args.config) if args.config else {}
     examples_cfg = config.get('examples', {})
-    pipeline_cfg = config.get('pipeline', {})
+    preprocess_cfg = config.get('preprocess', {})
 
     for ex in ds.examples(subjects, variant=args.variant, **examples_cfg):
         print(f'Preprocessing subject: {ex.subject}')
         project.core.utils.pprint(ex, max_depth=2, max_items=20)
         if not args.dry_run:
-            run_pipeline(ex, pipeline_cfg)
+            run_preprocess(ex, preprocess_cfg)
 
 
 if __name__ == '__main__':

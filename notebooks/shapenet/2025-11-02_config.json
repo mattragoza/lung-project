@@ -5,7 +5,7 @@
 		"unit_policy": "prefer_metadata",
 		"default_unit": 1e-2
 	},
-	"pipeline": {
+	"preprocess": {
 		"preprocess_binary_mask": {
 			"pad_factor": 0.37
 		},

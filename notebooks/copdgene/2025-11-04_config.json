@@ -8,7 +8,7 @@
 		],
 		"recon": "STD"
 	},
-	"pipeline": {
+	"preprocess": {
 		"resample_image_on_reference": {
 			"spacing": [1.0, 1.0, 1.0],
 			"interp": "bspline",
