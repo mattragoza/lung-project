@@ -110,8 +110,16 @@ def pprint(
     return out if ret_string else print(out)
 
 
+def update_defaults(overrides=None, **defaults):
+    return defaults | (overrides or {})
+
+
 def missing(val):
     return pd.isna(val) or str(val).strip() == ''
+
+
+def namespace(dct, name):
+    return {f'{name}.{k}': v for k, v in dct.items()}
 
 
 def is_iterable(obj):

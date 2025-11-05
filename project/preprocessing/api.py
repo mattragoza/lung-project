@@ -386,6 +386,7 @@ def optimize_elasticity_field(
     solver_kws=None,
     global_kws=None,
     local_kws=None,
+    rasterize=True
 ):
     from . import simulation
 
@@ -396,7 +397,7 @@ def optimize_elasticity_field(
 
     nifti = fileio.load_nibabel(input_mask_path)
 
-    utils.log('Optimizing elasticity to match observed displacment')
+    utils.log('Optimizing elasticity to match observed displacement')
     E_field, node_values = simulation.optimize_elasticity(
         mesh=mesh,
         shape=nifti.get_fdata().shape,
@@ -408,27 +409,31 @@ def optimize_elasticity_field(
         unit_m=unit_m,
         solver_kws=solver_kws,
         global_kws=global_kws,
-        local_kws=local_kws
+        local_kws=local_kws,
+        rasterize=rasterize,
     )
     # save new keys in mesh file
     for k, v in node_values.items():
         print(k, v.shape, v.dtype)
         mesh.point_data[k] = v.astype(np.float32)
 
-    # compute basic metrics
-    u_rel_rmse = metrics.relative_rmse(mesh.point_data['u_opt'], mesh.point_data['u'])
-    E_rel_rmse = metrics.relative_rmse(mesh.point_data['E_opt'], mesh.point_data['E'])
-    E_log_error = metrics.log_scale_error(mesh.point_data['E_opt'], mesh.point_data['E'])
-
-    utils.log(f'u rel RMSE:  {u_rel_rmse * 100:.4f}%')
-    utils.log(f'E rel RMSE:  {E_rel_rmse * 100:.4f}%')
-    utils.log(f'E log error: {E_log_error:.4f}')
-
+    # compute evaluation metrics
+    u_metrics = metrics.evaluate_metrics(mesh.point_data['u_opt'], mesh.point_data['u'], which='u')
+    E_metrics = metrics.evaluate_metrics(mesh.point_data['E_opt'], mesh.point_data['E'], which='E')
+    r_metrics = metrics.evaluate_metrics(mesh.point_data['r_opt'], which='res')
+    ret_metrics = (
+        utils.namespace(u_metrics, 'u') |
+        utils.namespace(E_metrics, 'E') |
+        utils.namespace(r_metrics, 'res')
+    )
     output_nodes_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_meshio(output_nodes_path, mesh)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_nibabel(output_path, E_field, nifti.affine)
+    if rasterize:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fileio.save_nibabel(output_path, E_field, nifti.affine)
+
+    return ret_metrics
 
 
 def generate_volumetric_image(

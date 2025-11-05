@@ -94,6 +94,7 @@ def assign_cell_labels(
     # then update the cell labels using the label map.
 
     label_map = construct_label_map(mesh, mask, old_key)
+    print(label_map)
 
     new_cell_data = {new_key: [
         label_map[a] for a in mesh.cell_data[old_key]
@@ -106,7 +107,8 @@ def assign_cell_labels(
     )
 
     # sanity check - no cells should be labeled as mask background
-    assert count_labeled_cells(mesh, 'tetra', new_key, value=0) == 0
+    cells_labeled_bg = count_labeled_cells(mesh, 'tetra', new_key, value=0)
+    assert cells_labeled_bg == 0, cells_labeled_bg
 
     return mesh
 
@@ -132,9 +134,11 @@ def construct_label_map(
     old_labels = mesh.cell_data_dict[key]['tetra']
     label_map = -np.ones(old_labels.max() + 1, dtype=int)
 
-    for l in np.unique(old_labels):
+    for l, c in zip(*np.unique(old_labels, return_counts=True)):
         values = mask_values[old_labels == l]
-        most_common = np.bincount(values).argmax()
+        counts = np.bincount(values)
+        print(l, c, counts)
+        most_common = counts.argmax()
         label_map[l] = int(most_common)
 
     return label_map

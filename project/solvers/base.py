@@ -1,5 +1,6 @@
 from __future__ import annotations
-
+from typing import Dict, Tuple, Optional
+import meshio
 import torch
 
 
@@ -8,72 +9,43 @@ class PDESolver:
     def __init__(self, mesh: meshio.Mesh):
         raise NotImplementedError
 
-    def set_observed(self, u_obs: torch.Tensor):
+    def set_params(self, mu: torch.Tensor, lam: torch.Tensor):
         raise NotImplementedError
 
-    def set_density(self, rho: torch.Tensor):
+    def set_data(self, rho: torch.Tensor, u_obs: torch.Tensor):
         raise NotImplementedError
 
-    def set_elasticity(self, mu: torch.Tensor, lam: torch.Tensor):
+    def get_output(self) -> torch.Tensor:
         raise NotImplementedError
 
-    def assemble_projector(self):
+    def get_residual(self) -> torch.Tensor:
         raise NotImplementedError
 
-    def assemble_stiffness(self):
+    def get_loss(self) -> torch.Tensor:
         raise NotImplementedError
 
-    def assemble_forcing(self):
+    def simulate(self, mu, lam, rho, u_obs) -> torch.Tensor:
         raise NotImplementedError
 
-    def assemble_lifting(self):
+    def adjoint_setup(self, rho, u_obs):
         raise NotImplementedError
 
-    def assemble_rhs_shift(self):
+    def adjoint_forward(self, mu, lam) -> torch.Tensor:
         raise NotImplementedError
 
-    def solve_forward(self):
-        raise NotImplementedError
-
-    def solve_adjoint(self):
-        raise NotImplementedError
-
-    def compute_residual(self):
-        raise NotImplementedError
-
-    def compute_loss(self):
-        raise NotImplementedError
-
-    def adjoint_forward(self):
-        raise NotImplementedError
-
-    def adjoint_backward(self, grad_out: torch.Tensor):
-        raise NotImplementedError
-
-    def params_grad(self):
+    def adjoint_backward(self, loss_grad) -> Dict[str, torch.Tensor]:
         raise NotImplementedError
 
     def zero_grad(self):
         raise NotImplementedError
-
-    def assemble_all(self):
-        self.assemble_projector()
-        self.assemble_forcing()
-        self.assemble_lifting()
-        self.assemble_stiffness()
-        self.assemble_rhs_shift()
 
 
 class PDESolverModule(torch.nn.Module):
 
     def __init__(self, solver: PDESolver, rho: torch.Tensor, u_obs: torch.Tensor):
         super().__init__()
-        solver.assemble_projector()
-        solver.set_density(rho)
-        solver.set_observed(u_obs)
-        solver.assemble_forcing()
-        solver.assemble_lifting()
         self.solver = solver
+        self.solver.adjoint_setup(rho, u_obs)
 
     def forward(self, mu: torch.Tensor, lam: torch.Tensor):
         return PDESolverFn.apply(self.solver, mu, lam)
@@ -83,18 +55,13 @@ class PDESolverFn(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, solver: PDESolver, mu: torch.Tensor, lam: torch.Tensor):
-        solver.zero_grad()
-        solver.set_elasticity(mu, lam)
-        solver.assemble_stiffness()
-        solver.assemble_rhs_shift()
-        solver.solve_forward()
-        loss = solver.adjoint_forward()
         ctx.solver = solver
+        solver.zero_grad()
+        loss = solver.adjoint_forward(mu, lam)
         return loss
 
     @staticmethod
-    def backward(ctx, grad_out: torch.Tensor):
-        ctx.solver.adjoint_backward(grad_out)
-        grad = ctx.solver.params_grad()
-        return None, grad['mu'], grad['lam']
+    def backward(ctx, loss_grad: torch.Tensor):
+        mu_grad, lam_grad = ctx.solver.adjoint_backward(loss_grad)
+        return None, mu_grad, lam_grad
 

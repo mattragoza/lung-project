@@ -20,17 +20,22 @@ def _parse_image_name(name: str):
 
 class COPDGeneDataset(base.BaseDataset):
     '''
-    <data_root>/Images/<subject>/<visit>/
-        <variant>/
-            <image_name>.nii.gz
-            TotalSegmentator/
+    <data_root>/
+        Images/<subject>/<visit>/
+            RAW/
+                <image_name>.nii.gz
+        <variant>/<subject>/<visit>/
+            images/
+                <image_name>.nii.gz
+            masks/
                 <image_name>/
-                    <mask_name>.nii.gz
-            pygalmesh/
+                    <mask_tag>.nii.gz
+            meshes/
                 <image_name>/
-                    <mask_name>_<mesh_tag>.xdmf
-            CorrField/
-                <fixed_name>__<moving_name>.nii.gz
+                    <mesh_tag>.xdmf
+            disps/
+                <image_name>/
+                    <fix_state>_to_<mov_state>.nii.gz
 
     <image_name> = <subject>_<state>_<recon>_<site>_COPD
     '''
@@ -97,14 +102,15 @@ class COPDGeneDataset(base.BaseDataset):
         recon = recon or self.DEFAULT_RECON
 
         site = self.site_code(subject, visit)
-        variant_dir = self.root / 'Images' / subject / visit / variant
 
         def image_name(stat: str) -> str:
             return f'{subject}_{stat}_{recon}_{site}_COPD'
 
         if variant == self.SOURCE_VARIANT:
+            base_dir = self.root / 'Images' / subject / visit
+
             if asset_type == 'image':
-                return self.root / 'Images' / subject / visit / 'RAW' / f'{image_name(state)}.nii.gz'
+                return base_dir / 'RAW' / f'{image_name(state)}.nii.gz'
         else:
             base_dir = self.root / variant / subject / visit
 

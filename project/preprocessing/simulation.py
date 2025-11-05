@@ -13,6 +13,7 @@ def simulate_displacement(
     nu_value: float=0.4,   # unitless
     unit_m: float=1e-3,    # meters per world unit
     solver_kws=None,
+    rasterize=True,
     dtype=torch.float32,
     device='cuda'
 ):
@@ -44,35 +45,13 @@ def simulate_displacement(
     utils.log('Interpolating material fields onto mesh nodes')
     rho_nodes = interpolation.interpolate_image(rho_tensor, pts_tensor) # (N, 1)
     E_nodes   = interpolation.interpolate_image(E_tensor, pts_tensor)   # (N, 1)
-
     mu_nodes, lam_nodes = transforms.compute_lame_parameters(E_nodes, nu_value)
-
     bc_nodes = torch.zeros_like(pts_tensor, **tensor_kws) # (N, 3)
 
-    utils.log('Initializing finite element solver')
-    solver = solvers.warp.WarpFEMSolver(mesh, unit_m=unit_m, **(solver_kws or {}))
-    solver.set_observed(bc_nodes)
-    solver.set_density(rho_nodes)
-    solver.set_elasticity(mu_nodes, lam_nodes)
-
-    utils.log('Assembling linear system')
-    solver.assemble_all()
-
-    utils.log('Solving forward system')
-    u_nodes = solver.solve_forward(ret_tensor=True)
-    print(u_nodes.sum())
-
-    utils.log('Rasterizing output field')
-    shape = E_field.shape
-    origin = transforms.get_affine_origin(affine) * unit_m # to meters
-    spacing = transforms.get_affine_spacing(affine) * unit_m
-    bounds = transforms.get_grid_bounds(origin, spacing, shape, align_corners=False)
-    u_field = solvers.warp.rasterize_field(solver.u_sim_field, shape, bounds)
-    print(u_field.sum())
-
-    # convert displacements from meters to world units
-    u_nodes = u_nodes / unit_m
-    u_field = u_field / unit_m
+    utils.log('Simulating displacement using PDE solver')
+    solver  = solvers.warp.WarpFEMSolver(mesh, unit_m=unit_m, **(solver_kws or {}))
+    u_nodes = solver.simulate(mu_nodes, lam_nodes, rho_nodes, bc_nodes) / unit_m # to world units
+    r_nodes = solver.get_residual()
 
     node_values = {
         'E': E_nodes.detach().cpu().numpy(),
@@ -80,8 +59,22 @@ def simulate_displacement(
         'lam': lam_nodes.detach().cpu().numpy(),
         'rho': rho_nodes.detach().cpu().numpy(),
         'bc': bc_nodes.detach().cpu().numpy(),
-        'u': u_nodes.detach().cpu().numpy()
+        'u': u_nodes.detach().cpu().numpy(),
+        'r': r_nodes.detach().cpu().numpy()
     }
+    if not rasterize:
+        return None, node_values
+
+    utils.log('Rasterizing displacement field')
+    shape   = E_field.shape
+    origin  = transforms.get_affine_origin(affine) * unit_m # to meters
+    spacing = transforms.get_affine_spacing(affine) * unit_m
+    bounds  = transforms.get_grid_bounds(origin, spacing, shape, align_corners=False)
+    u_field = solvers.warp.rasterize_field(solver.u_sim_field, shape, bounds)
+
+    # convert displacements from meters to world units
+    u_field = u_field / unit_m
+
     return u_field.detach().cpu().numpy(), node_values
 
 
@@ -93,10 +86,11 @@ def optimize_elasticity(
     u_obs_nodes: np.ndarray, # world units
     nu_value: float=0.4,     # unitless
     unit_m: float=1e-3,      # meters per world unit
-    theta_init: float=3.,    # log10 Pa
+    theta_init: float=3.,    # log Pa (base 10)
     solver_kws=None,
     global_kws=None,
     local_kws=None,
+    rasterize=True,
     dtype=torch.float32,
     device='cuda'
 ):
@@ -127,39 +121,30 @@ def optimize_elasticity(
     # final forward solve
     E_opt = transforms.parameterize_youngs_modulus(theta_global, theta_local)
     mu, lam = transforms.compute_lame_parameters(E_opt, nu=nu_value)
-    solver.set_elasticity(mu, lam)
-    solver.assemble_all()
-    u_opt = solver.solve_forward(ret_tensor=True) / unit_m # back to world units
+    u_opt = solver.simulate(mu, lam, rho_tensor, u_obs_tensor) / unit_m # back to world units
+    r_opt = solver.get_residual()
 
     node_values = {
         'E_opt': E_opt.detach().cpu().numpy(),
-        'u_opt': u_opt.detach().cpu().numpy()
+        'u_opt': u_opt.detach().cpu().numpy(),
+        'r_opt': r_opt.detach().cpu().numpy(),
     }
-    print(node_values['E_opt'].mean())
+    if not rasterize:
+        return None, node_values
 
     utils.log('Rasterizing output field')
-    origin = transforms.get_affine_origin(affine) * unit_m # to meters
-    spacing = transforms.get_affine_spacing(affine) * unit_m
-    bounds = transforms.get_grid_bounds(origin, spacing, shape, align_corners=False)
+    origin   = transforms.get_affine_origin(affine) * unit_m # to meters
+    spacing  = transforms.get_affine_spacing(affine) * unit_m
+    bounds   = transforms.get_grid_bounds(origin, spacing, shape, align_corners=False)
     mu_field = solvers.warp.rasterize_field(solver.mu_field, shape, bounds)[:,:,:,0] # (I, J, K)
-    E_field = transforms.compute_youngs_modulus(mu_field, nu=nu_value)
-    print(E_field.sum())
+    E_field  = transforms.compute_youngs_modulus(mu_field, nu=nu_value)
 
     return E_field.detach().cpu().numpy(), node_values
 
 
-def _update_defaults(overrides=None, **defaults):
-    return defaults | (overrides or {})
+def optimize_lbfgs(fn, param, max_iter=100, tol=1e-3, eps=1e-8, lbfgs_kws=None):
 
-
-def optimize_lbfgs(
-    fn, param,
-    max_iter=100,
-    tol=1e-3,
-    eps=1e-8,
-    lbfgs_kws=None
-):
-    lbfgs_kws = _update_defaults(
+    lbfgs_kws = utils.update_defaults(
         lbfgs_kws,
         lr=1.0, max_iter=20, history_size=100, line_search_fn='strong_wolfe'
     )
