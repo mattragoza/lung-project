@@ -343,7 +343,8 @@ def simulate_displacement_field(
     output_path,
     nu_value=0.4,
     unit_m=1e-3,
-    solver_kws=None
+    solver_kws=None,
+    rasterize=True
 ):
     from . import simulation
 
@@ -361,19 +362,18 @@ def simulate_displacement_field(
 
     utils.log('Simulating displacement using material fields')
     disp_field, node_values = simulation.simulate_displacement(
-        mesh, affine_d, rho_field, E_field, nu_value, unit_m, solver_kws
+        mesh, affine_d, rho_field, E_field, nu_value, unit_m, solver_kws, rasterize=rasterize
     )
-    print(disp_field.shape, disp_field.dtype)
-
     for k, v in node_values.items():
-        print(k, v.shape, v.dtype)
+        print(k, v.shape, v.dtype, v.mean())
         mesh.point_data[k] = v.astype(np.float32)
 
     nodes_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_meshio(nodes_path, mesh)
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_nibabel(output_path, disp_field, affine_d)
+    if rasterize:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fileio.save_nibabel(output_path, disp_field, affine_d)
 
 
 def optimize_elasticity_field(
@@ -436,24 +436,24 @@ def optimize_elasticity_field(
     return ret_metrics
 
 
-def generate_volumetric_image(
-    mask_path, output_path, annot_path, tex_kws=None, gen_kws=None
-):
+def generate_volumetric_image(mask_path, annot_path, output_path, imp_kws=None, gen_kws=None):
     from . import materials, texturing
 
     nifti = fileio.load_nibabel(mask_path)
     mask = nifti.get_fdata().astype(int)
-    affine = nifti.affine
 
     utils.log('Building material catalog')
     mat_df = materials.build_material_catalog()
+    mat_df = materials.assign_image_parameters(mat_df, **(imp_kws or {}))
 
-    utils.log('Building texture cache')
-    tex_cache = texturing.build_texture_cache(annot_path, **(tex_kws or {}))
+    print(mat_df[['material_key', 'density_feat', 'elastic_feat', 'image_bias', 'image_range']])
 
-    utils.log('Generating textured volumetric image')
+    utils.log('Loading texture annotations')
+    tex_df = texturing.load_texture_annotations(annot_path)
+
+    utils.log('Generating volumetric image')
     image = texturing.generate_volumetric_image(
-        mask, affine, mat_df, tex_cache, **(gen_kws or {})
+        mask, nifti.affine, mat_df, tex_df, **(gen_kws or {})
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, image, nifti.affine)

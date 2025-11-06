@@ -52,6 +52,8 @@ def simulate_displacement(
     solver  = solvers.warp.WarpFEMSolver(mesh, unit_m=unit_m, **(solver_kws or {}))
     u_nodes = solver.simulate(mu_nodes, lam_nodes, rho_nodes, bc_nodes) / unit_m # to world units
     r_nodes = solver.get_residual()
+    print(u_nodes.sum())
+    print(r_nodes.sum())
 
     node_values = {
         'E': E_nodes.detach().cpu().numpy(),

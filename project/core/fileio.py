@@ -52,10 +52,9 @@ def load_trimesh(path, resolver=None):
     return trimesh.load_scene(path, resolver=resolver, process=False)
 
 
-def load_imageio(path, quiet=False):
+def load_imageio(path):
     import imageio
-    if not quiet:
-        utils.log(f'Loading {path}')
+    utils.log(f'Loading {path}')
     return imageio.v2.imread(path)
 
 

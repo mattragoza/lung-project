@@ -1,7 +1,9 @@
-import random
-import imageio
+from functools import lru_cache
 import numpy as np
+import pandas as pd
 import scipy.stats
+import scipy.ndimage
+import skimage
 
 from ..core import utils, fileio, transforms
 
@@ -14,322 +16,126 @@ TEXTURE_TO_MATERIAL = {
     'wood':    'PorousMedium',
     'marble':  'PorousHard'
 }
+DEFAULT_IQR_MULT = 4.0
+DEFAULT_USE_SOLID = True
 
 
-class TextureSampler:
-
-    def __init__(self, texture_dir, seed=0, pos=0, log=None, exts=['.jpg', '.jpeg']):
-        self.paths = [p for p in texture_dir.rglob('*') if p.suffix.lower() in exts]
-        if not self.paths:
-            raise ValueError('No textures found')
-        else:
-            print(f'{len(self.paths)} textures found')
-        rng = np.random.default_rng(seed)
-        self.order = rng.permutation(len(self.paths)).tolist()
-        self.pos = pos
-        self.log = log or []
-
-    def __len__(self):
-        return len(self.paths)
-
-    def next(self):
-        if self.pos >= len(self.order):
-            raise StopIteration
-        idx = self.order[self.pos]
-        self.pos += 1
-        return idx, self.paths[idx]
-
-    def peek(self):
-        if self.pos >= len(self.order):
-            raise StopIteration
-        idx = self.order[self.pos]
-        return idx, self.paths[idx]
-
-    def annotate(self, idx, annotation):
-        self.log.append((idx, self.paths[idx], str(annotation)))
-
-    def save(self, path):
-        import csv
-        with open(path, 'w', newline='') as f:
-            w = csv.writer(f)
-            w.writerow(['idx', 'path', 'annotation'])
-            w.writerows(self.log)
-
-
-def show_image(array, title=None, ax=None):
-    import matplotlib.pyplot as plt
-    if ax is None:
-        fig, ax = plt.subplots()
-    if array.ndim == 2:
-        ret = ax.imshow(array, cmap='gray')
-    elif array.ndim == 3:
-        ret = ax.imshow(array)
-    else:
-        raise ValueError(f'cannot show array shape {array.shape} as image')
-    if title:
-        ax.set_title(title)
-    ax.axis('off')
-    return ret
-
-
-def load_annotations(path):
+def load_texture_annotations(path):
     import pandas as pd
     df = pd.read_csv(path)
-    assert set(df.columns) >= {'path', 'annotation', 'material', 'inverted'}
+    assert set(df.columns) >= {'material', 'path', 'solid_path', 'solid_selected'}
     return df
 
 
-def build_texture_cache(path, **kwargs):
-    df = load_annotations(path)
-    df['image'] = df.apply(load_texture, axis=1)
-    df['image'] = df.apply(preprocess, axis=1, **kwargs)
-    return df
+@lru_cache(maxsize=256)
+def load_texture_2d(path, iqr_mult=DEFAULT_IQR_MULT, invert=False):
+    a = fileio.load_imageio(path)
+    a = skimage.util.img_as_float(a)
+    if a.ndim == 3 and a.shape[-1] == 4:
+        a = skimage.color.rgba2rgb(a)
+    if a.ndim == 3 and a.shape[-1] == 3:
+        a = skimage.color.rgb2gray(a)
+    if a.ndim != 2:
+        raise ValueError(f'invalid 2d texture shape: {a.shape}')
+    a = _normalize_median_iqr(a, iqr_mult=iqr_mult)
+    a = np.clip(a, -1.0, 1.0)
+    return 1. - a if invert else a
 
 
-def load_texture(row):
-    return fileio.load_imageio(row.path, quiet=True)
+@lru_cache(maxsize=32)
+def load_texture_3d(path, iqr_mult=DEFAULT_IQR_MULT, invert=False):
+    a = fileio.load_nibabel(path).get_fdata()
+    a = skimage.util.img_as_float(a)
+    if a.ndim == 4 and a.shape[-1] == 4:
+        a = skimage.color.rgba2rgb(a)
+    if a.ndim == 4 and a.shape[-1] == 3:
+        a = skimage.color.rgb2gray(a)
+    if a.ndim != 3:
+        raise ValueError(f'invalid 3d texture shape: {a.shape}')
+    a = _normalize_median_iqr(a, iqr_mult=iqr_mult)
+    a = np.clip(a, -1.0, 1.0)
+    return 1. - a if invert else a
 
 
-def _rgb(a):
-    return a.ndim == 3 and a.shape[-1] == 3
-
-
-def _rgba(a):
-    return a.ndim == 3 and a.shape[-1] == 4
-
-
-def preprocess(row, iqr_mult=1.5):
-    import skimage
-    x = skimage.util.img_as_float(row.image)
-    if x.ndim != 2 and not (_rgb(x) or _rgba(x)):
-        raise ValueError(f'cannot interpret {x.shape} as image')
-    if _rgba(x):
-        x = skimage.color.rgba2rgb(x)
-    if _rgb(x):
-        x = skimage.color.rgb2gray(x)
-    x = _normalize_iqr(x, iqr_mult=iqr_mult)
-    x = np.clip(x, -1., 1.).astype(np.float32)
-    return 1. - x if getattr(row, 'inverted') else x
-
-
-def _normalize_iqr(x, iqr_mult=1.5, eps=1e-6):
-    '''
-    Center at median, scale by multiple of IQR.
-    '''
+def _normalize_median_iqr(x, iqr_mult=DEFAULT_IQR_MULT, eps=1e-12):
     x = np.asarray(x, dtype=np.float32)
     q1, q2, q3 = np.percentile(x, [25, 50, 75])
-    center = q2
-
-    hi = q2 + iqr_mult * (q3 - q2)
-    lo = q2 - iqr_mult * (q2 - q1)
-    scale = max([hi - q2, q2 - lo, eps])
-
-    return (x - center) / scale
+    hi = q2 + iqr_mult * (q3 - q2) / 2
+    lo = q2 - iqr_mult * (q2 - q1) / 2
+    return (x - q2) / max([hi - q2, q2 - lo, eps])
 
 
-def show_textures(df, max_rows=6, max_cols=6):
-    from ..visual.matplotlib import subplot_grid
-
-    index_vals = df.index.unique().sort_values().dropna()
-    groups = [df.loc[ival] for ival in index_vals]
-    n_rows = min(max_rows, len(index_vals))
-    n_cols = min(max_cols, max(len(g) for g in groups))
-    print(n_rows, n_cols)
-
-    fig, axes = subplot_grid(
-        n_rows, n_cols,
-        ax_height=1.5,
-        ax_width=1.5,
-        spacing=(0.5, 0.5), # hw
-        padding=(0.75, 0.75, 0.5, 0.25), # lrbt
-    )
-    for i, ival in enumerate(index_vals):
-        axes[i,0].set_ylabel(ival)
-        for j, (idx, row) in enumerate(groups[i].iterrows()):
-            ax = axes[i,j]
-            img = row.image
-            H, W = img.shape
-            ax.imshow(img, cmap='gray', extent=(0, W - 1, 0, H - 1))
-
-        for j in range(j+1, n_cols):
-            axes[i,j].axis('off')
-
-    return fig
-
-
-def build_affine_matrix_2d(origin, spacing, rotate=False):
-    A = np.eye(3, dtype=float)
-    A[:2,:2] = np.diag(spacing)
-    if rotate:
-        A[:2,:2] @= scipy.stats.ortho_group.rvs(2)
-    A[:2,2] = np.array(origin)
-    return A
-
-
-def world_to_pixel_coords(points, affine):
-    A = np.asarray(affine)
-    assert A.shape == (3, 3)
-    H = transforms._homogeneous(points)
-    output = np.linalg.solve(A, H.T).T
-    return output[:,:-1] / output[:,-1:]
-
-
-def interpolate_triplanar(textures, points, affine, weights=None):
+def _validate_triplanar_weights(weights):
     if weights is None:
         weights = np.ones(3, dtype=float)
-
     weights = np.asarray(weights, dtype=float)
-    s = weights.sum()
-    if s <= 0:
-        raise ValueError('triplanar weights must sum > 0')
-    weights = weights / s
+    if np.any(weights < 0):
+        raise ValueError('triplanar weights must be non-negative')
+    return weights / weights.sum()
 
-    yz, xz, xy = [1,2], [0,2], [0,1]
-    spacing = np.linalg.norm(affine[:3,:3], axis=0)
-    origin = affine[:3,3]
 
-    s_yz = spacing[0] #tile_m / (np.max(textures[0].shape) - 1) 
-    s_xz = spacing[1] #tile_m / (np.max(textures[1].shape) - 1)
-    s_xy = spacing[2] #tile_m / (np.max(textures[2].shape) - 1)
+def _apply_random_transform(points, rng):
+    points = np.asarray(points, dtype=float)
+    center = points.mean(axis=0)
+    R = scipy.stats.special_ortho_group.rvs(3, random_state=rng)
+    t = rng.normal(scale=128, size=3)
+    return (points - center) @ R.T + t + center
 
-    A_yz = build_affine_matrix_2d(origin[yz], [s_yz, s_yz])
-    A_xz = build_affine_matrix_2d(origin[xz], [s_xz, s_xz])
-    A_xy = build_affine_matrix_2d(origin[xy], [s_xy, s_xy])
-    
-    uv_yz = world_to_pixel_coords(points[:,yz], A_yz)
-    uv_xz = world_to_pixel_coords(points[:,xz], A_xz)
-    uv_xy = world_to_pixel_coords(points[:,xy], A_xy)
 
-    t_yz = scipy.ndimage.map_coordinates(textures[0], uv_yz.T, mode='wrap', order=1, prefilter=False)
-    t_xz = scipy.ndimage.map_coordinates(textures[1], uv_xz.T, mode='wrap', order=1, prefilter=False)
-    t_xy = scipy.ndimage.map_coordinates(textures[2], uv_xy.T, mode='wrap', order=1, prefilter=False)
-    
+def interpolate_triplanar(images, points, weights=None):
+    weights = _validate_triplanar_weights(weights)
+    t_yz = scipy.ndimage.map_coordinates(images[0], points[:,[1,2]].T, mode='wrap', order=1, prefilter=False)
+    t_xz = scipy.ndimage.map_coordinates(images[1], points[:,[0,2]].T, mode='wrap', order=1, prefilter=False)
+    t_xy = scipy.ndimage.map_coordinates(images[2], points[:,[0,1]].T, mode='wrap', order=1, prefilter=False)
     return weights[0] * t_yz + weights[1] * t_xz + weights[2] * t_xy
 
 
-def generate_volumetric_image(
-    mat_mask,
-    affine,
-    mat_df,
-    tex_cache,
-    weights=None,
-    seed=0,
+def interpolate_solid(volume, points):
+    return scipy.ndimage.map_coordinates(volume, points.T, mode='wrap', order=1, prefilter=False)
 
-    # image parameters
-    bias_0:  float=-1000.,
-    bias_d:  float=1000.,
-    bias_e:  float=0.,
-    range_0: float=250.,
-    range_d: float=0,
-    range_e: float=250.,
 
-    # noise parameters
-    t_noise_corr: float=0.,
-    t_noise_std:  float=0.,
-    b_noise_corr: float=0.,
-    b_noise_std:  float=0.,
-    s_noise_std:  float=0.,
+def sample_texture_field(
+    mat_tex_df,
+    points,
+    rng,
+    iqr_mult=DEFAULT_IQR_MULT,
+    use_solid=DEFAULT_USE_SOLID,
+    weights=None
 ):
-    '''
-    Args:
-        mat_mask: (I, J, K) voxel mask of material labels
-        affine: (4, 4) voxel -> world coordinate mapping
-        tex_cache: data frame with material + image columns
-        mat_df: material info data frame indexed by label
-    Returns:
-        (I, J, K) volumetric image with intensity bias and
-            texture derived from the material labels
-    '''
-    rng = np.random.default_rng(seed)
-
-    I, J, K = mat_mask.shape
-    shape = np.asarray(mat_mask.shape)
-    spacing = np.linalg.norm(affine[:3,:3], axis=0)
-    max_spacing = spacing.max()
-
-    points = np.stack(np.mgrid[0:I,0:J,0:K], axis=-1).reshape(-1, 3)
-    points = transforms.voxel_to_world_coords(points, affine)
-
-    image = np.zeros((I, J, K), dtype=np.float32)
-    
-    t_noise = bandlimited_noise(shape, spacing, t_noise_corr * max_spacing, seed)
-    b_noise = bandlimited_noise(shape, spacing, b_noise_corr * max_spacing, seed)
-    s_noise = np.random.normal(size=shape)
-
-    # for each unique value in material mask,
-    for label in np.unique(mat_mask):
-
-        # select region with mask value
-        region = (mat_mask == label)
-        sel_points = points[region.reshape(-1)]
-
-        # get material info for region
-        mat_info = mat_df.loc[label]
-        mat_key = mat_info.material_key
-
-        # relationship bt/w material properties and image params
-        d = _density_feature(mat_info.density_val)
-        e = _elastic_feature(mat_info.elastic_val)
-        mat_bias  = bias_0  + bias_d  * d + bias_e  * e
-        mat_range = range_0 + range_d * d + range_e * e
-        mat_range = 0. if label == 0 else mat_range # background
-
-        utils.log(f'{label:d} {mat_key.rjust(12)} | mat_bias = {mat_bias:.2f} mat_range = {mat_range:.2f}')
- 
-        # sample texture images associated with material
-        mat_tex = tex_cache[tex_cache.material == mat_key]
-        if len(mat_tex) == 0:
-            T_interp = np.zeros(len(sel_points), dtype=float)
-        else:
-            textures = np.random.choice(mat_tex.image, size=3, replace=True)
-
-            # interpolate volumetric texture field at selected points
-            T_interp = interpolate_triplanar(textures, sel_points, affine, weights)
-
-        # add texture noise
-        T_interp += t_noise_std * t_noise[region]
-
-        # assign image values using image params + texture
-        image[region] = mat_bias + mat_range * T_interp
-
-    # global multiplicative noise
-    if b_noise_std > 0:
-        image *= (1.0 + b_noise_std * b_noise)
-
-    # global additive noise
-    if s_noise_std > 0:
-        image += s_noise_std * s_noise
-
-    return image
+    assert points.ndim == 2 and points.shape[1] == 3, points.shape
+    points = _apply_random_transform(points, rng)
+    if use_solid:
+        if 'solid_selected' in mat_tex_df:
+            selected = mat_tex_df.solid_selected.fillna(False)
+            mat_tex_df = mat_tex_df[selected]
+        assert len(mat_tex_df) > 0
+        sampled = mat_tex_df.sample(1, random_state=rng).iloc[0]
+        texture = load_texture_3d(sampled.solid_path, iqr_mult, sampled.inverted)
+        return interpolate_solid(texture, points)
+    else: # use triplanar
+        assert len(mat_tex_df) > 0
+        sampled = mat_tex_df.sample(3, replace=True)
+        textures = [
+            load_texture_2d(s.path, iqr_mult, s.inverted)
+                for i, s in sampled.iterrows()
+        ]
+        return interpolate_triplanar(textures, points, weights)
 
 
-def _density_feature(rho, rho_ref=1000.):
-    rho_rel = rho / rho_ref
-    return np.maximum(rho_rel, 0.)
-
-
-def _elastic_feature(E, E_ref=1000., power=-1, eps=1e-3):
-    E_rel = E / E_ref
-    return np.maximum(E_rel, eps)**power
-
-
-
-def bandlimited_noise(shape, spacing, corr, seed=None, eps=1e-6):
-    rng = np.random.default_rng(seed)
-
+def bandlimited_noise(shape, corr_len, rng, eps=1e-12):
     z = rng.normal(size=shape).astype(np.float32)
-    if corr < eps:
+    if corr_len < eps:
         return z
 
     kx, ky, kz = np.meshgrid(
-        np.fft.fftfreq(shape[0], spacing[0]),
-        np.fft.fftfreq(shape[1], spacing[1]),
-        np.fft.fftfreq(shape[2], spacing[2]),
+        np.fft.fftfreq(shape[0]),
+        np.fft.fftfreq(shape[1]),
+        np.fft.fftfreq(shape[2]),
         indexing='ij'
     )
     kk = kx*kx + ky*ky + kz*kz
 
-    sigma = 1.0 / (2*np.pi*corr)
+    sigma = 1.0 / (2*np.pi*corr_len)
     H = np.exp(-0.5 * kk / (sigma*sigma))
     Z = np.fft.fftn(z)
     zf = np.fft.ifftn(H * Z).real
@@ -337,3 +143,102 @@ def bandlimited_noise(shape, spacing, corr, seed=None, eps=1e-6):
     zf -= zf.mean()
     zf /= (zf.std() + eps)
     return zf
+
+
+def generate_volumetric_image(
+    mat_mask: np.ndarray,
+    affine: np.ndarray,
+    mat_df: pd.DataFrame,
+    tex_df: pd.DataFrame,
+
+    # texture parameters
+    iqr_mult: float=DEFAULT_IQR_MULT,
+    use_solid: bool=DEFAULT_USE_SOLID,
+    weights=None,
+    seed=0,
+
+    # noise parameters
+    tex_noise_len: float=0.,
+    tex_noise_std: float=0.,
+    mul_noise_len: float=0.,
+    mul_noise_std: float=0.,
+    add_noise_len: float=0.,
+    add_noise_std: float=0.,
+    mat_sigma: float=1.,
+    psf_sigma: float=0.,
+):
+    '''
+    Args:
+        mat_mask: (I, J, K) voxel mask of material labels
+        affine: (4, 4) voxel -> world coordinate mapping
+        mat_df: material catalog df indexed by label
+        tex_df: texture annotations (materials and paths)
+    Returns:
+        (I, J, K) volumetric image with intensity bias and
+            texture derived from the material labels
+    '''
+    rng = np.random.default_rng(seed)
+
+    I, J, K = mat_mask.shape
+    points = np.stack(np.mgrid[0:I,0:J,0:K], axis=-1).reshape(-1, 3)
+    image  = np.zeros((I, J, K), dtype=np.float32)
+    
+    tex_noise = bandlimited_noise(mat_mask.shape, tex_noise_len, rng)
+    mul_noise = bandlimited_noise(mat_mask.shape, mul_noise_len, rng)
+    add_noise = bandlimited_noise(mat_mask.shape, add_noise_len, rng)
+
+    labels = np.unique(mat_mask)
+
+    # compute material blend weights
+    blend = np.zeros((len(labels), I, J, K), dtype=float)
+    for i, label in enumerate(labels):
+        if i == 0:
+            blend[i] = (mat_mask == 0)
+        else:
+            blend[i] = (mat_mask != 0) * scipy.ndimage.gaussian_filter((mat_mask == label).astype(float), sigma=mat_sigma, mode='wrap')
+
+    blend /= (blend.sum(axis=0, keepdims=True) + 1e-12)
+
+    #blend *= scipy.ndimage.gaussian_filter((mat_mask == label).astype(float), sigma=mat_sigma, mode='wrap')
+
+    # for each unique value in material mask,
+    for i, label in enumerate(labels):
+
+        # select region with mask value
+        sel_region = (mat_mask == label)
+        sel_points = points[sel_region.reshape(-1)]
+
+        # get material info for region
+        mat_info = mat_df.loc[label]
+        mat_name = mat_info.material_key
+        img_bias = mat_info.image_bias
+        img_range = mat_info.image_range if label > 0 else 0
+
+        utils.log(f'{mat_name} | bias = {img_bias:.4f} range = {img_range:.4f}')
+
+        # sample 3d texture field associated with material
+        mat_tex_df = tex_df[(tex_df.material == mat_name)]
+
+        if len(mat_tex_df) > 0:
+            t_interp = sample_texture_field(mat_tex_df, points, rng, iqr_mult, use_solid, weights).reshape(I,J,K)
+        else:
+            t_interp = 0.0
+
+        # add texture noise
+        t_interp = t_interp + tex_noise_std * tex_noise
+
+        # assign image values using image params + texture
+        image += blend[i] * (img_bias + img_range * t_interp)
+
+    # global multiplicative noise
+    if mul_noise_std > 0:
+        image *= (1.0 + mul_noise_std * mul_noise)
+
+    image = scipy.ndimage.gaussian_filter(image, sigma=psf_sigma, mode='wrap')
+
+    # global additive noise
+    if add_noise_std > 0:
+        image += add_noise_std * add_noise
+
+    return image
+

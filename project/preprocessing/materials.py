@@ -43,6 +43,35 @@ def build_material_catalog(include_background=True):
     return mats.sort_index()
 
 
+def assign_image_parameters(
+    mat_df,
+    d_ref=1, d_pow=1, # density feature
+    e_ref=1, e_pow=1, # elastic feature
+    b0=0, b_d=0, b_e=0, b_de=0, # image bias coefs
+    r0=0, r_d=0, r_e=0, r_de=0, # image range coefs
+    background=0,
+    eps=1e-6
+):
+    df = mat_df.copy()
+
+    def _compute_feature(val, ref, power):
+        return np.maximum(val / ref, eps) ** power
+
+    d = _compute_feature(df['density_val'], d_ref, d_pow)
+    e = _compute_feature(df['elastic_val'], e_ref, e_pow)
+
+    def _compute_param(x, y, c0, c_x, c_y, c_xy):
+        return c0 + c_x * x + c_y * y + c_xy * x * y
+
+    df['density_feat'] = d
+    df['elastic_feat'] = e
+    df['image_bias']  = _compute_param(d, e, b0, b_d, b_e, b_de)
+    df['image_range'] = _compute_param(d, e, r0, r_d, r_e, r_de)
+
+    return df
+
+
+
 def assign_materials_to_regions(
     region_mask, prior, vote_rate=1e-3, min_votes=1, seed=0
 ):
