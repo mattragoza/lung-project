@@ -120,6 +120,7 @@ class ShapeNetDataset:
         parse_metadata: bool=None,
         unit_policy: str='prefer_metadata',
         default_unit: float=1e-2,
+        image_tag: str='generated'
     ):
         subject_iter = subjects or self.subjects()
         md = self.metadata.set_index(self.ID_COLUMN)
@@ -152,7 +153,7 @@ class ShapeNetDataset:
 
                 paths['node_values'] = self.path(subj, variant, asset_type='mesh', mesh_tag='node_values')
                 paths['disp_field']  = self.path(subj, variant, asset_type='field', field_tag='displacement')
-                paths['input_image'] = self.path(subj, variant, asset_type='image', image_tag='generated')
+                paths['input_image'] = self.path(subj, variant, asset_type='image', image_tag=image_tag)
 
                 paths['node_values_opt'] = self.path(subj, variant, asset_type='mesh', mesh_tag='node_values_opt')
                 paths['elastic_field_opt'] = self.path(subj, variant, asset_type='field', field_tag='elasticity_opt')

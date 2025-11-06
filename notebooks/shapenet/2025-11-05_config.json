@@ -1,0 +1,67 @@
+{
+	"dataset": "shapenet",
+	"data_root": "/ocean/projects/asc170022p/mtragoza/lung-project/data/ShapeNetSem",
+	"examples": {
+		"unit_policy": "prefer_metadata",
+		"default_unit": 1e-2,
+		"image_tag": "solid_texture"
+	},
+	"preprocess": {
+		"preprocess_binary_mask": {
+			"pad_factor": 0.37
+		},
+		"preprocess_surface_mesh": {},
+		"create_mesh_region_mask": {},
+		"create_volume_mesh_from_mask": {
+			"use_affine_spacing": false,
+			"pygalmesh_kws": {
+				"max_facet_distance": 0.75,
+				"max_cell_circumradius": 5.0,
+				"lloyd": true,
+				"odt": true
+			}
+		},
+		"create_material_fields": {},
+		"simulate_displacement_field": {
+			"nu_value": 0.4,
+			"solver_kws": {}
+		},
+		"generate_volumetric_image": {
+			"annot_path": "/ocean/projects/asc170022p/mtragoza/lung-project/notebooks/shapenet/2025-11-05_annotations.csv",
+			"imp_kws": {
+				"d_ref": 500.0,
+				"d_pow": 1.0,
+				"e_ref": 1000.0,
+				"e_pow": -1.0,
+				"b_d": 0.5,
+				"r_de": 0.5
+			},
+			"gen_kws": {
+				"use_solid": true,
+				"iqr_mult": 4.0,
+				"seed": 0,
+				"tex_noise_len": 2.0,
+				"tex_noise_std": 0.1,
+				"mul_noise_len": 128,
+				"mul_noise_std": 0.25,
+				"add_noise_len": 0.5,
+				"add_noise_std": 0.025,
+				"psf_sigma": 0.5,
+				"mat_sigma": 1.0
+			}
+		}
+	},
+	"optimize": {
+		"nu_value": 0.4,
+		"solver_kws": {"reg_weight": 1e-5},
+		"global_kws": {
+			"max_iter": 100,
+			"lbfgs_kws": {}
+		},
+		"local_kws": {
+			"max_iter": 100,
+			"lbfgs_kws": {}
+		}
+	},
+	"train": {}
+}
