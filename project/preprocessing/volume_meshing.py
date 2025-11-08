@@ -23,11 +23,11 @@ def generate_mesh_from_mask(
     affine: np.ndarray,
     use_affine_spacing: bool=True,
     pygalmesh_kws: Dict[str, Any]=None,
-    random_seed: int=0
+    random_seed: int=0,
+    label_key: str='label'
 ) -> meshio.Mesh:
     '''
-    Generate a tetrahedral mesh from a voxel mask
-    using pygalmesh and apply post-processing.
+    Generate a tetrahedral mesh from a voxel mask with pygalmesh.
 
     Args:
         mask: (I, J, K) voxel mask (binary or region)
@@ -52,9 +52,9 @@ def generate_mesh_from_mask(
         **(pygalmesh_kws or {})
     )
 
-    # clean mesh and correct cell labels
+    # clean mesh and map auto-generated cell labels to input labels
     mesh = remove_unreferenced_points(mesh)
-    mesh = assign_cell_labels(mesh, mask, new_key='label', old_key='medit:ref')
+    mesh = reindex_cell_labels(mesh, mask, new_key=label_key)
 
     # pygalmesh uses voxel spacing to generate the mesh,
     # not the full affine. To convert to world coords, we
@@ -76,29 +76,29 @@ def generate_mesh_from_mask(
 # --- cell region labels ---
 
 
-def assign_cell_labels(
+def reindex_cell_labels(
     mesh: meshio.Mesh,
     mask: np.ndarray,
-    new_key: str='label',
+    new_key: str,
     old_key: str='medit:ref'
 ) -> meshio.Mesh:
     '''
-    Update cell labels based on mask values.
+    Reindex cell labels using mask interpolation and voting.
     '''
-    # when providing a multi-label mask to pygalmesh,
-    # the generated mesh contains region boundaries
-    # and labels in an auto-generated cell_data key.
+    # When pygalmesh generates a mesh from a multi-label mask,
+    # it produces cell labels that do not directly map to the
+    # labels in the input mask.
 
-    # here we construct a deterministic map from the
-    # auto-generated labels to the voxel mask labels and
-    # then update the cell labels using the label map.
+    # We infer the mapping from generated cell labels to the
+    # original mask labels by interpolating the mask at each
+    # tetra barycenter and voting on the label assignment.
 
     label_map = construct_label_map(mesh, mask, old_key)
-    print(label_map)
 
-    new_cell_data = {new_key: [
-        label_map[a] for a in mesh.cell_data[old_key]
-    ]}
+    new_cell_data = {}
+    new_cell_data[old_key] = mesh.cell_data[old_key] # keep the old labels
+    new_cell_data[new_key] = [label_map[a] for a in mesh.cell_data[old_key]]
+
     mesh = meshio.Mesh(
         points=mesh.points,
         cells=mesh.cells,
@@ -119,28 +119,28 @@ def construct_label_map(
     key: str='medit:ref'
 ) -> np.ndarray:
     '''
-    Build a mapping from existing mesh cell labels to
+    Infer a mapping from generated mesh cell labels to
     mask labels by majority vote at the cell centroids.
     '''
+    utils.log('Constructing cell label map')
+
     # interpolate mask values at tetra centers
     points = _centroids(mesh, cell_type='tetra')
-    mask_values = sp.ndimage.map_coordinates(
-        mask.astype(int),
-        points.T,
-        order=0,
-        mode='nearest'
+    values = sp.ndimage.map_coordinates(
+        mask.astype(int), points.T, order=0, mode='nearest'
     )
-    # get most common mask label for each mesh label
-    old_labels = mesh.cell_data_dict[key]['tetra']
+
+    # get most common mask label for each cell label
+    old_labels = mesh.cell_data_dict[key]['tetra'].astype(int)
     label_map = -np.ones(old_labels.max() + 1, dtype=int)
 
     for l, c in zip(*np.unique(old_labels, return_counts=True)):
-        values = mask_values[old_labels == l]
-        counts = np.bincount(values)
-        print(l, c, counts)
-        most_common = counts.argmax()
-        label_map[l] = int(most_common)
+        counts = np.bincount(values[old_labels == l])
+        most_common = int(counts.argmax())
+        utils.log(f'{key} = {l} | total = {c} | region counts = {counts}')
+        label_map[l] = most_common
 
+    utils.log(label_map)
     return label_map
 
 

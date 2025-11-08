@@ -7,94 +7,124 @@ import meshio
 import warp as wp
 import warp.fem
 import warp.optim.linear
+wp.init()
 
 from . import base
+from ..core import utils
+
+DEBUG = False
 
 
 def _as_warp_array(t, **kwargs):
     return wp.from_torch(t.contiguous().detach(), **kwargs)
 
 
-def _maybe_zero_grad(a: wp.array):
+def _zero_grad(a: wp.array):
     if getattr(a, 'grad', None) is not None:
         a.grad.zero_()
+
+
+def _validate_scalar_field(vals: torch.Tensor, positive=False):
+    if not vals.ndim == 1:
+        raise ValueError(f'Invalid scalar field shape: {vals.shape}')
+    if not torch.isfinite(vals).all():
+        raise ValueError('Non-finite scalar field')
+    if positive and not (vals > 0).all():
+        raise ValueError('Non-positive scalar field')
+
+
+def _validate_vector_field(vals: torch.Tensor):
+    if not (vals.ndim == 2 and vals.shape[1] == 3):
+        raise ValueError(f'Invalid vector field shape: {vals.shape}')
+    if not torch.isfinite(vals).all():
+        raise ValueError('Non-finite vector field')
 
 
 class WarpFEMSolver(base.PDESolver):
 
     def __init__(
         self,
-        mesh: meshio.Mesh,
-        reg_weight: float=0.0, # 5e-2,
-        eps_reg: float=None,
+        relative_loss: bool=True,
+        tv_reg_weight: float=0.0, # 5e-2,
+        eps_reg: float=1e-3,
         eps_div: float=1e-12,
         cg_tol: float=1e-5,
         unit_m: float=1e-3,
-        relative_loss=True
+        scalar_dtype=wp.float32,
+        vector_dtype=wp.vec3f
     ):
-        wp.init()
+        self.relative_loss = relative_loss
+        self.tv_reg_weight = tv_reg_weight
+        self.eps_reg = eps_reg
+        self.eps_div = eps_div
+        self.cg_tol = cg_tol
+        self.cg_out = []
 
-        # convert mesh units to meters
-        self.geometry = wp.fem.Tetmesh(
-            wp.array(mesh.cells_dict['tetra'], dtype=wp.int32),
-            wp.array(mesh.points * unit_m, dtype=wp.vec3f)
-        )
-        self.geometry.build_bvh()
-    
-        # integration domains
-        self.domain = wp.fem.Cells(self.geometry)
+        self.scalar_dtype = scalar_dtype
+        self.vector_dtype = vector_dtype
+
+    def init_geometry(self, verts, cells):
+        verts = _as_warp_array(verts, dtype=wp.vec3f)
+        cells = _as_warp_array(cells, dtype=wp.int32)
+
+        self.geometry = wp.fem.Tetmesh(cells, verts, build_bvh=True)
+        self.interior = wp.fem.Cells(self.geometry)
         self.boundary = wp.fem.BoundarySides(self.geometry)
 
         # function spaces
-        self.S = wp.fem.make_polynomial_space(self.geometry, degree=1, dtype=wp.float32)
-        self.V = wp.fem.make_polynomial_space(self.geometry, degree=1, dtype=wp.vec3f)
+        S = wp.fem.make_polynomial_space(self.geometry, degree=0, dtype=self.scalar_dtype)
+        V = wp.fem.make_polynomial_space(self.geometry, degree=1, dtype=self.vector_dtype)
 
         # trial and test functions
-        self.u_trial = wp.fem.make_trial(self.V, domain=self.domain)
-        self.v_test  = wp.fem.make_test(self.V, domain=self.domain)
-
-        self.ub_trial = wp.fem.make_trial(self.V, domain=self.boundary)
-        self.vb_test  = wp.fem.make_test(self.V, domain=self.boundary)
+        self.u_trial  = wp.fem.make_trial(V, domain=self.interior)
+        self.v_test   = wp.fem.make_test(V,  domain=self.interior)
+        self.ub_trial = wp.fem.make_trial(V, domain=self.boundary)
+        self.vb_test  = wp.fem.make_test(V,  domain=self.boundary)
 
         # physical fields and constants
-        self.u_obs_field = self.V.make_field()
-        self.u_sim_field = self.V.make_field()
-        self.u_sim_field.dof_values.requires_grad = True
+        self.u_obs = V.make_field()
+        self.u_sim = V.make_field()
+        self.res   = V.make_field()
 
-        self.res_field = self.V.make_field()
-        self.res_field.dof_values.requires_grad = True
+        self.mu  = S.make_field()
+        self.lam = S.make_field()
+        self.rho = S.make_field()
 
-        self.mu_field  = self.S.make_field()
-        self.lam_field = self.S.make_field()
-        self.rho_field = self.S.make_field()
+        self.u_sim.dof_values.requires_grad = True
+        self.res.dof_values.requires_grad = True
 
-        self.g = wp.vec3f([0, 0, -9.81]) # m/s^2
-        self.I = wp.diag(wp.vec3f(1.0))
+        self.g = self.vector_dtype([0, 0, -9.81]) # m/s^2
+        self.I = wp.diag(self.vector_dtype(1.0))
 
-        # hyperparameters
-        self.relative_loss = relative_loss
-        self.reg_weight = reg_weight
-        self.eps_reg = eps_reg or 1. / unit_m
-        self.eps_div = eps_div
-        self.cg_tol = cg_tol
+        # cached internals
+        self.K = None
+        self.M = None
+        self.P = None
+        self.f = None
+        self.u0 = None
+        self.f_tilde = None
 
     # --- public interface methods ---
 
     def set_params(self, mu: torch.Tensor, lam: torch.Tensor):
-        self.mu_field.dof_values = _as_warp_array(mu, dtype=wp.float32, requires_grad=True)
-        self.lam_field.dof_values = _as_warp_array(lam, dtype=wp.float32, requires_grad=True)
+        _validate_scalar_field(mu, positive=True)
+        _validate_scalar_field(lam, positive=True)
+        self.mu.dof_values  = _as_warp_array(mu, dtype=wp.float32, requires_grad=True)
+        self.lam.dof_values = _as_warp_array(lam, dtype=wp.float32, requires_grad=True)
         self.K = self.M = self.f_tilde = None
 
     def set_data(self, rho: torch.Tensor, u_obs: torch.Tensor):
-        self.rho_field.dof_values = _as_warp_array(rho, dtype=wp.float32, requires_grad=False)
-        self.u_obs_field.dof_values = _as_warp_array(u_obs, dtype=wp.vec3f, requires_grad=False)
+        _validate_scalar_field(rho, positive=True)
+        _validate_vector_field(u_obs)
+        self.rho.dof_values = _as_warp_array(rho, dtype=wp.float32, requires_grad=False)
+        self.u_obs.dof_values = _as_warp_array(u_obs, dtype=wp.vec3f, requires_grad=False)
         self.u0 = self.f = self.f_tilde = None
 
     def get_output(self) -> torch.Tensor:
-        return wp.to_torch(self.u_sim_field.dof_values)
+        return wp.to_torch(self.u_sim.dof_values)
 
     def get_residual(self) -> torch.Tensor:
-        return wp.to_torch(self.res_field.dof_values)
+        return wp.to_torch(self.res.dof_values)
 
     def get_loss(self) -> torch.Tensor:
         return wp.to_torch(self.loss)
@@ -124,13 +154,18 @@ class WarpFEMSolver(base.PDESolver):
         self.assemble_rhs_shift()
         self.solve_forward()
 
+        u = self.get_output()
+        if not torch.isfinite(u).all():
+            print(self.forward_solve_output)
+            raise RuntimeError(f'Non-finite output: {u.detach().cpu().numpy()}')
+
         self.tape = wp.Tape()
         with self.tape:
             self.compute_residual()
 
         self.tape.record_func(
             backward=self.solve_adjoint,
-            arrays=[self.res_field.dof_values, self.u_sim_field.dof_values]
+            arrays=[self.res.dof_values, self.u_sim.dof_values]
         )
         with self.tape:
             self.compute_loss()
@@ -140,19 +175,19 @@ class WarpFEMSolver(base.PDESolver):
     def adjoint_backward(self, loss_grad):
         self.loss.grad = wp.from_torch(loss_grad)
         self.tape.backward()
-        mu_grad = wp.to_torch(self.mu_field.dof_values.grad)
-        lam_grad = wp.to_torch(self.lam_field.dof_values.grad)
+        mu_grad = wp.to_torch(self.mu.dof_values.grad)
+        lam_grad = wp.to_torch(self.lam.dof_values.grad)
         return mu_grad, lam_grad
 
     def zero_grad(self):
-        _maybe_zero_grad(self.u_obs_field.dof_values)
-        _maybe_zero_grad(self.rho_field.dof_values)
-        _maybe_zero_grad(self.mu_field.dof_values)
-        _maybe_zero_grad(self.lam_field.dof_values)
-        _maybe_zero_grad(self.u_sim_field.dof_values)
-        _maybe_zero_grad(self.res_field.dof_values)
+        _zero_grad(self.u_obs.dof_values)
+        _zero_grad(self.rho.dof_values)
+        _zero_grad(self.mu.dof_values)
+        _zero_grad(self.lam.dof_values)
+        _zero_grad(self.u_sim.dof_values)
+        _zero_grad(self.res.dof_values)
         if getattr(self, 'loss', None) is not None:
-            _maybe_zero_grad(self.loss)
+            _zero_grad(self.loss)
 
     # --- internal assembly methods ---
 
@@ -173,11 +208,11 @@ class WarpFEMSolver(base.PDESolver):
             fields={
                 'u': self.u_trial,
                 'v': self.v_test,
-                'mu': self.mu_field,
-                'lam': self.lam_field
+                'mu': self.mu,
+                'lam': self.lam
             },
             values={'I': self.I},
-            domain=self.domain,
+            domain=self.interior,
             output_dtype=wp.float32
         )
         self.M = wp.optim.linear.preconditioner(self.K, ptype='diag')
@@ -186,15 +221,15 @@ class WarpFEMSolver(base.PDESolver):
     def assemble_forcing(self):
         self.f = wp.fem.integrate(
             pde_linear_form,
-            fields={'v': self.v_test, 'rho': self.rho_field},
+            fields={'v': self.v_test, 'rho': self.rho},
             values={'g': self.g},
-            domain=self.domain,
+            domain=self.interior,
             output_dtype=wp.vec3f
         )
         self.f_tilde = None
 
     def assemble_lifting(self):
-        self.u0 = self.P @ self.u_obs_field.dof_values
+        self.u0 = self.P @ self.u_obs.dof_values
         self.f_tilde = None
 
     def assemble_rhs_shift(self):
@@ -212,35 +247,35 @@ class WarpFEMSolver(base.PDESolver):
         it, res, tol = wp.optim.linear.cg(
             A=self.K,
             b=self.f_tilde,
-            x=self.u_sim_field.dof_values,
+            x=self.u_sim.dof_values,
             M=self.M,
             tol=self.cg_tol
         )
-        self.u_sim_field.dof_values += self.u0
+        self.u_sim.dof_values += self.u0
+        self.cg_out.append(('forward', it, res, tol))
 
-        self.forward_it  = it
-        self.forward_res = res
-        self.forward_tol = tol
+        if not np.isfinite(res):
+            raise RuntimeError(f'Non-finite CG residual')
 
     def solve_adjoint(self):
         wp.fem.project_linear_system(
             self.K,
-            self.u_sim_field.dof_values.grad,
+            self.u_sim.dof_values.grad,
             self.P,
             normalize_projector=False
         )
         it, res, tol = wp.optim.linear.cg(
             A=self.K,
-            b=self.u_sim_field.dof_values.grad,
-            x=self.res_field.dof_values.grad,
+            b=self.u_sim.dof_values.grad,
+            x=self.res.dof_values.grad,
             M=self.M,
             tol=self.cg_tol
         )
-        self.u_sim_field.dof_values.grad.zero_()
+        self.u_sim.dof_values.grad.zero_()
+        self.cg_out.append(('adjoint', it, res, tol))
 
-        self.adjoint_it  = it
-        self.adjoint_res = res
-        self.adjoint_tol = tol
+        if not np.isfinite(res):
+            raise RuntimeError(f'Non-finite CG residual')
 
     # --- residual and loss evaluation ---
 
@@ -248,15 +283,15 @@ class WarpFEMSolver(base.PDESolver):
         wp.fem.integrate(
             pde_residual_form,
             fields={
-                'u': self.u_sim_field,
+                'u': self.u_sim,
                 'v': self.v_test,
-                'mu': self.mu_field,
-                'lam': self.lam_field,
-                'rho': self.rho_field
+                'mu': self.mu,
+                'lam': self.lam,
+                'rho': self.rho
             },
             values={'g': self.g, 'I': self.I},
-            domain=self.domain,
-            output=self.res_field.dof_values
+            domain=self.interior,
+            output=self.res.dof_values
         )
 
     def compute_loss(self):
@@ -264,30 +299,30 @@ class WarpFEMSolver(base.PDESolver):
         denom = wp.empty(1, dtype=wp.float32, requires_grad=True)
         wp.fem.integrate(
             error_form,
-            fields={'u': self.u_sim_field, 'v': self.u_obs_field},
-            domain=self.domain,
+            fields={'u': self.u_sim, 'v': self.u_obs},
+            domain=self.interior,
             output=numer
         )
         if self.relative_loss:
             wp.fem.integrate(
                 norm2_form,
-                fields={'u': self.u_obs_field},
-                domain=self.domain,
+                fields={'u': self.u_obs},
+                domain=self.interior,
                 output=denom
             )
         else:
-            wp.fem.integrate(volume_form, domain=self.domain, output=denom)
+            wp.fem.integrate(volume_form, domain=self.interior, output=denom)
 
         data_term = numer / (denom + self.eps_div)
-        reg_term = wp.empty(1, dtype=wp.float32, requires_grad=True)
+        tv_reg_term = wp.empty(1, dtype=wp.float32, requires_grad=True)
         wp.fem.integrate(
             tv_reg_form,
-            fields={'mu': self.mu_field, 'lam': self.lam_field},
+            fields={'mu': self.mu, 'lam': self.lam},
             values={'eps_reg': self.eps_reg, 'eps_div': self.eps_div},
-            domain=self.domain,
-            output=reg_term
+            domain=self.interior,
+            output=tv_reg_term
         )
-        self.loss = data_term + self.reg_weight * reg_term
+        self.loss = data_term + self.tv_reg_weight * tv_reg_term
         self.loss.requires_grad = True
 
 

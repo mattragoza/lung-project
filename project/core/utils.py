@@ -10,14 +10,14 @@ import torch
 
 VERBOSE = True
 
-
 def set_verbose(val: bool):
     global VERBOSE
     VERBOSE = val
 
 
 def log(msg):
-    if VERBOSE:
+    is_worker = torch.utils.data.get_worker_info()
+    if VERBOSE and not is_worker:
         print(msg, file=sys.stdout, flush=True)
 
 

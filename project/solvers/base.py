@@ -6,7 +6,7 @@ import torch
 
 class PDESolver:
 
-    def __init__(self, mesh: meshio.Mesh):
+    def set_geometry(self, mesh: meshio.Mesh):
         raise NotImplementedError
 
     def set_params(self, mu: torch.Tensor, lam: torch.Tensor):
@@ -39,6 +39,9 @@ class PDESolver:
     def zero_grad(self):
         raise NotImplementedError
 
+    def to(self, device):
+        raise NotImplementedError
+
 
 class PDESolverModule(torch.nn.Module):
 
@@ -49,6 +52,9 @@ class PDESolverModule(torch.nn.Module):
 
     def forward(self, mu: torch.Tensor, lam: torch.Tensor):
         return PDESolverFn.apply(self.solver, mu, lam)
+
+    def to(self, device):
+        self.solver.to(device)
 
 
 class PDESolverFn(torch.autograd.Function):

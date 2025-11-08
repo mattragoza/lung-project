@@ -5,14 +5,17 @@ import skimage
 from ..core import utils, transforms
 
 
-def cleanup_binary_mask(mask):
-
-    utils.log(f'Filtering foreground')
-    mask = filter_connected_components(mask != 0, max_components=1)
-
-    utils.log(f'Filtering background')
-    mask = filter_connected_components(mask == 0) == 0
-
+def cleanup_binary_mask(
+    mask: np.ndarray, max_components=1, background_kws=None
+) -> np.ndarray:
+    utils.log(f'Filtering foreground (removing blobs)')
+    mask = filter_connected_components(
+        mask != 0, max_components=max_components
+    )
+    utils.log(f'Filtering background (filling holes)')
+    mask = ~filter_connected_components(
+        mask == 0, **(background_kws or {})
+    )
     return mask
 
 

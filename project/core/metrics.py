@@ -20,12 +20,18 @@ class MetricRegistry:
         names = self._profiles.get(which, self._fns.keys())
 
         pred = np.asarray(pred, dtype=float)
-        if pred.ndim != 2:
+        if pred.ndim > 2:
             raise ValueError(f'expected (N, C) array, got {pred.shape}')
+        elif pred.ndim == 1:
+            pred = pred[:,None]
+
         if target is not None:
             target = np.asarray(target, dtype=float)
-            if target.ndim != 2:
+            if target.ndim > 2:
                 raise ValueError(f'expected (N, C) array, got {target.shape}')
+            elif target.ndim == 1:
+                target = target[:,None]
+
             if target.shape != pred.shape:
                 raise ValueError(f'shape mismatch: {pred.shape} vs {target.shape}')
 

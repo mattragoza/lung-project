@@ -94,20 +94,25 @@ def preprocess_shapenet(ex, config):
         **(config.get('create_volume_mesh_from_mask') or {})
     )
     _check_output(
-        create_material_fields,
+        create_material_mask,
         mask_path=ex.paths['region_mask'],
+        output_path=ex.paths['material_mask'],
         density_path=ex.paths['density_field'],
         elastic_path=ex.paths['elastic_field'],
-        output_path=ex.paths['material_mask'],
-        **(config.get('create_material_fields') or {})
+        **(config.get('create_material_mask') or {})
+    )
+    _check_output(
+        create_mesh_fields,
+        regions_path=ex.paths['region_mask'],
+        materials_path=ex.paths['material_mask'],
+        mesh_path=ex.paths['volume_mesh'],
+        output_path=ex.paths['mesh_fields'],
+        **(config.get('create_mesh_fields') or {})
     )
     _check_output(
         simulate_displacement_field,
-        mesh_path=ex.paths['volume_mesh'],
-        density_path=ex.paths['density_field'],
-        elastic_path=ex.paths['elastic_field'],
-        nodes_path=ex.paths['node_values'],
-        output_path=ex.paths['disp_field'],
+        mesh_path=ex.paths['mesh_fields'],
+        output_path=ex.paths['mesh_fields'],
         unit_m=ex.metadata['unit'],
         **(config.get('simulate_displacement_field') or {})
     )
@@ -198,28 +203,6 @@ def create_lung_region_mask(mask_dir, output_path, min_count=30):
     utils.log('Done')
 
 
-def create_volume_mesh_from_mask(
-    mask_path,
-    output_path,
-    use_affine_spacing=True,
-    pygalmesh_kws=None
-):
-    from . import volume_meshing
-    nifti = fileio.load_nibabel(mask_path)
-
-    utils.log('Generating volume mesh from mask')
-    mesh = volume_meshing.generate_mesh_from_mask(
-        mask=nifti.get_fdata(), 
-        affine=nifti.affine,
-        use_affine_spacing=use_affine_spacing,
-        pygalmesh_kws=pygalmesh_kws
-    )
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_meshio(output_path, mesh)
-    utils.log('Done')
-
-
 def register_displacement_field(
     fixed_path, moving_path, mask_path, output_path, device='cuda'
 ):
@@ -285,7 +268,6 @@ def preprocess_surface_mesh(input_path, output_path):
 
     utils.log('Repairing surface mesh')
     mesh = surface_meshing.repair_surface_mesh(mesh)
-
     mesh = meshio.Mesh(points=mesh.vertices, cells=[('triangle', mesh.faces)])
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -305,7 +287,6 @@ def create_mesh_region_mask(mask_path, mesh_path, output_path, clean=True):
 
     utils.log('Assigning labels to voxels')
     regions = surface_meshing.assign_voxel_labels(mask, affine, mesh, labels)
-
     if clean:
         utils.log('Cleaning up region mask')
         regions = mask_cleanup.cleanup_region_mask(
@@ -317,121 +298,171 @@ def create_mesh_region_mask(mask_path, mesh_path, output_path, clean=True):
     utils.log('Done')
 
 
-def create_material_fields(mask_path, density_path, elastic_path, output_path):
+def create_volume_mesh_from_mask(
+    mask_path, output_path, use_affine_spacing=True, pygalmesh_kws=None
+):
+    from . import volume_meshing
+    nifti = fileio.load_nibabel(mask_path)
+
+    utils.log('Generating volume mesh from mask')
+    mesh = volume_meshing.generate_mesh_from_mask(
+        mask=nifti.get_fdata(),
+        affine=nifti.affine,
+        use_affine_spacing=use_affine_spacing,
+        pygalmesh_kws=pygalmesh_kws,
+        label_key='region'
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_meshio(output_path, mesh)
+    utils.log('Done')
+
+
+def create_material_mask(
+    mask_path, output_path, density_path=None, elastic_path=None, sample_kws=None
+):
     from . import materials
 
     nifti = fileio.load_nibabel(mask_path)
-    region_mask, affine = nifti.get_fdata(), nifti.affine
+    region_mask = nifti.get_fdata().astype(np.int16)
 
-    utils.log('Assigning material properties to regions')
-    m_mask, d_mask, e_mask = materials.assign_material_properties(region_mask)
+    region_mats = materials.assign_materials_to_regions(region_mask, sample_kws)
+
+    mat_mask = region_mats[region_mask]
+    rho_mask, E_mask = materials.assign_material_properties(mat_mask)
+
+    if density_path:
+        density_path.parent.mkdir(parents=True, exist_ok=True)
+        fileio.save_nibabel(density_path, rho_mask.astype(np.float32), nifti.affine)
+
+    if elastic_path:
+        elastic_path.parent.mkdir(parents=True, exist_ok=True)
+        fileio.save_nibabel(elastic_path, E_mask.astype(np.float32), nifti.affine)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    density_path.parent.mkdir(parents=True, exist_ok=True)
-    elastic_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(output_path, mat_mask.astype(np.int16), nifti.affine)
 
-    fileio.save_nibabel(density_path, d_mask.astype(np.float32), affine)
-    fileio.save_nibabel(elastic_path, e_mask.astype(np.float32), affine)
-    fileio.save_nibabel(output_path, m_mask.astype(np.int16), affine)
+
+def create_mesh_fields(regions_path, materials_path, mesh_path, output_path, device='cuda'):
+    from ..core import transforms, interpolation
+    from . import materials
+
+    reg_mask = fileio.load_nibabel(regions_path).get_fdata().astype(int)
+    mat_mask = fileio.load_nibabel(materials_path).get_fdata().astype(int)
+    mesh = fileio.load_meshio(mesh_path)
+
+    region_mats = materials.compute_region_materials(reg_mask, mat_mask)
+
+    cell_region = mesh.cell_data_dict['region']['tetra'].astype(int)
+    cell_material = region_mats[cell_region]
+    mesh.cell_data['material'] = [cell_material]
+
+    rho_cells, E_cells = materials.assign_material_properties(cell_material)
+    mesh.cell_data['rho'] = [rho_cells]
+    mesh.cell_data['E']   = [E_cells]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_meshio(output_path, mesh)
 
 
 def simulate_displacement_field(
     mesh_path,
-    density_path,
-    elastic_path,
-    nodes_path,
     output_path,
     nu_value=0.4,
-    unit_m=1e-3,
+    unit_m=1e-3, # meters per world unit
     solver_kws=None,
-    rasterize=True
+    mask_path=None,
+    device='cuda'
 ):
     from . import simulation
 
     mesh = fileio.load_meshio(mesh_path)
-    density_nifti = fileio.load_nibabel(density_path)
-    elastic_nifti = fileio.load_nibabel(elastic_path)
+    if mask_path: # for rasterizing fields
+        nifti = fileio.load_nibabel(mask_path)
 
-    affine_d = density_nifti.affine
-    affine_e = elastic_nifti.affine
-    assert np.allclose(affine_d, affine_e)
+    verts = mesh.points # world coords
+    cells = mesh.cells_dict['tetra']
 
-    rho_field = density_nifti.get_fdata().astype(np.float32)
-    E_field   = elastic_nifti.get_fdata().astype(np.float32)
-    assert rho_field.shape == E_field.shape
+    rho_cells = mesh.cell_data_dict['rho']['tetra']
+    E_cells   = mesh.cell_data_dict['E']['tetra']
 
     utils.log('Simulating displacement using material fields')
-    disp_field, node_values = simulation.simulate_displacement(
-        mesh, affine_d, rho_field, E_field, nu_value, unit_m, solver_kws, rasterize=rasterize
+    node_values = simulation.simulate_displacement(
+        verts=verts,
+        cells=cells,
+        rho_cells=rho_cells,
+        E_cells=E_cells,
+        nu_value=nu_value,
+        unit_m=unit_m,
+        solver_kws=solver_kws,
+        device=device
     )
     for k, v in node_values.items():
         print(k, v.shape, v.dtype, v.mean())
         mesh.point_data[k] = v.astype(np.float32)
 
-    nodes_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_meshio(nodes_path, mesh)
-
-    if rasterize:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        fileio.save_nibabel(output_path, disp_field, affine_d)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_meshio(output_path, mesh)
 
 
 def optimize_elasticity_field(
-    input_nodes_path,
-    input_mask_path,
-    output_nodes_path,
+    mesh_path,
     output_path,
     nu_value=0.4,
-    unit_m=1e-3,
+    unit_m=1e-3, # meters per world unit
+    theta_init=3.,
     solver_kws=None,
     global_kws=None,
     local_kws=None,
-    rasterize=True
+    mask_path=None,
+    device='cuda'
 ):
     from . import simulation
 
-    mesh = fileio.load_meshio(input_nodes_path)
-    rho_nodes = mesh.point_data['rho']
-    u_true_nodes = mesh.point_data['u'] # world units
-    E_true_nodes = mesh.point_data['E'] # Pa
+    mesh = fileio.load_meshio(mesh_path)
+    if mask_path:
+        nifti = fileio.load_nibabel(mask_path)
 
-    nifti = fileio.load_nibabel(input_mask_path)
+    verts = mesh.points # world coords
+    cells = mesh.cells_dict['tetra']
+
+    rho_cells = mesh.cell_data_dict['rho']['tetra']
+    u_obs_nodes = mesh.point_data['u'] # world units
 
     utils.log('Optimizing elasticity to match observed displacement')
-    E_field, node_values = simulation.optimize_elasticity(
-        mesh=mesh,
-        shape=nifti.get_fdata().shape,
-        affine=nifti.affine,
-        rho_nodes=rho_nodes,
-        E_nodes=E_true_nodes,
-        u_obs_nodes=u_true_nodes,
+    node_values, cell_values = simulation.optimize_elasticity(
+        verts=verts,
+        cells=cells,
+        rho_cells=rho_cells,
+        u_obs_nodes=u_obs_nodes,
         nu_value=nu_value,
         unit_m=unit_m,
+        theta_init=theta_init,
         solver_kws=solver_kws,
         global_kws=global_kws,
         local_kws=local_kws,
-        rasterize=rasterize,
+        device=device
     )
     # save new keys in mesh file
     for k, v in node_values.items():
         print(k, v.shape, v.dtype)
         mesh.point_data[k] = v.astype(np.float32)
 
-    # compute evaluation metrics
-    u_metrics = metrics.evaluate_metrics(mesh.point_data['u_opt'], mesh.point_data['u'], which='u')
-    E_metrics = metrics.evaluate_metrics(mesh.point_data['E_opt'], mesh.point_data['E'], which='E')
-    r_metrics = metrics.evaluate_metrics(mesh.point_data['r_opt'], which='res')
-    ret_metrics = (
-        utils.namespace(u_metrics, 'u') |
-        utils.namespace(E_metrics, 'E') |
-        utils.namespace(r_metrics, 'res')
-    )
-    output_nodes_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_meshio(output_nodes_path, mesh)
+    for k, v in cell_values.items():
+        print(k, v.shape, v.dtype)
+        mesh.cell_data[k] = [v.astype(np.float32)]
 
-    if rasterize:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        fileio.save_nibabel(output_path, E_field, nifti.affine)
+    # compute evaluation metrics
+    r_metrics = metrics.evaluate_metrics(mesh.point_data['r_opt'], which='res')
+    u_metrics = metrics.evaluate_metrics(mesh.point_data['u_opt'], mesh.point_data['u'], which='u')
+    E_metrics = metrics.evaluate_metrics(mesh.cell_data['E_opt'][0], mesh.cell_data['E'][0], which='E')
+    ret_metrics = (
+        utils.namespace(r_metrics, 'res') |
+        utils.namespace(u_metrics, 'u') |
+        utils.namespace(E_metrics, 'E')
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_meshio(output_path, mesh)
 
     return ret_metrics
 

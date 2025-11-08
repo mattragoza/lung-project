@@ -135,10 +135,11 @@ def compute_youngs_modulus(mu, nu=0.4):
 
 
 def parameterize_youngs_modulus(theta_global, theta_local):
-    return torch.pow(10, theta_global + theta_local - theta_local.mean())
+    theta = theta_global + theta_local - theta_local.mean()
+    return torch.pow(10, theta)
 
 
-def compute_density_from_ct(ct, m_atten_ratio=1., density_water=1000.):
+def compute_density_from_CT(ct, m_atten_ratio=1., density_water=1000.):
 
     # HU = 1000 (mu_x - mu_water) / mu_water
     # HU / 1000 = mu_x / mu_water - 1
@@ -157,6 +158,6 @@ def compute_density_from_ct(ct, m_atten_ratio=1., density_water=1000.):
     return (ct / 1000 + 1) * density_water / m_atten_ratio
 
 
-def compute_emphysema_from_ct(ct, threshold=-950):
+def compute_emphysema_from_CT(ct, threshold=-950):
     return (ct <= threshold)
 

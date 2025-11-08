@@ -71,8 +71,7 @@ def assign_image_parameters(
     return df
 
 
-
-def assign_materials_to_regions(
+def sample_region_materials(
     region_mask, prior, vote_rate=1e-3, min_votes=1, seed=0
 ):
     '''
@@ -100,14 +99,16 @@ def assign_materials_to_regions(
     # compute region sizes
     regions, sizes = np.unique(region_mask, return_counts=True)
 
-    utils.log(f'Region labels: {regions}')
-    utils.log(f'Region sizes:  {sizes}')
-
     sel = regions > 0 # exclude background
     regions, sizes = regions[sel], sizes[sel]
+    n_votes = np.maximum(vote_rate * sizes, min_votes)
+
+    utils.log(f'Region labels: {regions}')
+    utils.log(f'Region sizes:  {sizes}')
+    utils.log(f'Region votes: {n_votes}')
 
     if regions.size == 0:
-        return -np.ones(1, dtype=int) # only background
+        return np.zeros(1, dtype=int) # only background
 
     size_order = np.argsort(-sizes)
 
@@ -122,8 +123,7 @@ def assign_materials_to_regions(
     # prior distribution over materials
     prior = np.asarray(prior, dtype=float)
     prior /= prior.sum()
-
-    n_materials = len(prior)
+    materials = np.arange(1, prior.size + 1, dtype=int)
 
     utils.log(f'Material prior: {prior}')
 
@@ -136,56 +136,67 @@ def assign_materials_to_regions(
         votes = rng.multinomial(n_votes, prior)
 
         # apply slight jitter to break ties
-        jitter = rng.uniform(-0.1, 0.1, size=n_materials)
-        ranked_by_votes = np.argsort(-(votes + jitter))
+        jitter = rng.uniform(-0.1, 0.1, size=votes.size)
+        ranked = materials[np.argsort(-(votes + jitter))]
 
         neighbors = {assigned.get(nb) for nb in adjacent.get(region, [])}
         neighbors.discard(None)
 
         choice = None
-        for candidate in ranked_by_votes:
+        for candidate in ranked:
             if candidate not in neighbors:
                 choice = candidate
                 break
 
         if choice is None: # cannot avoid a conflict
             utils.warn(f'WARNING: adjacent regions must share a material')
-            choice = ranked_by_votes[0]
+            choice = ranked[0]
 
         utils.log(f'Region {region} was assigned material {choice} in prior')
         assigned[region] = int(choice)
 
     max_region = int(regions.max())
-    material_map = -np.ones(max_region + 1, dtype=int)
+    material_map = np.zeros(max_region + 1, dtype=int)
     for r, m in assigned.items():
         material_map[r] = m
 
     return material_map
 
 
-def assign_material_properties(region_mask):
+def assign_materials_to_regions(region_mask, sample_kws=None):
     region_mask = region_mask.astype(int, copy=False)
 
     utils.log('Building material catalog')
-    mats = build_material_catalog(include_background=True)
-    prior = mats.loc[1:, 'material_freq'].to_numpy() # exclude background
-    utils.log(mats)
+    mat_df = build_material_catalog(include_background=True)
+    utils.log(mat_df)
 
-    utils.log('Assigning materials to regions')
-    material_by_region = assign_materials_to_regions(region_mask, prior)
-    material_by_region += 1 # align with material catalog index
+    utils.log('Sampling materials per region')
+    prior = mat_df.loc[1:, 'material_freq'].to_numpy() # exclude background
+    material_by_region = sample_region_materials(region_mask, prior, **(sample_kws or {}))
 
-    utils.log('Constructing material property fields')
-    density_by_material = mats['density_val'].to_numpy()
-    elastic_by_material = mats['elastic_val'].to_numpy()
+    utils.log(material_by_region)
+    return material_by_region
 
-    density_by_region = density_by_material[material_by_region] 
-    elastic_by_region = elastic_by_material[material_by_region]
 
-    # voxel fields
-    material_mask = material_by_region[region_mask]
-    density_mask  = density_by_region[region_mask]
-    elastic_mask  = elastic_by_region[region_mask]
+def assign_material_properties(material_labels):
+    mat_df = build_material_catalog(include_background=True)
 
-    return material_mask, density_mask, elastic_mask
+    density_by_material = mat_df['density_val'].to_numpy()
+    elastic_by_material = mat_df['elastic_val'].to_numpy()
+
+    if material_labels.min() < 0:
+        raise ValueError(material_labels.unique())
+
+    density_values = density_by_material[material_labels]
+    elastic_values = elastic_by_material[material_labels]
+
+    return density_values, elastic_values
+
+
+def compute_region_materials(reg_mask, mat_mask):
+    lut = -np.ones(reg_mask.max() + 1, dtype=int)
+    for r in np.unique(reg_mask):
+        vals = mat_mask[reg_mask == r]
+        lut[r] = int(np.bincount(vals).argmax())
+    return lut
 

@@ -1,52 +1,13 @@
-import os, time, psutil
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import torch
 
-from . import visual
+from .core import utils, metrics
 
 
-class Evaluator(object):
+class Evaluator:
 
-    def __init__(self, index_cols):
-        self.index_cols = index_cols
-        self.metric_cols = [
-            'u_error',
-            'u_pred_norm',
-            'u_true_norm',
-
-            'e_error', 
-            'e_pred_norm',
-            'e_true_norm',
-            'CTE',
-
-            'e_true_corr',
-            'e_anat_corr',
-            'true_anat_corr',
-
-            'e_950_corr',
-            'e_900_corr',
-            'e_850_corr',
-
-            'true_950_corr',
-            'true_900_corr',
-            'true_850_corr',
-
-            'e_dis0_corr',
-            'e_dis1_corr',
-            'e_dis2_corr',
-
-            'true_dis0_corr',
-            'true_dis1_corr',
-            'true_dis2_corr',
-        ]
-        self.metrics = pd.DataFrame(columns=index_cols + self.metric_cols)
-        self.metrics.set_index(index_cols, inplace=True)
-
-    @property
-    def long_format_metrics(self):
-        return self.metrics.melt(var_name='metric', ignore_index=False)
+    def __init__(self):
+        self.rows = []
 
     def evaluate(self, anat, e_pred, e_true, u_pred, u_true, mask, disease_mask, index):
         region_mask = mask
@@ -97,6 +58,9 @@ class Evaluator(object):
         self.metrics.loc[index, 'true_dis2_corr'] = corr_mat[1,8].item()
 
         return u_error
+
+    def summarize(self):
+        pass
 
     def save_metrics(self, path):
         self.metrics.to_csv(path)
