@@ -3,7 +3,7 @@ import numpy as np
 from ..core import fileio, utils, metrics
 
 
-def _check_output(func, *args, **kwargs):
+def _check_output(func, *args, force=False, **kwargs):
     '''
     Wrapper to call a function only if its output path
     does not already exist.
@@ -14,7 +14,7 @@ def _check_output(func, *args, **kwargs):
     if output_path is not None:
         output_exists = output_path.is_file()
 
-    if not output_exists:
+    if not output_exists or force:
         return func(*args, **kwargs)
     
     utils.log(f'Skipping {func.__name__}: Output {output_path} exists')
@@ -102,25 +102,36 @@ def preprocess_shapenet(ex, config):
         **(config.get('create_material_mask') or {})
     )
     _check_output(
-        create_mesh_fields,
+        create_material_fields,
         regions_path=ex.paths['region_mask'],
         materials_path=ex.paths['material_mask'],
         mesh_path=ex.paths['volume_mesh'],
-        output_path=ex.paths['mesh_fields'],
-        **(config.get('create_mesh_fields') or {})
+        output_path=ex.paths['mat_fields'],
+        force=True,
+        **(config.get('create_material_fields') or {})
     )
     _check_output(
         simulate_displacement_field,
-        mesh_path=ex.paths['mesh_fields'],
-        output_path=ex.paths['mesh_fields'],
+        mesh_path=ex.paths['mat_fields'],
+        output_path=ex.paths['sim_fields'],
         unit_m=ex.metadata['unit'],
+        force=True,
         **(config.get('simulate_displacement_field') or {})
     )
     _check_output(
         generate_volumetric_image,
         mask_path=ex.paths['material_mask'],
         output_path=ex.paths['input_image'],
+        force=True,
         **(config.get('generate_volumetric_image') or {})
+    )
+    _check_output(
+        interpolate_image_fields,
+        image_path=ex.paths['input_image'],
+        mesh_path=ex.paths['sim_fields'],
+        output_path=ex.paths['img_fields'],
+        force=True,
+        **(config.get('interpolate_image_fields') or {})
     )
 
 
@@ -343,7 +354,7 @@ def create_material_mask(
     fileio.save_nibabel(output_path, mat_mask.astype(np.int16), nifti.affine)
 
 
-def create_mesh_fields(regions_path, materials_path, mesh_path, output_path, device='cuda'):
+def create_material_fields(regions_path, materials_path, mesh_path, output_path, device='cuda'):
     from ..core import transforms, interpolation
     from . import materials
 
@@ -361,6 +372,12 @@ def create_mesh_fields(regions_path, materials_path, mesh_path, output_path, dev
     mesh.cell_data['rho'] = [rho_cells]
     mesh.cell_data['E']   = [E_cells]
 
+    verts = mesh.points
+    cells = mesh.cells_dict['tetra']
+
+    mesh.point_data['rho'] = transforms.cell_to_node_values(verts, cells, rho_cells)
+    mesh.point_data['E']   = transforms.cell_to_node_values(verts, cells, E_cells)
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_meshio(output_path, mesh)
 
@@ -370,101 +387,53 @@ def simulate_displacement_field(
     output_path,
     nu_value=0.4,
     unit_m=1e-3, # meters per world unit
+    scalar_degree=0,
+    vector_degree=1,
     solver_kws=None,
-    mask_path=None,
     device='cuda'
 ):
     from . import simulation
 
     mesh = fileio.load_meshio(mesh_path)
-    if mask_path: # for rasterizing fields
-        nifti = fileio.load_nibabel(mask_path)
+    utils.log(mesh)
 
     verts = mesh.points # world coords
     cells = mesh.cells_dict['tetra']
 
-    rho_cells = mesh.cell_data_dict['rho']['tetra']
-    E_cells   = mesh.cell_data_dict['E']['tetra']
+    if scalar_degree == 0:
+        rho_values = mesh.cell_data_dict['rho']['tetra']
+        E_values   = mesh.cell_data_dict['E']['tetra']
 
-    utils.log('Simulating displacement using material fields')
-    node_values = simulation.simulate_displacement(
+    elif scalar_degree == 1:
+        rho_values = mesh.point_data['rho']
+        E_values   = mesh.point_data['E']
+
+    utils.log('Simulating displacement using material properties')
+    out_values = simulation.simulate_displacement(
         verts=verts,
         cells=cells,
-        rho_cells=rho_cells,
-        E_cells=E_cells,
+        rho_values=rho_values,
+        E_values=E_values,
         nu_value=nu_value,
         unit_m=unit_m,
+        scalar_degree=scalar_degree,
+        vector_degree=vector_degree,
         solver_kws=solver_kws,
         device=device
     )
-    for k, v in node_values.items():
-        print(k, v.shape, v.dtype, v.mean())
-        mesh.point_data[k] = v.astype(np.float32)
+
+    utils.log('Assigning simulation fields to mesh')
+    for k, v in out_values.items():
+        utils.log((k, v.shape, v.dtype, v.mean()))
+        if v.shape[0] == len(verts):
+            mesh.point_data[k] = v.astype(np.float32)
+        elif v.shape[0] == len(cells):
+            mesh.cell_data_dict[k] = [v.astype(np.float32)]
+        else:
+            raise ValueError(f'Invalid mesh field shape: {v.shape}')
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_meshio(output_path, mesh)
-
-
-def optimize_elasticity_field(
-    mesh_path,
-    output_path,
-    nu_value=0.4,
-    unit_m=1e-3, # meters per world unit
-    theta_init=3.,
-    solver_kws=None,
-    global_kws=None,
-    local_kws=None,
-    mask_path=None,
-    device='cuda'
-):
-    from . import simulation
-
-    mesh = fileio.load_meshio(mesh_path)
-    if mask_path:
-        nifti = fileio.load_nibabel(mask_path)
-
-    verts = mesh.points # world coords
-    cells = mesh.cells_dict['tetra']
-
-    rho_cells = mesh.cell_data_dict['rho']['tetra']
-    u_obs_nodes = mesh.point_data['u'] # world units
-
-    utils.log('Optimizing elasticity to match observed displacement')
-    node_values, cell_values = simulation.optimize_elasticity(
-        verts=verts,
-        cells=cells,
-        rho_cells=rho_cells,
-        u_obs_nodes=u_obs_nodes,
-        nu_value=nu_value,
-        unit_m=unit_m,
-        theta_init=theta_init,
-        solver_kws=solver_kws,
-        global_kws=global_kws,
-        local_kws=local_kws,
-        device=device
-    )
-    # save new keys in mesh file
-    for k, v in node_values.items():
-        print(k, v.shape, v.dtype)
-        mesh.point_data[k] = v.astype(np.float32)
-
-    for k, v in cell_values.items():
-        print(k, v.shape, v.dtype)
-        mesh.cell_data[k] = [v.astype(np.float32)]
-
-    # compute evaluation metrics
-    r_metrics = metrics.evaluate_metrics(mesh.point_data['r_opt'], which='res')
-    u_metrics = metrics.evaluate_metrics(mesh.point_data['u_opt'], mesh.point_data['u'], which='u')
-    E_metrics = metrics.evaluate_metrics(mesh.cell_data['E_opt'][0], mesh.cell_data['E'][0], which='E')
-    ret_metrics = (
-        utils.namespace(r_metrics, 'res') |
-        utils.namespace(u_metrics, 'u') |
-        utils.namespace(E_metrics, 'E')
-    )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_meshio(output_path, mesh)
-
-    return ret_metrics
 
 
 def generate_volumetric_image(mask_path, annot_path, output_path, imp_kws=None, gen_kws=None):
@@ -489,3 +458,73 @@ def generate_volumetric_image(mask_path, annot_path, output_path, imp_kws=None, 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, image, nifti.affine)
 
+
+def interpolate_image_fields(image_path, mesh_path, output_path, interp_kws=None, mesh_key='image'):
+    from ..core import transforms
+    import scipy.ndimage
+
+    interp_kws = utils.update_defaults(interp_kws, order=1, mode='nearest')
+
+    nifti = fileio.load_nibabel(image_path)
+    image = nifti.get_fdata().astype(float)
+    affine = nifti.affine
+
+    mesh = fileio.load_meshio(mesh_path)
+
+    utils.log('Interpolating image at mesh vertices')
+    pts_world = mesh.points
+    pts_voxel = transforms.world_to_voxel_coords(pts_world, affine)
+    values = scipy.ndimage.map_coordinates(image, pts_voxel.T, **(interp_kws or {}))
+    mesh.point_data[mesh_key] = values.astype(np.float32)
+
+    utils.log('Interpolating image at tet cell barycenters')
+    pts_world = mesh.points[mesh.cells_dict['tetra']].mean(axis=1)
+    pts_voxel = transforms.world_to_voxel_coords(pts_world, affine)
+    values = scipy.ndimage.map_coordinates(image, pts_voxel.T, **(interp_kws or {}))
+    mesh.cell_data[mesh_key] = [values.astype(np.float32)]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_meshio(output_path, mesh)
+
+
+def rasterize_elasticity_field(
+    image_path,
+    mesh_path,
+    output_path,
+    E_key,
+    nu_value=0.4,
+    unit_m=1e-3,
+    scalar_degree=1,
+    device='cuda'
+):
+    from . import simulation
+
+    nifti = fileio.load_nibabel(image_path)
+    shape = nifti.shape
+    affine = nifti.affine
+
+    mesh = fileio.load_meshio(mesh_path)
+
+    verts = mesh.points # world coords
+    cells = mesh.cells_dict['tetra']
+
+    if scalar_degree == 0:
+        E_values = mesh.cell_data_dict[E_key]['tetra']
+    elif scalar_degree == 1:
+        E_values = mesh.point_data[E_key]
+
+    utils.log('Rasterizing elasticity field on voxel grid')
+    elast = simulation.rasterize_elasticity(
+        shape=shape,
+        affine=affine,
+        verts=verts,
+        cells=cells,
+        E_values=E_values,
+        nu_value=nu_value,
+        unit_m=unit_m,
+        scalar_degree=scalar_degree,
+        device=device
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(output_path, elast, affine)

@@ -4,7 +4,12 @@
 	"examples": {
 		"unit_policy": "prefer_metadata",
 		"default_unit": 1e-2,
-		"image_tag": "solid_texture"
+		"volume_tag": "volume_vr",
+		"mat_fields_tag": "mat_fields_vr",
+		"sim_fields_tag": "sim_fields_vr",
+		"img_fields_tag": "img_fields_vr",
+		"material_tag": "material_vr",
+		"image_tag": "solid_texture_vr"
 	},
 	"preprocess": {
 		"preprocess_binary_mask": {
@@ -21,20 +26,25 @@
 				"odt": true
 			}
 		},
-		"create_material_fields": {},
+		"create_material_mask": {
+			"sample_kws": { "vote_rate": 1e-4 }
+		},
+		"create_mesh_fields": {},
 		"simulate_displacement_field": {
 			"nu_value": 0.4,
+			"scalar_degree": 0,
+			"vector_degree": 1,
 			"solver_kws": {}
 		},
 		"generate_volumetric_image": {
 			"annot_path": "/ocean/projects/asc170022p/mtragoza/lung-project/notebooks/shapenet/2025-11-05_annotations.csv",
 			"imp_kws": {
-				"d_ref": 500.0,
+				"d_ref": 1000.0,
 				"d_pow": 1.0,
 				"e_ref": 1000.0,
 				"e_pow": -1.0,
-				"b_d": 0.5,
-				"r_de": 0.5
+				"b_d": 1.0,
+				"r_de": 1.0
 			},
 			"gen_kws": {
 				"use_solid": true,
@@ -49,11 +59,18 @@
 				"psf_sigma": 0.5,
 				"mat_sigma": 1.0
 			}
+		},
+		"interpolate_image_fields": {
+			"interp_kws": {"order": 1, "mode": "nearest"}
 		}
 	},
 	"optimize": {
 		"nu_value": 0.4,
-		"solver_kws": {"reg_weight": 1e-5},
+		"scalar_degree": 1,
+		"vector_degree": 1,
+		"solver_kws": {
+			"tv_reg_weight": 1e-4
+		},
 		"global_kws": {
 			"max_iter": 100,
 			"lbfgs_kws": {}
@@ -62,6 +79,5 @@
 			"max_iter": 100,
 			"lbfgs_kws": {}
 		}
-	},
-	"train": {}
+	}
 }

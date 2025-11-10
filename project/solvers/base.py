@@ -6,7 +6,7 @@ import torch
 
 class PDESolver:
 
-    def set_geometry(self, mesh: meshio.Mesh):
+    def init_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
         raise NotImplementedError
 
     def set_params(self, mu: torch.Tensor, lam: torch.Tensor):
@@ -39,22 +39,24 @@ class PDESolver:
     def zero_grad(self):
         raise NotImplementedError
 
-    def to(self, device):
-        raise NotImplementedError
-
 
 class PDESolverModule(torch.nn.Module):
 
-    def __init__(self, solver: PDESolver, rho: torch.Tensor, u_obs: torch.Tensor):
+    def __init__(
+        self,
+        solver: PDESolver, 
+        verts: torch.Tensor,
+        cells: torch.Tensor,
+        rho: torch.Tensor,
+        u_obs: torch.Tensor
+    ):
         super().__init__()
         self.solver = solver
+        self.solver.init_geometry(verts, cells)
         self.solver.adjoint_setup(rho, u_obs)
 
     def forward(self, mu: torch.Tensor, lam: torch.Tensor):
         return PDESolverFn.apply(self.solver, mu, lam)
-
-    def to(self, device):
-        self.solver.to(device)
 
 
 class PDESolverFn(torch.autograd.Function):
@@ -63,11 +65,11 @@ class PDESolverFn(torch.autograd.Function):
     def forward(ctx, solver: PDESolver, mu: torch.Tensor, lam: torch.Tensor):
         ctx.solver = solver
         solver.zero_grad()
-        loss = solver.adjoint_forward(mu, lam)
+        u_sim, res, loss = solver.adjoint_forward(mu, lam)
         return loss
 
     @staticmethod
     def backward(ctx, loss_grad: torch.Tensor):
         mu_grad, lam_grad = ctx.solver.adjoint_backward(loss_grad)
-        return None, mu_grad, lam_grad
+        return None, mu_grad, lam_grad, None
 

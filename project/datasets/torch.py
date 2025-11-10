@@ -21,10 +21,9 @@ class TorchDataset(torch.utils.data.Dataset):
             return self.cache[idx]
 
         ex = self.examples[idx]
-
         image = fileio.load_nibabel(ex.paths['input_image'])
         mask  = fileio.load_nibabel(ex.paths['material_mask'])
-        mesh  = fileio.load_meshio(ex.paths['node_values'])
+        mesh  = fileio.load_meshio(ex.paths['sim_fields'])
 
         def _as_tensor(a):
             return torch.as_tensor(a, dtype=self.dtype, device='cpu')
@@ -36,6 +35,9 @@ class TorchDataset(torch.utils.data.Dataset):
             'mask':   _as_tensor(mask.get_fdata()).unsqueeze(0),
             'mesh':   mesh,
         }
+        if 'elast_field' in ex.paths:
+            elast = fileio.load_nibabel(ex.paths['elast_field'])
+            output['elast'] = _as_tensor(elast.get_fdata()).unsqueeze(0)
 
         self.cache[idx] = output
         return output

@@ -1,6 +1,7 @@
 import sys, os
 import pandas as pd
 import project
+import project.optimization
 import warp as wp
 wp.config.quiet = True
 
@@ -32,9 +33,10 @@ def parse_args(argv):
 
 def main(argv):
     args = parse_args(argv)
+    print(vars(args))
 
     dataset_cls = CONFIG[args.dataset]['dataset_cls']
-    run_optimize = project.preprocessing.api.optimize_elasticity_field
+    run_optimize = project.optimization.optimize_elasticity_field
 
     data_root = args.data_root or CONFIG[args.dataset]['default_root']
 
@@ -43,27 +45,27 @@ def main(argv):
     else:
         subjects = [CONFIG[args.dataset]['default_subj']]
 
-    print(subjects)
-
     if not os.path.isdir(data_root):
         raise RuntimeError(f'{data_root} is not a valid directory')
 
     ds = dataset_cls(data_root)
+    ds.load_metadata()
+
+    out = dataset_cls(data_root='.')
 
     config = project.core.fileio.load_json(args.config) if args.config else {}
     examples_cfg = config.get('examples', {})
     optimize_cfg = config.get('optimize', {})
+    print({'examples': examples_cfg, 'optimize': optimize_cfg})
     
     rows = []
     for ex in ds.examples(subjects, args.variant, **examples_cfg):
         print(f'Optimizing E field for subject: {ex.subject}')
         project.core.utils.pprint(ex, max_depth=2, max_items=20)
-
+        output_path = out.path(ex.subject, variant='output', asset_type='mesh', mesh_tag='optimize')
         metrics = run_optimize(
-            input_nodes_path=ex.paths['node_values'],
-            input_mask_path=ex.paths['region_mask'],
-            output_nodes_path=ex.paths['node_values_opt'],
-            output_path=ex.paths['elastic_field_opt'],
+            mesh_path=ex.paths['sim_fields'],
+            output_path=output_path,
             unit_m=ex.metadata['unit'],
             **optimize_cfg
         )

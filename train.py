@@ -1,6 +1,82 @@
+import sys, os
 import project
 
-@project.utils.main
+
+def parse_args(argv):
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument('--dataset', required=True)
+    p.add_argument('--subject', default=None, help='Subject IDs (comma-separated)')
+    p.add_argument('--data_root', default=None, help='Dataset root directory')
+    p.add_argument('--variant', default='TEST', help='Preprocessed data variant')
+    p.add_argument('--config', default=None, help='Path to JSON configuration file')
+    p.add_argument('--output', default=None, help='Output csv path')
+    return p.parse_args(argv)
+
+
+def main(argv):
+    args = parse_args(argv)
+    print(vars(args))
+
+    dataset_cls = CONFIG[args.dataset]['dataset_cls']
+    data_root = args.data_root or CONFIG[args.dataset]['default_root']
+
+    if not os.path.isdir(data_root):
+        raise RuntimeError(f'{data_root} is not a valid directory')
+
+    ds = dataset_cls(data_root)
+
+    config = project.core.fileio.load_json(args.config) if args.config else {}
+
+    examples_cfg = config.get('examples')
+    examples = list(ds.examples(subjects, args.variant, **examples_cfg))
+
+    split_kws = training_cfg.get('cross_val')
+    train_ex, test_ex, val_ex = split_by_category(examples, **split_kws)
+
+    loader_kws = dict(batch_size=1, shuffle=True, num_workers=4, pin_memory=True)
+    loader_kws['collate_fn'] = project.datasets.torch.collate_fn
+
+    train_set = project.datasets.torch.TorchDataset(train_ex)
+    train_loader = torch.utils.data.DataLoader(train_set, **loader_kws)
+
+    if test_ex:
+        test_set = project.datasets.torch.TorchDataset(test_ex)
+        test_loader = torch.utils.data.DataLoader(test_set, **loader_kws)
+    else:
+        test_set = test_loader = None
+
+    if val_ex:
+        val_set = project.datasets.torch.TorchDataset(val_ex)
+        val_loader = torch.utils.data.DataLoader(val_set, **loader_kws)
+    else:
+        val_set = val_loader = None
+
+    model_kws = training_cfg.get('model_arch')
+    model = project.model.UNet3D(in_channels=1, out_channels=1, **model_kws)
+    print(project.model.count_params(model))
+
+    test_input = torch.zeros((1, 1, 256, 256, 256), dtype=torch.float32, device='cuda')
+    print(project.model.count_activs(model, test_input))
+
+    optimizer_kws = training_cfg.get('optimizer')
+    optimizer = torch.optim.AdamW(model.parameters(), **optim_kws)
+
+    solver_kws = training_cfg.get('solver')
+    evaluator = project.evaluation.Evaluator()
+    trainer = project.training.Trainer(
+        model, optimizer, train_loader, test_loader, val_loader, evaluator, solver_kws
+    )
+    trainer.train(**train_kws)
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])
+
+
+## DEPRECATED
+
+#@project.utils.main
 def train(
     random_seed=None,
 

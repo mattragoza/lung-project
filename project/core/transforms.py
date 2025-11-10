@@ -122,6 +122,27 @@ def get_grid_bounds(origin, spacing, shape, align_corners=True):
     return lo, hi
 
 
+def compute_cell_volume(verts, cells):
+    a = verts[cells[:,0]]
+    b = verts[cells[:,1]]
+    c = verts[cells[:,2]]
+    d = verts[cells[:,3]]
+    M = np.stack([b - a, c - a, d - a], axis=-1) # (M,3,3)
+    return np.abs(np.linalg.det(M)) / 6
+
+
+def cell_to_node_values(verts, cells, cell_vals, eps=1e-12):
+    vol = compute_cell_volume(verts, cells)
+    num = np.zeros(len(verts), dtype=float)
+    den = np.zeros(len(verts), dtype=float)
+    for i, vert_inds in enumerate(cells):
+        for j in vert_inds:
+            num[j] += vol[i] * cell_vals[i]
+            den[j] += vol[i]
+    return num / np.maximum(den, eps)
+
+
+
 def compute_lame_parameters(E, nu=0.4):
     assert 0 < nu < 0.5, nu
     mu  = E / (2*(1 + nu))

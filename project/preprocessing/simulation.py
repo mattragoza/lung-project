@@ -2,16 +2,18 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from ..core import utils, transforms, interpolation
+from ..core import utils, transforms
 
 
 def simulate_displacement(
-    verts: np.ndarray,     # world coords
-    cells: np.ndarray,     # tetra cells
-    rho_cells: np.ndarray, # kg/m^3
-    E_cells: np.ndarray,   # Pa
-    nu_value: float=0.4,   # unitless
-    unit_m: float=1e-3,    # meters per world unit
+    verts: np.ndarray,      # world coords
+    cells: np.ndarray,      # tetra cells
+    rho_values: np.ndarray, # kg/m^3
+    E_values: np.ndarray,   # Pa
+    nu_value: float=0.4,    # unitless
+    unit_m: float=1e-3,     # meters per world unit
+    scalar_degree: int=0,
+    vector_degree: int=1,
     solver_kws=None,
     dtype=torch.float32,
     device='cuda'
@@ -20,13 +22,13 @@ def simulate_displacement(
     Args:
         verts: (N, 3) mesh vertices in world coordinates
         cells: (M, 4) tetrahedral mesh cells (vertex indices)
-        rho_cells: (M,) mass density array (kg/m^3)
-        E_cells: (M,) Young's modulus array (Pa)
+        rho_values: (N,) mass density array (kg/m^3)
+        E_values: (N,) Young's modulus array (Pa)
         nu_value: Poisson ratio constant (default: 0.4)
         unit_m: World space unit, in meters (default=1e-3)
         solver_kws: Optional params passed to PDE solver
     Returns:
-        node_values: Dict[str, np.ndarray] mapping of keys to
+        ret_values: Dict[str, np.ndarray] mapping of keys to
             len N arrays of field values on the N mesh nodes
     '''
     from .. import solvers
@@ -34,35 +36,70 @@ def simulate_displacement(
     verts = torch.as_tensor(verts * unit_m, dtype=dtype, device=device) # to meters
     cells = torch.as_tensor(cells, dtype=torch.int, device=device)
 
-    rho_cells = torch.as_tensor(rho_cells, dtype=dtype, device=device)
-    E_cells   = torch.as_tensor(E_cells, dtype=dtype, device=device)
+    rho_values = torch.as_tensor(rho_values, dtype=dtype, device=device)
+    E_values   = torch.as_tensor(E_values, dtype=dtype, device=device)
 
-    mu_cells, lam_cells = transforms.compute_lame_parameters(E_cells, nu_value)
-    bc_nodes = torch.zeros_like(verts, dtype=dtype, device=device) # meters
+    mu_values, lam_values = transforms.compute_lame_parameters(E_values, nu_value)
+    bc_values = torch.zeros_like(verts, dtype=dtype, device=device) # meters
 
-    utils.log('Simulating displacement using PDE solver')
-    solver = solvers.warp.WarpFEMSolver(unit_m=unit_m, **(solver_kws or {}))
+    solver = solvers.warp.WarpFEMSolver(
+        scalar_degree=scalar_degree,
+        vector_degree=vector_degree,
+        **(solver_kws or {})
+    )
     solver.init_geometry(verts, cells)
 
-    u_nodes = solver.simulate(mu_cells, lam_cells, rho_cells, bc_nodes) / unit_m # to world units
-    res_nodes = solver.get_residual()
-
+    u_values, residual = solver.simulate(mu_values, lam_values, rho_values, bc_values)
     return {
-        'u':   u_nodes.detach().cpu().numpy(),
-        'bc':  bc_nodes.detach().cpu().numpy(),
-        'res': res_nodes.detach().cpu().numpy()
+        'u':   u_values.detach().cpu().numpy() / unit_m, # to world units
+        'bc':  bc_values.detach().cpu().numpy() / unit_m,
+        'res': residual.detach().cpu().numpy()
     }
 
 
+def rasterize_elasticity(
+    shape: tuple,
+    affine: np.ndarray,
+    verts: np.ndarray,      # world coords
+    cells: np.ndarray,      # tetra cells
+    E_values: np.ndarray,   # Pa
+    nu_value: float=0.4,    # unitless
+    unit_m: float=1e-3,     # meters per world unit
+    scalar_degree: int=1,
+    dtype=torch.float32,
+    device='cuda'
+):
+    from .. import solvers
+
+    verts = torch.as_tensor(verts * unit_m, dtype=dtype, device=device) # to meters
+    cells = torch.as_tensor(cells, dtype=torch.int, device=device)
+
+    E_values = torch.as_tensor(E_values, dtype=dtype, device=device)
+
+    solver = solvers.warp.WarpFEMSolver(scalar_degree=scalar_degree)
+    solver.init_geometry(verts, cells)
+    E_warp = solver.make_scalar_field(E_values)
+
+    origin  = transforms.get_affine_origin(affine) * unit_m # to meters
+    spacing = transforms.get_affine_spacing(affine) * unit_m
+    bounds  = transforms.get_grid_bounds(origin, spacing, shape, align_corners=False)
+
+    E_field = solvers.warp.rasterize_field(E_warp, shape, bounds, device)
+
+    return E_field.detach().cpu().numpy()
+
+
 def optimize_elasticity(
-    verts: np.ndarray,       # world units
-    cells: np.ndarray,       # tetra cells
-    rho_cells: np.ndarray,   # kg/m^3
-    u_obs_nodes: np.ndarray, # world units
-    nu_value: float=0.4,     # unitless
-    unit_m: float=1e-3,      # meters per world unit
-    theta_init: float=3.,    # log Pa (base 10)
+    verts: np.ndarray,        # world units
+    cells: np.ndarray,        # tetra cells
+    rho_values: np.ndarray,   # kg/m^3
+    u_obs_values: np.ndarray, # world units
+    nu_value: float=0.4,      # unitless
+    unit_m: float=1e-3,       # meters per world unit
+    scalar_degree: int=1,
+    vector_degree: int=1,
     solver_kws=None,
+    theta_init: float=3.,    # log Pa (base 10)
     global_kws=None,
     local_kws=None,
     dtype=torch.float32,
@@ -73,21 +110,23 @@ def optimize_elasticity(
     verts = torch.as_tensor(verts * unit_m, dtype=dtype, device=device) # to meters
     cells = torch.as_tensor(cells, dtype=torch.int, device=device)
 
-    rho_cells = torch.as_tensor(rho_cells, dtype=dtype, device=device)
-    u_obs_nodes = torch.as_tensor(u_obs_nodes, dtype=dtype, device=device) * unit_m # to meters
+    rho_values = torch.as_tensor(rho_values, dtype=dtype, device=device)
+    u_obs_values = torch.as_tensor(u_obs_values * unit_m, dtype=dtype, device=device) # to meters
 
-    solver = solvers.warp.WarpFEMSolver(unit_m=unit_m, **(solver_kws or {}))
-    solver.init_geometry(verts, cells)
-
-    module = solvers.base.PDESolverModule(solver, rho_cells, u_obs_nodes)
+    solver = solvers.warp.WarpFEMSolver(
+        scalar_degree=scalar_degree,
+        vector_degree=vector_degree,
+        **(solver_kws or {})
+    )
+    module = solvers.base.PDESolverModule(solver, verts, cells, rho_values, u_obs_values)
 
     theta_global = torch.full((1,), theta_init, requires_grad=True, dtype=dtype, device=device)
-    theta_local = torch.zeros(rho_cells.shape, requires_grad=True, dtype=dtype, device=device)
+    theta_local = torch.zeros(rho_values.shape, requires_grad=True, dtype=dtype, device=device)
 
     def f(theta_g, theta_l):
-        E = transforms.parameterize_youngs_modulus(theta_g, theta_l)
-        mu, lam = transforms.compute_lame_parameters(E, nu=nu_value)
-        return module.forward(mu, lam)
+        E_vals = transforms.parameterize_youngs_modulus(theta_g, theta_l)
+        mu_vals, lam_vals = transforms.compute_lame_parameters(E_vals, nu_value)
+        return module.forward(mu_vals, lam_vals)
 
     utils.log('Optimizing global parameter(s)')
     optimize_lbfgs(lambda x: f(x, theta_local), theta_global, **(global_kws or {}))
@@ -96,18 +135,15 @@ def optimize_elasticity(
     optimize_lbfgs(lambda x: f(theta_global, x), theta_local, **(local_kws or {}))
 
     # final forward solve
-    E_opt = transforms.parameterize_youngs_modulus(theta_global, theta_local)
-    mu, lam = transforms.compute_lame_parameters(E_opt, nu=nu_value)
-    u_opt = solver.simulate(mu, lam, rho_cells, u_obs_nodes) / unit_m # to world units
-    r_opt = solver.get_residual()
+    E_opt_values = transforms.parameterize_youngs_modulus(theta_global, theta_local)
+    mu_values, lam_values = transforms.compute_lame_parameters(E_opt_values, nu_value)
+    u_opt_values, res_values, loss = solver.adjoint_forward(mu_values, lam_values)
 
-    node_values = {
-        'u_opt': u_opt.detach().cpu().numpy(),
-        'r_opt': r_opt.detach().cpu().numpy(),
+    return {
+        'E_opt': E_opt_values.detach().cpu().numpy(),
+        'u_opt': u_opt_values.detach().cpu().numpy() / unit_m, # to world units
+        'res_opt': res_values.detach().cpu().numpy()
     }
-    cell_values = {'E_opt': E_opt.detach().cpu().numpy()}
-
-    return node_values, cell_values
 
 
 def optimize_lbfgs(fn, param, max_iter=100, tol=1e-3, eps=1e-8, lbfgs_kws=None):
@@ -176,13 +212,4 @@ def optimize_lbfgs(fn, param, max_iter=100, tol=1e-3, eps=1e-8, lbfgs_kws=None):
             break
 
     return param
-
-
-def rasterize_field(warp_field, shape, affine, unit_m):
-    origin  = transforms.get_affine_origin(affine) * unit_m # to meters
-    spacing = transforms.get_affine_spacing(affine) * unit_m
-    bounds  = transforms.get_grid_bounds(origin, spacing, shape, align_corners=False)
-    output  = solvers.warp.rasterize_field(warp_field, shape, bounds)
-    return output.detach().cpu().numpy()
-
 

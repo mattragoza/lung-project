@@ -7,7 +7,9 @@ import meshio
 import warp as wp
 import warp.fem
 import warp.optim.linear
+
 wp.init()
+wp.config.quiet = False
 
 from . import base
 from ..core import utils
@@ -45,26 +47,29 @@ class WarpFEMSolver(base.PDESolver):
     def __init__(
         self,
         relative_loss: bool=True,
-        tv_reg_weight: float=0.0, # 5e-2,
+        tv_reg_weight: float=0.0, # 1e-4 to 5e-2,
         eps_reg: float=1e-3,
         eps_div: float=1e-12,
         cg_tol: float=1e-5,
-        unit_m: float=1e-3,
+        scalar_degree: int=1,
+        vector_degree: int=1,
         scalar_dtype=wp.float32,
-        vector_dtype=wp.vec3f
+        vector_dtype=wp.vec3f,
     ):
         self.relative_loss = relative_loss
         self.tv_reg_weight = tv_reg_weight
         self.eps_reg = eps_reg
         self.eps_div = eps_div
         self.cg_tol = cg_tol
-        self.cg_out = []
 
+        self.scalar_degree = scalar_degree
+        self.vector_degree = vector_degree
         self.scalar_dtype = scalar_dtype
         self.vector_dtype = vector_dtype
 
-    def init_geometry(self, verts, cells):
-        verts = _as_warp_array(verts, dtype=wp.vec3f)
+    def init_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
+
+        verts = _as_warp_array(verts, dtype=self.vector_dtype)
         cells = _as_warp_array(cells, dtype=wp.int32)
 
         self.geometry = wp.fem.Tetmesh(cells, verts, build_bvh=True)
@@ -72,258 +77,260 @@ class WarpFEMSolver(base.PDESolver):
         self.boundary = wp.fem.BoundarySides(self.geometry)
 
         # function spaces
-        S = wp.fem.make_polynomial_space(self.geometry, degree=0, dtype=self.scalar_dtype)
-        V = wp.fem.make_polynomial_space(self.geometry, degree=1, dtype=self.vector_dtype)
+        self.S = wp.fem.make_polynomial_space(self.geometry, degree=self.scalar_degree, dtype=self.scalar_dtype)
+        self.V = wp.fem.make_polynomial_space(self.geometry, degree=self.vector_degree, dtype=self.vector_dtype)
 
         # trial and test functions
-        self.u_trial  = wp.fem.make_trial(V, domain=self.interior)
-        self.v_test   = wp.fem.make_test(V,  domain=self.interior)
-        self.ub_trial = wp.fem.make_trial(V, domain=self.boundary)
-        self.vb_test  = wp.fem.make_test(V,  domain=self.boundary)
+        self.u_trial  = wp.fem.make_trial(self.V, domain=self.interior)
+        self.v_test   = wp.fem.make_test(self.V,  domain=self.interior)
+        self.ub_trial = wp.fem.make_trial(self.V, domain=self.boundary)
+        self.vb_test  = wp.fem.make_test(self.V,  domain=self.boundary)
 
-        # physical fields and constants
-        self.u_obs = V.make_field()
-        self.u_sim = V.make_field()
-        self.res   = V.make_field()
+        # physical fields and constants (dof_values created on same device as verts/cells)
+        self.mu = self.S.make_field()
+        self.lam = self.S.make_field()
+        self.rho = self.S.make_field()
 
-        self.mu  = S.make_field()
-        self.lam = S.make_field()
-        self.rho = S.make_field()
+        self.u_obs = self.V.make_field()
+        self.u_sim = self.V.make_field()
+        self.res = self.V.make_field()
 
+        self.mu.dof_values.requires_grad = True
+        self.lam.dof_values.requires_grad = True
         self.u_sim.dof_values.requires_grad = True
         self.res.dof_values.requires_grad = True
 
         self.g = self.vector_dtype([0, 0, -9.81]) # m/s^2
         self.I = wp.diag(self.vector_dtype(1.0))
 
-        # cached internals
-        self.K = None
-        self.M = None
-        self.P = None
-        self.f = None
-        self.u0 = None
-        self.f_tilde = None
+    # ----- public interface methods -----
 
-    # --- public interface methods ---
+    def simulate(self, mu, lam, rho, u_obs) -> Tuple[torch.Tensor, torch.Tensor]:
 
-    def set_params(self, mu: torch.Tensor, lam: torch.Tensor):
-        _validate_scalar_field(mu, positive=True)
-        _validate_scalar_field(lam, positive=True)
-        self.mu.dof_values  = _as_warp_array(mu, dtype=wp.float32, requires_grad=True)
-        self.lam.dof_values = _as_warp_array(lam, dtype=wp.float32, requires_grad=True)
-        self.K = self.M = self.f_tilde = None
+        wp.copy(self.mu.dof_values, _as_warp_array(mu, dtype=self.scalar_dtype))
+        wp.copy(self.lam.dof_values, _as_warp_array(lam, dtype=self.scalar_dtype))
+        wp.copy(self.rho.dof_values, _as_warp_array(rho, dtype=self.scalar_dtype))
+        wp.copy(self.u_obs.dof_values, _as_warp_array(u_obs, dtype=self.vector_dtype))
 
-    def set_data(self, rho: torch.Tensor, u_obs: torch.Tensor):
-        _validate_scalar_field(rho, positive=True)
-        _validate_vector_field(u_obs)
-        self.rho.dof_values = _as_warp_array(rho, dtype=wp.float32, requires_grad=False)
-        self.u_obs.dof_values = _as_warp_array(u_obs, dtype=wp.vec3f, requires_grad=False)
-        self.u0 = self.f = self.f_tilde = None
+        #print(self.mu.dof_values.device, self.lam.dof_values.device, self.rho.dof_values.device, self.u_obs.dof_values.device)
 
-    def get_output(self) -> torch.Tensor:
-        return wp.to_torch(self.u_sim.dof_values)
+        K = self.assemble_stiffness(self.mu, self.lam)
+        f = self.assemble_forcing(self.rho)
+        M = self.get_preconditioner(K)
 
-    def get_residual(self) -> torch.Tensor:
-        return wp.to_torch(self.res.dof_values)
+        #print(K.device, f.device, M.device)
 
-    def get_loss(self) -> torch.Tensor:
-        return wp.to_torch(self.loss)
+        P = self.assemble_projector()
+        u0 = self.apply_lifting(P, self.u_obs)
+        f_tilde = self.shift_rhs(f, K, u0)
 
-    def simulate(self, mu, lam, rho, u_obs) -> torch.Tensor:
-        self.set_data(rho, u_obs)
-        self.assemble_projector()
-        self.assemble_forcing()
-        self.assemble_lifting()
+        #print(P.device, u0.device, f_tilde.device)
 
-        self.set_params(mu, lam)
-        self.assemble_stiffness()
-        self.assemble_rhs_shift()
-        self.solve_forward()
+        self.solve_forward(K, self.u_sim, f_tilde, P, M, u0)
+        self.compute_residual(self.mu, self.lam, self.rho, self.u_sim, self.res)
+        return (
+            wp.to_torch(self.u_sim.dof_values),
+            wp.to_torch(self.res.dof_values)
+        )
 
-        return self.get_output()
+    def adjoint_setup(self, rho: torch.Tensor, u_obs: torch.Tensor):
 
-    def adjoint_setup(self, rho, u_obs):
-        self.set_data(rho, u_obs)
-        self.assemble_projector()
-        self.assemble_forcing()
-        self.assemble_lifting()
+        self.loss = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
+        self.cache = {}
+
+        wp.copy(self.rho.dof_values, _as_warp_array(rho, dtype=self.scalar_dtype))
+        wp.copy(self.u_obs.dof_values, _as_warp_array(u_obs, dtype=self.vector_dtype))
+
+        #print(self.rho.dof_values.device, self.u_obs.dof_values.device)
+
+        P = self.assemble_projector()
+        f = self.assemble_forcing(self.rho)
+        u0 = self.apply_lifting(P, self.u_obs)
+
+        #print(P.device, f.device, u0.device)
+
+        self.cache['P'] = P
+        self.cache['f'] = f
+        self.cache['u0'] = u0
 
     def adjoint_forward(self, mu, lam):
-        self.set_params(mu, lam)
-        self.assemble_stiffness()
-        self.assemble_rhs_shift()
-        self.solve_forward()
+        wp.copy(self.mu.dof_values, _as_warp_array(mu, dtype=self.scalar_dtype))
+        wp.copy(self.lam.dof_values, _as_warp_array(lam, dtype=self.scalar_dtype))
 
-        u = self.get_output()
-        if not torch.isfinite(u).all():
-            print(self.forward_solve_output)
-            raise RuntimeError(f'Non-finite output: {u.detach().cpu().numpy()}')
+        K = self.assemble_stiffness(self.mu, self.lam)
+        f = self.cache['f']
+        M = self.get_preconditioner(K)
+
+        #print(K.device, f.device, M.device)
+
+        P = self.cache['P']
+        u0 = self.cache['u0']
+        f_tilde = self.shift_rhs(f, K, u0)
+
+        #print(P.device, u0.device, f_tilde.device)
+
+        self.solve_forward(K, self.u_sim, f_tilde, P, M, u0)
 
         self.tape = wp.Tape()
         with self.tape:
-            self.compute_residual()
+            self.compute_residual(self.mu, self.lam, self.rho, self.u_sim, self.res)
+
+        def _solve_adjoint():
+            self.solve_adjoint(K, self.res, self.u_sim, P, M)
 
         self.tape.record_func(
-            backward=self.solve_adjoint,
+            backward=_solve_adjoint,
             arrays=[self.res.dof_values, self.u_sim.dof_values]
         )
         with self.tape:
-            self.compute_loss()
+            self.compute_loss(self.mu, self.lam, self.u_obs, self.u_sim, self.loss)
 
-        return self.get_loss()
+        return (
+            wp.to_torch(self.u_sim.dof_values),
+            wp.to_torch(self.res.dof_values),
+            wp.to_torch(self.loss)
+        )
 
     def adjoint_backward(self, loss_grad):
-        self.loss.grad = wp.from_torch(loss_grad)
+        wp.copy(self.loss.grad, _as_warp_array(loss_grad, dtype=self.scalar_dtype))
         self.tape.backward()
-        mu_grad = wp.to_torch(self.mu.dof_values.grad)
-        lam_grad = wp.to_torch(self.lam.dof_values.grad)
-        return mu_grad, lam_grad
+        return (
+            wp.to_torch(self.mu.dof_values.grad),
+            wp.to_torch(self.lam.dof_values.grad)
+        )
 
     def zero_grad(self):
-        _zero_grad(self.u_obs.dof_values)
-        _zero_grad(self.rho.dof_values)
         _zero_grad(self.mu.dof_values)
         _zero_grad(self.lam.dof_values)
+        _zero_grad(self.rho.dof_values)
+        _zero_grad(self.u_obs.dof_values)
         _zero_grad(self.u_sim.dof_values)
         _zero_grad(self.res.dof_values)
         if getattr(self, 'loss', None) is not None:
             _zero_grad(self.loss)
+        if getattr(self, 'tape', None) is not None:
+            self.tape.reset()
 
-    # --- internal assembly methods ---
+    # ----- internal assembly methods -----
 
-    def assemble_projector(self):
-        self.P = wp.fem.integrate(
-            inner_form,
-            fields={'u': self.ub_trial, 'v': self.vb_test},
-            domain=self.boundary,
-            assembly='nodal',
-            output_dtype=wp.float32
-        )
-        wp.fem.normalize_dirichlet_projector(self.P)
-        self.u0 = self.f_tilde = None
-
-    def assemble_stiffness(self):
-        self.K = wp.fem.integrate(
+    def assemble_stiffness(self, mu: wp.fem.Field, lam: wp.fem.Field):
+        K = wp.fem.integrate(
             pde_bilinear_form,
             fields={
                 'u': self.u_trial,
                 'v': self.v_test,
-                'mu': self.mu,
-                'lam': self.lam
+                'mu': mu,
+                'lam': lam
             },
             values={'I': self.I},
             domain=self.interior,
-            output_dtype=wp.float32
+            output_dtype=self.scalar_dtype
         )
-        self.M = wp.optim.linear.preconditioner(self.K, ptype='diag')
-        self.f_tilde = None
+        return K
 
-    def assemble_forcing(self):
-        self.f = wp.fem.integrate(
+    def assemble_forcing(self, rho: wp.fem.Field):
+        f = wp.fem.integrate(
             pde_linear_form,
-            fields={'v': self.v_test, 'rho': self.rho},
+            fields={'v': self.v_test, 'rho': rho},
             values={'g': self.g},
             domain=self.interior,
-            output_dtype=wp.vec3f
+            output_dtype=self.vector_dtype
         )
-        self.f_tilde = None
+        return f
 
-    def assemble_lifting(self):
-        self.u0 = self.P @ self.u_obs.dof_values
-        self.f_tilde = None
+    def get_preconditioner(self, K):
+        M = wp.optim.linear.preconditioner(K, ptype='diag')
+        return M
 
-    def assemble_rhs_shift(self):
-        self.f_tilde = self.f - (self.K @ self.u0)
+    def assemble_projector(self):
+        P = wp.fem.integrate(
+            inner_form,
+            fields={'u': self.ub_trial, 'v': self.vb_test},
+            domain=self.boundary,
+            assembly='nodal',
+            output_dtype=self.scalar_dtype
+        )
+        wp.fem.normalize_dirichlet_projector(P)
+        return P
+
+    def apply_lifting(self, P, u_obs):
+        u0 = P @ u_obs.dof_values
+        return u0
+
+    def shift_rhs(self, f, K, u0):
+        f_tilde = f - (K @ u0)
+        return f_tilde
 
     # --- solving linear systems ---
 
-    def solve_forward(self):
-        wp.fem.project_linear_system(
-            self.K,
-            self.f_tilde,
-            self.P,
-            normalize_projector=False
+    def solve_forward(self, K, u_sim, f_tilde, P, M, u0):
+        wp.fem.project_linear_system(K, f_tilde, P, normalize_projector=False)
+        it, cg_res, tol = wp.optim.linear.cg(
+            A=K, x=u_sim.dof_values, b=f_tilde, M=M, tol=self.cg_tol
         )
-        it, res, tol = wp.optim.linear.cg(
-            A=self.K,
-            b=self.f_tilde,
-            x=self.u_sim.dof_values,
-            M=self.M,
-            tol=self.cg_tol
-        )
-        self.u_sim.dof_values += self.u0
-        self.cg_out.append(('forward', it, res, tol))
-
-        if not np.isfinite(res):
+        if not np.isfinite(cg_res):
+            print(it, cg_res, tol)
             raise RuntimeError(f'Non-finite CG residual')
+        u_sim.dof_values += u0
 
-    def solve_adjoint(self):
-        wp.fem.project_linear_system(
-            self.K,
-            self.u_sim.dof_values.grad,
-            self.P,
-            normalize_projector=False
+    def solve_adjoint(self, K, res, u_sim, P, M):
+        wp.fem.project_linear_system(K, u_sim.dof_values.grad, P, normalize_projector=False)
+        it, cg_res, tol = wp.optim.linear.cg(
+            A=K, x=res.dof_values.grad, b=u_sim.dof_values.grad, M=M, tol=self.cg_tol
         )
-        it, res, tol = wp.optim.linear.cg(
-            A=self.K,
-            b=self.u_sim.dof_values.grad,
-            x=self.res.dof_values.grad,
-            M=self.M,
-            tol=self.cg_tol
-        )
-        self.u_sim.dof_values.grad.zero_()
-        self.cg_out.append(('adjoint', it, res, tol))
-
-        if not np.isfinite(res):
+        #u_sim.dof_values.grad.zero_()
+        if not np.isfinite(cg_res):
+            print(it, cg_res, tol)
             raise RuntimeError(f'Non-finite CG residual')
 
     # --- residual and loss evaluation ---
 
-    def compute_residual(self):
+    def compute_residual(self, mu, lam, rho, u_sim, res):
         wp.fem.integrate(
             pde_residual_form,
             fields={
-                'u': self.u_sim,
+                'u': u_sim,
                 'v': self.v_test,
-                'mu': self.mu,
-                'lam': self.lam,
-                'rho': self.rho
+                'mu': mu,
+                'lam': lam,
+                'rho': rho
             },
             values={'g': self.g, 'I': self.I},
             domain=self.interior,
-            output=self.res.dof_values
+            output=res.dof_values
         )
 
-    def compute_loss(self):
-        numer = wp.empty(1, dtype=wp.float32, requires_grad=True)
-        denom = wp.empty(1, dtype=wp.float32, requires_grad=True)
+    def compute_loss(self, mu, lam, u_obs, u_sim, loss):
+        num = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
+        den = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
+
         wp.fem.integrate(
             error_form,
-            fields={'u': self.u_sim, 'v': self.u_obs},
+            fields={'u': u_sim, 'v': u_obs},
             domain=self.interior,
-            output=numer
+            output=num
         )
         if self.relative_loss:
             wp.fem.integrate(
                 norm2_form,
-                fields={'u': self.u_obs},
+                fields={'u': u_obs},
                 domain=self.interior,
-                output=denom
+                output=den
             )
         else:
-            wp.fem.integrate(volume_form, domain=self.interior, output=denom)
+            wp.fem.integrate(volume_form, domain=self.interior, output=den)
 
-        data_term = numer / (denom + self.eps_div)
-        tv_reg_term = wp.empty(1, dtype=wp.float32, requires_grad=True)
+        err = num / (den + self.eps_div)
+        reg = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
+
         wp.fem.integrate(
             tv_reg_form,
             fields={'mu': self.mu, 'lam': self.lam},
             values={'eps_reg': self.eps_reg, 'eps_div': self.eps_div},
             domain=self.interior,
-            output=tv_reg_term
+            output=reg
         )
-        self.loss = data_term + self.tv_reg_weight * tv_reg_term
-        self.loss.requires_grad = True
+        wp.copy(self.loss, err + reg * self.tv_reg_weight)
 
 
 @wp.fem.integrand

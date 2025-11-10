@@ -20,7 +20,7 @@ def parse_args(argv):
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument('--dataset', required=True)
-    p.add_argument('--subject', default=None, help='Subject IDs to preprocess (comma-separated)')
+    p.add_argument('--subject', default=None, help='Subject IDs to preprocess (comma-separated) OR csv path')
     p.add_argument('--data_root', default=None, help='Dataset root directory')
     p.add_argument('--variant', default='TEST', help='Output directory name')
     p.add_argument('--config', help='Path to JSON configuration file')
@@ -30,13 +30,17 @@ def parse_args(argv):
 
 def main(argv):
     args = parse_args(argv)
+    print(vars(args))
 
     dataset_cls = CONFIG[args.dataset]['dataset_cls']
     run_preprocess = CONFIG[args.dataset]['preprocess_fn']
 
     data_root = args.data_root or CONFIG[args.dataset]['default_root']
 
-    if args.subject:
+    if args.subject and args.subject.endswith('.csv'):
+        import pandas as pd
+        subjects = list(pd.read_csv(args.subject).subject)
+    elif args.subject:
         subjects = args.subject.split(',')
     else:
         subjects = [CONFIG[args.dataset]['default_subj']]
@@ -47,10 +51,12 @@ def main(argv):
         raise RuntimeError(f'{data_root} is not a valid directory')
 
     ds = dataset_cls(data_root)
+    ds.load_metadata()
 
     config = project.core.fileio.load_json(args.config) if args.config else {}
     examples_cfg = config.get('examples', {})
     preprocess_cfg = config.get('preprocess', {})
+    print({'examples': examples_cfg, 'preprocess': preprocess_cfg})
 
     for ex in ds.examples(subjects, variant=args.variant, **examples_cfg):
         print(f'Preprocessing subject: {ex.subject}')

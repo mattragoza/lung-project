@@ -43,28 +43,31 @@ def _resolve_unit(s: str, default: float, policy: str) -> float:
 class ShapeNetDataset:
     '''
     <data_root>/
+        models-COLLADA/
+        models-OBJ/models/
+            <sid_code>.obj
+            <sid_code>.mtl
+        models-binvox-solid/
+            <sid_code>.binvox
+        models-textures/
+            <tid_code>.jpg
+        <variant>/
+            <sid_code>/
+                masks/<mask_tag>.nii.gz
+                meshes/<mesh_tag>.xdmf
+                images/<image_tag>.nii.gz
+                fields/<field_tag>.nii.gz
         metadata.csv
         materials.csv
         densities.csv
         taxonomy.txt
         categories.synset.csv
-        models-OBJ/models/
-            <sid_code>.obj
-            <sid_code>.mtl
-        models-COLLADA/COLLADA/
-            models/
-        models-textures/
-            <tid_code>.jpg
-        models-binvox/
-        models-binvox-solid/
-            <sid_code>.binvox
     '''
-    ID_COLUMN = 'fullId'
     SOURCE_VARIANT = 'models'
+    ID_COLUMN = 'fullId'
 
     def __init__(self, data_root: str | Path):
         self.root = Path(data_root)
-        self.load_metadata()
 
     def load_metadata(self):
         import pandas as pd
@@ -124,7 +127,9 @@ class ShapeNetDataset:
         binary_tag: str='binary',
         region_tag: str='regions',
         volume_tag: str='volume',
-        fields_tag: str='fields',
+        mat_fields_tag: str='mat_fields',
+        sim_fields_tag: str='sim_fields',
+        img_fields_tag: str='img_fields',
         material_tag: str='material',
         image_tag: str='generated',
     ):
@@ -154,7 +159,9 @@ class ShapeNetDataset:
                 paths['volume_mesh'] = self.path(subj, variant, asset_type='mesh', mesh_tag=volume_tag)
 
                 paths['material_mask'] = self.path(subj, variant, asset_type='mask', mask_tag=material_tag)
-                paths['mesh_fields'] = self.path(subj, variant, asset_type='mesh', mesh_tag=fields_tag)
+                paths['mat_fields'] = self.path(subj, variant, asset_type='mesh', mesh_tag=mat_fields_tag)
+                paths['sim_fields'] = self.path(subj, variant, asset_type='mesh', mesh_tag=sim_fields_tag)
+                paths['img_fields'] = self.path(subj, variant, asset_type='mesh', mesh_tag=img_fields_tag)
                 paths['input_image'] = self.path(subj, variant, asset_type='image', image_tag=image_tag)
 
                 paths['density_field'] = self.path(subj, variant, asset_type='field', field_tag='density')
