@@ -9,21 +9,6 @@ class PDESolver:
     def init_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
         raise NotImplementedError
 
-    def set_params(self, mu: torch.Tensor, lam: torch.Tensor):
-        raise NotImplementedError
-
-    def set_data(self, rho: torch.Tensor, u_obs: torch.Tensor):
-        raise NotImplementedError
-
-    def get_output(self) -> torch.Tensor:
-        raise NotImplementedError
-
-    def get_residual(self) -> torch.Tensor:
-        raise NotImplementedError
-
-    def get_loss(self) -> torch.Tensor:
-        raise NotImplementedError
-
     def simulate(self, mu, lam, rho, u_obs) -> torch.Tensor:
         raise NotImplementedError
 
@@ -66,10 +51,10 @@ class PDESolverFn(torch.autograd.Function):
         ctx.solver = solver
         solver.zero_grad()
         u_sim, res, loss = solver.adjoint_forward(mu, lam)
-        return loss
+        return loss, res.detach(), u_sim.detach()
 
     @staticmethod
-    def backward(ctx, loss_grad: torch.Tensor):
-        mu_grad, lam_grad = ctx.solver.adjoint_backward(loss_grad)
-        return None, mu_grad, lam_grad, None
+    def backward(ctx, grad_loss, grad_res=None, grad_u=None):
+        mu_grad, lam_grad = ctx.solver.adjoint_backward(grad_loss)
+        return None, mu_grad, lam_grad
 

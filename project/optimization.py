@@ -34,16 +34,14 @@ def optimize_elasticity_field(
         elif scalar_degree == 1:
             rho_values = mesh.point_data['rho']
     else:
-        img_nodes = mesh.point_data['image']
-        img_cells = mesh.cell_data_dict['image']['tetra']
-        if scalar_degree == 0:
-            img_values = (img_cells + img_nodes[cells].mean(axis=1)) / 2
-        elif scalar_degree == 1:
-            img_values = (img_nodes + transforms.cell_to_node_values(verts, cells, img_cells)) / 2
-        rho_values = rho_bias * img_values
+        img_cells  = mesh.cell_data_dict['image']['tetra']
+        img_nodes  = mesh.point_data['image']
+        img_values = transforms.smooth_mesh_values(verts, cells, img_nodes, img_cells, scalar_degree)
+        rho_values = img_values * rho_bias
 
     if vector_degree == 0:
         u_obs_values = mesh.cell_data_dict['u'] # world units
+
     elif vector_degree == 1:
         u_obs_values = mesh.point_data['u']
 
@@ -69,7 +67,7 @@ def optimize_elasticity_field(
         if v.shape[0] == len(verts):
             mesh.point_data[k] = v.astype(np.float32)
         elif v.shape[0] == len(cells):
-            mesh.cell_data_dict[k] = [v.astype(np.float32)]
+            mesh.cell_data[k] = [v.astype(np.float32)]
         else:
             raise ValueError(f'Invalid mesh field shape: {v.shape}')
 
@@ -78,17 +76,19 @@ def optimize_elasticity_field(
 
     utils.log('Evaluating optimization metrics')
     if vector_degree == 0:
-        u_t = mesh.cell_data_dict['u']
-        u_p = mesh.cell_data_dict['u_opt']
-        res = mesh.cell_data_dict['res_opt']
+        u_t = mesh.cell_data['u'][0]
+        u_p = mesh.cell_data['u_opt'][0]
+        res = mesh.cell_data['res_opt'][0]
+
     elif vector_degree == 1:
         u_t = mesh.point_data['u']
         u_p = mesh.point_data['u_opt']
         res = mesh.point_data['res_opt']
 
     if scalar_degree == 0:
-        E_t = mesh.cell_data_dict['E']
-        E_p = mesh.cell_data_dict['E_opt']
+        E_t = mesh.cell_data['E'][0]
+        E_p = mesh.cell_data['E_opt'][0]
+
     elif scalar_degree == 1:
         E_t = mesh.point_data['E']
         E_p = mesh.point_data['E_opt']

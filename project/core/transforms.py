@@ -160,6 +160,15 @@ def parameterize_youngs_modulus(theta_global, theta_local):
     return torch.pow(10, theta)
 
 
+def smooth_mesh_values(verts, cells, node_vals, cell_vals, degree):
+    assert degree in {0, 1}
+    if degree == 0:
+        out_vals = (cell_vals + node_vals[cells].mean(axis=1)) / 2
+    elif degree == 1:
+        out_vals = (node_vals + cell_to_node_values(verts, cells, cell_vals)) / 2
+    return out_vals
+
+
 def compute_density_from_CT(ct, m_atten_ratio=1., density_water=1000.):
 
     # HU = 1000 (mu_x - mu_water) / mu_water

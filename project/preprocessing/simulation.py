@@ -7,7 +7,7 @@ from ..core import utils, transforms
 
 def simulate_displacement(
     verts: np.ndarray,      # world coords
-    cells: np.ndarray,      # tetra cells
+    cells: np.ndarray,      # tetra
     rho_values: np.ndarray, # kg/m^3
     E_values: np.ndarray,   # Pa
     nu_value: float=0.4,    # unitless
@@ -45,14 +45,16 @@ def simulate_displacement(
     solver = solvers.warp.WarpFEMSolver(
         scalar_degree=scalar_degree,
         vector_degree=vector_degree,
+        device=device,
         **(solver_kws or {})
     )
     solver.init_geometry(verts, cells)
 
     u_values, residual = solver.simulate(mu_values, lam_values, rho_values, bc_values)
+
     return {
         'u':   u_values.detach().cpu().numpy() / unit_m, # to world units
-        'bc':  bc_values.detach().cpu().numpy() / unit_m,
+        'bc': bc_values.detach().cpu().numpy() / unit_m,
         'res': residual.detach().cpu().numpy()
     }
 
@@ -61,7 +63,7 @@ def rasterize_elasticity(
     shape: tuple,
     affine: np.ndarray,
     verts: np.ndarray,      # world coords
-    cells: np.ndarray,      # tetra cells
+    cells: np.ndarray,      # tetra
     E_values: np.ndarray,   # Pa
     nu_value: float=0.4,    # unitless
     unit_m: float=1e-3,     # meters per world unit
@@ -76,7 +78,7 @@ def rasterize_elasticity(
 
     E_values = torch.as_tensor(E_values, dtype=dtype, device=device)
 
-    solver = solvers.warp.WarpFEMSolver(scalar_degree=scalar_degree)
+    solver = solvers.warp.WarpFEMSolver(scalar_degree=scalar_degree, device=device)
     solver.init_geometry(verts, cells)
     E_warp = solver.make_scalar_field(E_values)
 
@@ -91,7 +93,7 @@ def rasterize_elasticity(
 
 def optimize_elasticity(
     verts: np.ndarray,        # world units
-    cells: np.ndarray,        # tetra cells
+    cells: np.ndarray,        # tetra
     rho_values: np.ndarray,   # kg/m^3
     u_obs_values: np.ndarray, # world units
     nu_value: float=0.4,      # unitless
@@ -116,6 +118,7 @@ def optimize_elasticity(
     solver = solvers.warp.WarpFEMSolver(
         scalar_degree=scalar_degree,
         vector_degree=vector_degree,
+        device=device,
         **(solver_kws or {})
     )
     module = solvers.base.PDESolverModule(solver, verts, cells, rho_values, u_obs_values)
@@ -126,13 +129,14 @@ def optimize_elasticity(
     def f(theta_g, theta_l):
         E_vals = transforms.parameterize_youngs_modulus(theta_g, theta_l)
         mu_vals, lam_vals = transforms.compute_lame_parameters(E_vals, nu_value)
-        return module.forward(mu_vals, lam_vals)
+        loss, res, u_sim = module.forward(mu_vals, lam_vals)
+        return loss, res, u_sim
 
     utils.log('Optimizing global parameter(s)')
-    optimize_lbfgs(lambda x: f(x, theta_local), theta_global, **(global_kws or {}))
+    optimize_lbfgs(lambda x: f(x, theta_local)[0], theta_global, **(global_kws or {}))
 
     utils.log('Optimizing local parameter(s)')
-    optimize_lbfgs(lambda x: f(theta_global, x), theta_local, **(local_kws or {}))
+    optimize_lbfgs(lambda x: f(theta_global, x)[0], theta_local, **(local_kws or {}))
 
     # final forward solve
     E_opt_values = transforms.parameterize_youngs_modulus(theta_global, theta_local)

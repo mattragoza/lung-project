@@ -14,8 +14,6 @@ wp.config.quiet = False
 from . import base
 from ..core import utils
 
-DEBUG = False
-
 
 def _as_warp_array(t, **kwargs):
     return wp.from_torch(t.contiguous().detach(), **kwargs)
@@ -26,20 +24,8 @@ def _zero_grad(a: wp.array):
         a.grad.zero_()
 
 
-def _validate_scalar_field(vals: torch.Tensor, positive=False):
-    if not vals.ndim == 1:
-        raise ValueError(f'Invalid scalar field shape: {vals.shape}')
-    if not torch.isfinite(vals).all():
-        raise ValueError('Non-finite scalar field')
-    if positive and not (vals > 0).all():
-        raise ValueError('Non-positive scalar field')
-
-
-def _validate_vector_field(vals: torch.Tensor):
-    if not (vals.ndim == 2 and vals.shape[1] == 3):
-        raise ValueError(f'Invalid vector field shape: {vals.shape}')
-    if not torch.isfinite(vals).all():
-        raise ValueError('Non-finite vector field')
+def _move_field_to_device(field, device):
+    field.dof_values = field.dof_values.to(device)
 
 
 class WarpFEMSolver(base.PDESolver):
@@ -47,7 +33,7 @@ class WarpFEMSolver(base.PDESolver):
     def __init__(
         self,
         relative_loss: bool=True,
-        tv_reg_weight: float=0.0, # 1e-4 to 5e-2,
+        tv_reg_weight: float=0.0, # 1e-4 to 5e-2
         eps_reg: float=1e-3,
         eps_div: float=1e-12,
         cg_tol: float=1e-5,
@@ -55,6 +41,7 @@ class WarpFEMSolver(base.PDESolver):
         vector_degree: int=1,
         scalar_dtype=wp.float32,
         vector_dtype=wp.vec3f,
+        device=None
     ):
         self.relative_loss = relative_loss
         self.tv_reg_weight = tv_reg_weight
@@ -66,9 +53,9 @@ class WarpFEMSolver(base.PDESolver):
         self.vector_degree = vector_degree
         self.scalar_dtype = scalar_dtype
         self.vector_dtype = vector_dtype
+        self.device = device or wp.get_device()
 
     def init_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
-
         verts = _as_warp_array(verts, dtype=self.vector_dtype)
         cells = _as_warp_array(cells, dtype=wp.int32)
 
@@ -86,130 +73,153 @@ class WarpFEMSolver(base.PDESolver):
         self.ub_trial = wp.fem.make_trial(self.V, domain=self.boundary)
         self.vb_test  = wp.fem.make_test(self.V,  domain=self.boundary)
 
-        # physical fields and constants (dof_values created on same device as verts/cells)
-        self.mu = self.S.make_field()
-        self.lam = self.S.make_field()
-        self.rho = self.S.make_field()
-
-        self.u_obs = self.V.make_field()
-        self.u_sim = self.V.make_field()
-        self.res = self.V.make_field()
-
-        self.mu.dof_values.requires_grad = True
-        self.lam.dof_values.requires_grad = True
-        self.u_sim.dof_values.requires_grad = True
-        self.res.dof_values.requires_grad = True
-
+        # constants
         self.g = self.vector_dtype([0, 0, -9.81]) # m/s^2
         self.I = wp.diag(self.vector_dtype(1.0))
 
     # ----- public interface methods -----
 
+    def make_scalar_field(self, vals=None, requires_grad=False):
+        s = self.S.make_field()
+        if vals is not None:
+            wp.copy(s.dof_values, _as_warp_array(vals, dtype=self.scalar_dtype))
+        s.dof_values.requires_grad = requires_grad
+        return s
+
+    def make_vector_field(self, vals=None, requires_grad=False):
+        v = self.V.make_field()
+        if vals is not None:
+            wp.copy(v.dof_values, _as_warp_array(vals, dtype=self.vector_dtype))
+        v.dof_values.requires_grad = requires_grad
+        return v
+
     def simulate(self, mu, lam, rho, u_obs) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        wp.copy(self.mu.dof_values, _as_warp_array(mu, dtype=self.scalar_dtype))
-        wp.copy(self.lam.dof_values, _as_warp_array(lam, dtype=self.scalar_dtype))
-        wp.copy(self.rho.dof_values, _as_warp_array(rho, dtype=self.scalar_dtype))
-        wp.copy(self.u_obs.dof_values, _as_warp_array(u_obs, dtype=self.vector_dtype))
+        with wp.ScopedDevice(self.device):
+            mu = self.make_scalar_field(mu)
+            lam = self.make_scalar_field(lam)
+            rho = self.make_scalar_field(rho)
+            u_obs = self.make_vector_field(u_obs)
 
-        #print(self.mu.dof_values.device, self.lam.dof_values.device, self.rho.dof_values.device, self.u_obs.dof_values.device)
+            K = self.assemble_stiffness(mu, lam)
+            f = self.assemble_forcing(rho)
+            M = self.get_preconditioner(K)
 
-        K = self.assemble_stiffness(self.mu, self.lam)
-        f = self.assemble_forcing(self.rho)
-        M = self.get_preconditioner(K)
+            P = self.assemble_projector()
+            u0 = self.apply_lifting(P, u_obs)
+            f_tilde = self.shift_rhs(f, K, u0)
 
-        #print(K.device, f.device, M.device)
+            u_sim = self.make_vector_field()
+            self.solve_forward(K, u_sim, f_tilde, P, M, u0)
 
-        P = self.assemble_projector()
-        u0 = self.apply_lifting(P, self.u_obs)
-        f_tilde = self.shift_rhs(f, K, u0)
+            res = self.make_vector_field()
+            self.compute_residual(mu, lam, rho, u_sim, res)
 
-        #print(P.device, u0.device, f_tilde.device)
-
-        self.solve_forward(K, self.u_sim, f_tilde, P, M, u0)
-        self.compute_residual(self.mu, self.lam, self.rho, self.u_sim, self.res)
         return (
-            wp.to_torch(self.u_sim.dof_values),
-            wp.to_torch(self.res.dof_values)
+            wp.to_torch(u_sim.dof_values),
+            wp.to_torch(res.dof_values)
         )
 
     def adjoint_setup(self, rho: torch.Tensor, u_obs: torch.Tensor):
-
-        self.loss = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
         self.cache = {}
 
-        wp.copy(self.rho.dof_values, _as_warp_array(rho, dtype=self.scalar_dtype))
-        wp.copy(self.u_obs.dof_values, _as_warp_array(u_obs, dtype=self.vector_dtype))
+        with wp.ScopedDevice(self.device):
+            rho = self.make_scalar_field(rho)
+            u_obs = self.make_vector_field(u_obs)
 
-        #print(self.rho.dof_values.device, self.u_obs.dof_values.device)
+            P = self.assemble_projector()
+            f = self.assemble_forcing(rho)
+            u0 = self.apply_lifting(P, u_obs)
 
-        P = self.assemble_projector()
-        f = self.assemble_forcing(self.rho)
-        u0 = self.apply_lifting(P, self.u_obs)
+        self.cache['P'] = P.to('cpu')
+        self.cache['f'] = f.to('cpu')
+        self.cache['u0'] = u0.to('cpu')
 
-        #print(P.device, f.device, u0.device)
+        _move_field_to_device(rho, 'cpu')
+        _move_field_to_device(u_obs, 'cpu')
 
-        self.cache['P'] = P
-        self.cache['f'] = f
-        self.cache['u0'] = u0
+        self.cache['rho'] = rho
+        self.cache['u_obs'] = u_obs
 
-    def adjoint_forward(self, mu, lam):
-        wp.copy(self.mu.dof_values, _as_warp_array(mu, dtype=self.scalar_dtype))
-        wp.copy(self.lam.dof_values, _as_warp_array(lam, dtype=self.scalar_dtype))
+        with wp.ScopedDevice('cpu'):
+            u_sim = self.make_vector_field(requires_grad=True)
+            res = self.make_vector_field(requires_grad=True)
 
-        K = self.assemble_stiffness(self.mu, self.lam)
-        f = self.cache['f']
-        M = self.get_preconditioner(K)
+        self.cache['u_sim'] = u_sim
+        self.cache['res'] = res
 
-        #print(K.device, f.device, M.device)
+    def adjoint_forward(self, mu: torch.Tensor, lam: torch.Tensor):
 
-        P = self.cache['P']
-        u0 = self.cache['u0']
-        f_tilde = self.shift_rhs(f, K, u0)
+        rho = self.cache['rho']
+        u_obs = self.cache['u_obs']
+        u_sim = self.cache['u_sim']
+        res = self.cache['res']
 
-        #print(P.device, u0.device, f_tilde.device)
+        _move_field_to_device(rho, self.device)
+        _move_field_to_device(u_obs, self.device)
+        _move_field_to_device(u_sim, self.device)
+        _move_field_to_device(res, self.device)
 
-        self.solve_forward(K, self.u_sim, f_tilde, P, M, u0)
+        P = self.cache['P'].to(self.device)
+        f = self.cache['f'].to(self.device)
+        u0 = self.cache['u0'].to(self.device)
 
-        self.tape = wp.Tape()
-        with self.tape:
-            self.compute_residual(self.mu, self.lam, self.rho, self.u_sim, self.res)
+        with wp.ScopedDevice(self.device):
+            mu = self.make_scalar_field(mu, requires_grad=True)
+            lam = self.make_scalar_field(lam, requires_grad=True)
 
-        def _solve_adjoint():
-            self.solve_adjoint(K, self.res, self.u_sim, P, M)
+            K = self.assemble_stiffness(mu, lam)
+            M = self.get_preconditioner(K)
+            f_tilde = self.shift_rhs(f, K, u0)
 
-        self.tape.record_func(
-            backward=_solve_adjoint,
-            arrays=[self.res.dof_values, self.u_sim.dof_values]
-        )
-        with self.tape:
-            self.compute_loss(self.mu, self.lam, self.u_obs, self.u_sim, self.loss)
+            self.solve_forward(K, u_sim, f_tilde, P, M, u0)
 
+            self.tape = wp.Tape()
+            with self.tape:
+                self.compute_residual(mu, lam, rho, u_sim, res)
+
+            self.tape.record_func(
+                backward=lambda: self.solve_adjoint(K, res, u_sim, P, M),
+                arrays=[res.dof_values, u_sim.dof_values]
+            )
+            with self.tape:
+                loss = self.compute_loss(mu, lam, u_obs, u_sim)
+
+        # track variables on device for adjoint backward
+        self.context = {
+            'mu': mu,
+            'lam': lam,
+            'u_sim': u_sim,
+            'res': res,
+            'loss': loss
+        }
         return (
-            wp.to_torch(self.u_sim.dof_values),
-            wp.to_torch(self.res.dof_values),
-            wp.to_torch(self.loss)
+            wp.to_torch(u_sim.dof_values),
+            wp.to_torch(res.dof_values),
+            wp.to_torch(loss)
         )
 
     def adjoint_backward(self, loss_grad):
-        wp.copy(self.loss.grad, _as_warp_array(loss_grad, dtype=self.scalar_dtype))
-        self.tape.backward()
-        return (
-            wp.to_torch(self.mu.dof_values.grad),
-            wp.to_torch(self.lam.dof_values.grad)
-        )
+        self.context['loss'].grad = _as_warp_array(loss_grad, dtype=self.scalar_dtype)
+        try:
+            self.tape.backward()
+            return (
+                wp.to_torch(self.context['mu'].dof_values.grad),
+                wp.to_torch(self.context['lam'].dof_values.grad)
+            )
+        finally:
+            _move_field_to_device(self.cache['rho'], 'cpu')
+            _move_field_to_device(self.cache['u_obs'], 'cpu')
+            _move_field_to_device(self.cache['u_sim'], 'cpu')
+            _move_field_to_device(self.cache['res'], 'cpu')
+            del self.context
 
     def zero_grad(self):
-        _zero_grad(self.mu.dof_values)
-        _zero_grad(self.lam.dof_values)
-        _zero_grad(self.rho.dof_values)
-        _zero_grad(self.u_obs.dof_values)
-        _zero_grad(self.u_sim.dof_values)
-        _zero_grad(self.res.dof_values)
-        if getattr(self, 'loss', None) is not None:
-            _zero_grad(self.loss)
-        if getattr(self, 'tape', None) is not None:
+        for key in self.cache:
+            _zero_grad(self.cache[key])
+        if hasattr(self, 'tape'):
             self.tape.reset()
+            del self.tape
 
     # ----- internal assembly methods -----
 
@@ -278,7 +288,6 @@ class WarpFEMSolver(base.PDESolver):
         it, cg_res, tol = wp.optim.linear.cg(
             A=K, x=res.dof_values.grad, b=u_sim.dof_values.grad, M=M, tol=self.cg_tol
         )
-        #u_sim.dof_values.grad.zero_()
         if not np.isfinite(cg_res):
             print(it, cg_res, tol)
             raise RuntimeError(f'Non-finite CG residual')
@@ -300,7 +309,7 @@ class WarpFEMSolver(base.PDESolver):
             output=res.dof_values
         )
 
-    def compute_loss(self, mu, lam, u_obs, u_sim, loss):
+    def compute_loss(self, mu, lam, u_obs, u_sim):
         num = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
         den = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
 
@@ -325,12 +334,14 @@ class WarpFEMSolver(base.PDESolver):
 
         wp.fem.integrate(
             tv_reg_form,
-            fields={'mu': self.mu, 'lam': self.lam},
+            fields={'mu': mu, 'lam': lam},
             values={'eps_reg': self.eps_reg, 'eps_div': self.eps_div},
             domain=self.interior,
             output=reg
         )
-        wp.copy(self.loss, err + reg * self.tv_reg_weight)
+        loss = err + reg * self.tv_reg_weight
+        loss.requires_grad = True
+        return loss
 
 
 @wp.fem.integrand

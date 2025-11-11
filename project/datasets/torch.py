@@ -23,7 +23,7 @@ class TorchDataset(torch.utils.data.Dataset):
         ex = self.examples[idx]
         image = fileio.load_nibabel(ex.paths['input_image'])
         mask  = fileio.load_nibabel(ex.paths['material_mask'])
-        mesh  = fileio.load_meshio(ex.paths['sim_fields'])
+        mesh  = fileio.load_meshio(ex.paths['img_fields'])
 
         def _as_tensor(a):
             return torch.as_tensor(a, dtype=self.dtype, device='cpu')
