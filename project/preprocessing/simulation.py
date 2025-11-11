@@ -80,15 +80,17 @@ def rasterize_elasticity(
 
     solver = solvers.warp.WarpFEMSolver(scalar_degree=scalar_degree, device=device)
     solver.init_geometry(verts, cells)
-    E_warp = solver.make_scalar_field(E_values)
 
-    origin  = transforms.get_affine_origin(affine) * unit_m # to meters
-    spacing = transforms.get_affine_spacing(affine) * unit_m
-    bounds  = transforms.get_grid_bounds(origin, spacing, shape, align_corners=False)
+    with solvers.warp.wp.ScopedDevice(device):
+        E_warp = solver.make_scalar_field(E_values)
 
-    E_field = solvers.warp.rasterize_field(E_warp, shape, bounds, device)
+        origin  = transforms.get_affine_origin(affine) * unit_m # to meters
+        spacing = transforms.get_affine_spacing(affine) * unit_m
+        bounds  = transforms.get_grid_bounds(origin, spacing, shape, align_corners=False)
 
-    return E_field.detach().cpu().numpy()
+        E_field = solvers.warp.rasterize_field(E_warp, shape, bounds) # (I, J, K, C)
+
+    return E_field.detach().cpu().numpy()[...,0]
 
 
 def optimize_elasticity(

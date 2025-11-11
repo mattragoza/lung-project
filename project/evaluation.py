@@ -1,14 +1,128 @@
+from collections import defaultdict
+from pathlib import Path
 import numpy as np
 import pandas as pd
+import torch
 
-from .core import utils, metrics
+from .core import utils, transforms
+from .core import metrics as mm
+
+
+def _to_numpy(t):
+    return t.detach().cpu().numpy() if torch.is_tensor(t) else np.asarray(t)
+
+
+def _eval(pred, target, weight=None, name=None, profile=None):
+    if profile is None:
+        profile = 'res' if name[0] == 'r' else name[0]
+    metrics = mm.evaluate_metrics(pred, target, weight, profile)
+    return utils.namespace(metrics, name) if name else metrics
 
 
 class Evaluator:
-
+    '''
+    Attributes:
+        example_rows[phase]: Stores one row per example of global metrics
+        material_rows[phase]: Stores one row per (example, material) with metrics
+    '''
     def __init__(self):
-        self.rows = []
+        self.example_rows = defaultdict(list)
+        self.material_rows = defaultdict(list)
 
+    @torch.no_grad()
+    def evaluate(self, outputs, epoch, phase, batch):
+        batch_size = len(outputs['example'])
+        base = {
+            'epoch': int(epoch),
+            'phase': str(phase),
+            'batch': int(batch),
+            'loss':  float(outputs['loss'].item()),
+        }
+        for k in range(batch_size):
+            ex = outputs['example'][k]
+            mat_mask = _to_numpy(outputs['mask'][k]).reshape(-1, 1)
+            E_true_vox = _to_numpy(outputs['E_true'][k]).reshape(-1, 1) # Pa
+            E_pred_vox = _to_numpy(outputs['E_pred'][k]).reshape(-1, 1) # Pa
+
+            sel = (mat_mask > 0)
+            ex_row = {**base, 'subject': ex.subject}
+            ex_row['num_voxels'] = int(np.count_nonzero(sel))
+            ex_row |= _eval(E_pred_vox[sel], E_true_vox[sel], name='E_voxel')
+
+            if 'pde' in outputs:
+                pde_output = outputs['pde'][k]
+
+                cells = _to_numpy(pde_output['cells'])
+                vol_cells = _to_numpy(pde_output['vol_cells'])
+                mat_cells = _to_numpy(pde_output['mat_cells'])
+                E_true_cells = _to_numpy(pde_output['E_true_cells']) # Pa
+                E_pred_vals = _to_numpy(pde_output['E_pred_values']) # Pa
+                u_true_vals = _to_numpy(pde_output['u_true_values']) # meters
+                u_pred_vals = _to_numpy(pde_output['u_pred_values']) # meters
+                res_vals = _to_numpy(pde_output['res_values'])
+        
+                # true scalar fields are defined on mesh cells
+                #   pred scalar fields may need to be mapped from nodes to cells
+                if pde_output['scalar_degree'] == 0:
+                    E_pred_cells = E_pred_vals
+                elif pde_output['scalar_degree'] == 1:
+                    E_pred_cells = transforms.node_to_cell_values(cells, E_pred_vals)
+
+                # the vector fields are nodal, evaluate on cells for volume weighting
+                assert pde_output['vector_degree'] == 1
+                u_true_cells = transforms.node_to_cell_values(cells, u_true_vals)
+                u_pred_cells = transforms.node_to_cell_values(cells, u_pred_vals)
+                res_cells    = transforms.node_to_cell_values(cells, res_vals)
+
+                ex_row |= _eval(E_pred_cells, E_true_cells, vol_cells, name='E_cell')
+                ex_row |= _eval(u_pred_cells, u_true_cells, vol_cells, name='u_cell')
+                ex_row |= _eval(res_cells, None, vol_cells, name='res_cell')
+
+            self.example_rows[phase].append(ex_row)
+
+            # next evaluate metrics grouped by material label
+
+            for label in np.unique(mat_mask[sel]):
+                sel = (mat_mask == label)
+                mat_row = {**base, 'subject': ex.subject, 'material': int(label)}
+                mat_row['num_voxels'] = int(np.count_nonzero(sel))
+                mat_row |= _eval(E_pred_vox[sel], E_true_vox[sel], name='E_voxel')
+
+                if 'pde' in outputs:
+                    sel = (mat_cells == label)
+                    vol_mat = vol_cells[sel]
+
+                    mat_row['num_cells'] = int(np.count_nonzero(sel))
+                    mat_row |= _eval(E_pred_cells[sel], E_true_cells[sel], vol_mat, name='E_cell')
+                    mat_row |= _eval(u_pred_cells[sel], u_true_cells[sel], vol_mat, name='u_cell')
+                    mat_row |= _eval(res_cells[sel], None, vol_mat, name='res_cell')
+
+                self.material_rows[phase].append(mat_row)
+
+    def phase_end(self, epoch, phase, out_dir=None, clear=True):
+        ex_df  = pd.DataFrame(self.example_rows[phase])
+        mat_df = pd.DataFrame(self.material_rows[phase])
+
+        if out_dir:
+            out_dir = Path(out_dir)
+            out_dir.mkdir(exist_ok=True, parents=True)
+            ex_path  = out_dir / 'example_metrics.csv'
+            mat_path = out_dir / 'material_metrics.csv'
+
+            for df, path in [(ex_df, ex_path), (mat_df, mat_path)]:
+                if df.empty:
+                    continue
+                write_header = (not path.is_file() or path.stat.st_size == 0)
+                df.to_csv(path, index=False, mode='a', header=write_header)
+
+        if clear:
+            self.example_rows[phase].clear()
+            self.material_rows[phase].clear()
+
+        return ex_df, mat_df
+
+
+if False: # DEPRECATED
     def evaluate(self, anat, e_pred, e_true, u_pred, u_true, mask, disease_mask, index):
         region_mask = mask
         binary_mask = (mask > 0)
@@ -66,47 +180,6 @@ class Evaluator:
         self.metrics.to_csv(path)
 
 
-def squared_norm(x, dim=-1):
-    return torch.sum(x**2, dim=dim)
-
-
-def weighted_mean(x, weights, dim=None):
-    weighted_sum = torch.sum(weights * x, dim=dim)
-    total_weight = torch.sum(weights, dim=dim)
-    return weighted_sum / total_weight
-
-
-def mean_norm(x, mask):
-    norm = torch.sqrt(squared_norm(x))
-    return weighted_mean(norm, mask)
-
-
-def mean_relative_error(x_pred, x_true, mask, eps=1e-6):
-    residual_norm = squared_norm(x_true - x_pred)
-    true_norm = squared_norm(x_true)
-    relative_error = residual_norm / (true_norm + eps)
-    return weighted_mean(relative_error, mask)
-
-
-def contrast_transfer_efficiency(x_pred, x_true, region_mask, eps=1e-8):
-    background_mask = (region_mask == 1)
-    target_mask = (region_mask > 1)
-    binary_mask = (region_mask > 0)
-    x_pred_0 = weighted_mean(x_pred, background_mask)
-    x_true_0 = weighted_mean(x_true, background_mask)
-    c_pred = torch.log10(x_pred / x_pred_0 + eps)
-    c_true = torch.log10(x_true / x_true_0 + eps)
-    c_ratio = 10 ** -(c_pred - c_true).abs()
-    return weighted_mean(c_ratio, target_mask)
-
-
-def correlation_matrix(xs, mask):
-    x = torch.cat(xs, dim=-1)
-    x = x.reshape(-1, x.shape[-1])
-    x = x[mask.flatten().bool(),:]
-    return torch.corrcoef(x.T)
-
-
 class Timer(object):
 
     def __init__(self, index_cols, sync_cuda=False):
@@ -137,3 +210,4 @@ class Timer(object):
 
     def save_benchmarks(self, path):
         self.benchmarks.to_csv(path)
+

@@ -15,10 +15,10 @@ def set_verbose(val: bool):
     VERBOSE = val
 
 
-def log(msg):
+def log(msg, end='\n'):
     is_worker = torch.utils.data.get_worker_info()
     if VERBOSE and not is_worker:
-        print(msg, file=sys.stdout, flush=True)
+        print(msg, end=end, file=sys.stdout, flush=True)
 
 
 def warn(msg):

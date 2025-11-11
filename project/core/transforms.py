@@ -131,6 +131,10 @@ def compute_cell_volume(verts, cells):
     return np.abs(np.linalg.det(M)) / 6
 
 
+def node_to_cell_values(cells, node_vals):
+    return node_vals[cells].mean(axis=1)
+
+
 def cell_to_node_values(verts, cells, cell_vals, eps=1e-12):
     vol = compute_cell_volume(verts, cells)
     num = np.zeros(len(verts), dtype=float)
@@ -141,6 +145,25 @@ def cell_to_node_values(verts, cells, cell_vals, eps=1e-12):
             den[j] += vol[i]
     return num / np.maximum(den, eps)
 
+
+def cell_to_node_labels(verts, cells, cell_vals, eps=1e-12):
+    vol = compute_cell_volume(verts, cells)
+    num = np.zeros(len(verts), dtype=float)
+    den = np.zeros(len(verts), dtype=float)
+    for i, vert_inds in enumerate(cells):
+        for j in vert_inds:
+            num[j] += vol[i] * cell_vals[i]
+            den[j] += vol[i]
+    return num / np.maximum(den, eps)
+
+
+def smooth_mesh_values(verts, cells, node_vals, cell_vals, degree):
+    assert degree in {0, 1}
+    if degree == 0:
+        out_vals = (cell_vals + node_to_cell_values(cells, node_vals)) / 2
+    elif degree == 1:
+        out_vals = (node_vals + cell_to_node_values(verts, cells, cell_vals)) / 2
+    return out_vals
 
 
 def compute_lame_parameters(E, nu=0.4):
@@ -158,15 +181,6 @@ def compute_youngs_modulus(mu, nu=0.4):
 def parameterize_youngs_modulus(theta_global, theta_local):
     theta = theta_global + theta_local - theta_local.mean()
     return torch.pow(10, theta)
-
-
-def smooth_mesh_values(verts, cells, node_vals, cell_vals, degree):
-    assert degree in {0, 1}
-    if degree == 0:
-        out_vals = (cell_vals + node_vals[cells].mean(axis=1)) / 2
-    elif degree == 1:
-        out_vals = (node_vals + cell_to_node_values(verts, cells, cell_vals)) / 2
-    return out_vals
 
 
 def compute_density_from_CT(ct, m_atten_ratio=1., density_water=1000.):

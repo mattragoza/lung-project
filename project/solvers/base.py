@@ -32,7 +32,7 @@ class PDESolverModule(torch.nn.Module):
         solver: PDESolver, 
         verts: torch.Tensor,
         cells: torch.Tensor,
-        rho: torch.Tensor,
+        rho:   torch.Tensor,
         u_obs: torch.Tensor
     ):
         super().__init__()

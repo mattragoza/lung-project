@@ -7,8 +7,13 @@ import torch.nn.functional as F
 from .core import utils
 
 
-DEFAULT_POOLING = 'max'
+DEFAULT_KERNEL_SIZE = 3
+DEFAULT_RELU_LEAK = 0.01
+DEFAULT_NORM_TYPE = 'batch'
+DEFAULT_POOL_TYPE = 'max'
+DEFAULT_POOL_SIZE = 2
 DEFAULT_UPSAMPLE = 'nearest'
+DEFAULT_NUM_GROUPS = 8
 
 
 class ConvUnit3D(torch.nn.Module):
@@ -17,9 +22,10 @@ class ConvUnit3D(torch.nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: int=3,
-        relu_leak: float=0.01,
-        norm_type: str='instance'
+        kernel_size: int=DEFAULT_KERNEL_SIZE,
+        relu_leak: float=DEFAULT_RELU_LEAK,
+        norm_type: str=DEFAULT_NORM_TYPE,
+        num_groups: int=DEFAULT_NUM_GROUPS
     ):
         super().__init__()
         self.conv = torch.nn.Conv3d(
@@ -32,8 +38,10 @@ class ConvUnit3D(torch.nn.Module):
         )
         if norm_type == 'batch':
             self.norm = torch.nn.BatchNorm3d(out_channels, affine=True)
+        elif norm_type == 'layer':
+            self.norm = torch.nn.LayerNorm(out_channels, elementwise_affine=True)
         elif norm_type == 'group':
-            self.norm = torch.nn.GroupNorm3d(out_channels, affine=True)
+            self.norm = torch.nn.GroupNorm(num_groups, out_channels, affine=True)
         elif norm_type == 'instance':
             self.norm = torch.nn.InstanceNorm3d(out_channels, affine=True)
         else:
@@ -42,9 +50,11 @@ class ConvUnit3D(torch.nn.Module):
         self.act = torch.nn.LeakyReLU(negative_slope=relu_leak, inplace=True)
 
         nn.init.kaiming_normal_(
-            self.conv.weight, a=relu_leak, mode='fan_out', nonlinearity='leaky_relu'
+            self.conv.weight, a=relu_leak, mode='fan_in', nonlinearity='leaky_relu'
         )
-        
+        nn.init.ones_(self.norm.weight)
+        nn.init.zeros_(self.norm.bias)
+
     def forward(self, x):
         x = self.conv(x)
         x = self.norm(x)
@@ -59,8 +69,8 @@ class ConvBlock3D(torch.nn.Sequential):
         in_channels: int,
         out_channels: int,
         n_conv_units: int,
-        kernel_size: int=3,
-        hid_channels: int=None
+        hid_channels: int=None,
+        **conv_unit_kws
     ):
         super().__init__()
         
@@ -73,24 +83,10 @@ class ConvBlock3D(torch.nn.Sequential):
             layer = ConvUnit3D(
                 in_channels=(hid_channels if i > 0 else in_channels),
                 out_channels=(hid_channels if i < n_conv_units - 1 else out_channels),
-                kernel_size=kernel_size
+                **conv_unit_kws
             )
             self.add_module(f'unit{i}', layer)
             
-
-class Upsample(torch.nn.Module):
-    
-    def __init__(self, mode, align_corners=None):
-        super().__init__()
-        self.mode = mode
-        self.align_corners = align_corners
-        
-    def __repr__(self):
-        return f'{type(self).__name__}(mode={self.mode})'
-        
-    def forward(self, x, size):
-        return F.interpolate(x, size=size, mode=self.mode, align_corners=self.align_corners)
-
 
 class EncoderBlock(torch.nn.Module):
 
@@ -98,12 +94,10 @@ class EncoderBlock(torch.nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        n_conv_units: int,
-        kernel_size: int=3,
-        hid_channels: int=None,
         apply_pooling: bool=True,
-        pooling_type: str=DEFAULT_POOLING,
-        pooling_size: int=2
+        pooling_type: str=DEFAULT_POOL_TYPE,
+        pooling_size: int=DEFAULT_POOL_SIZE,
+        **conv_block_kws
     ):
         super().__init__()
 
@@ -119,9 +113,7 @@ class EncoderBlock(torch.nn.Module):
         self.conv_block = ConvBlock3D(
             in_channels=in_channels,
             out_channels=out_channels,
-            n_conv_units=n_conv_units,
-            kernel_size=kernel_size,
-            hid_channels=hid_channels
+            **conv_block_kws
         )
         
     def forward(self, x):
@@ -137,26 +129,22 @@ class DecoderBlock(torch.nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        n_conv_units: int,
-        kernel_size: int,
-        hid_channels: int=None,
-        upsample_mode: str=DEFAULT_UPSAMPLE
+        upsample_mode: str=DEFAULT_UPSAMPLE,
+        scale_factor: int=DEFAULT_POOL_SIZE,
+        **conv_block_kws
     ):
         super().__init__()
 
-        self.upsample = Upsample(mode=upsample_mode)
+        self.upsample = nn.Upsample(scale_factor=scale_factor, mode=upsample_mode)
 
         self.conv_block = ConvBlock3D(
             in_channels=in_channels,
             out_channels=out_channels,
-            n_conv_units=n_conv_units,
-            kernel_size=kernel_size,
-            hid_channels=hid_channels,
+            **conv_block_kws
         )
 
     def forward(self, x, encoder_feats):
-        size = encoder_feats.shape[2:]
-        x = self.upsample(x, size=size)
+        x = self.upsample(x)
         x = torch.cat([x, encoder_feats], dim=1)
         x = self.conv_block(x)
         return x
@@ -168,30 +156,36 @@ class UNet3D(torch.nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        n_enc_levels: int,
-        n_conv_units: int,
         conv_channels: int,
-        kernel_size: int=3,
-        pooling_type: str=DEFAULT_POOLING,
+        n_enc_blocks: int,
+        n_conv_units: int,
+        n_init_units: int=None,
+        kernel_size: int=DEFAULT_KERNEL_SIZE,
+        relu_leak: float=DEFAULT_RELU_LEAK,
+        norm_type: str=DEFAULT_NORM_TYPE,
+        num_groups: int=DEFAULT_NUM_GROUPS,
+        pooling_type: str=DEFAULT_POOL_TYPE,
         upsample_mode: str=DEFAULT_UPSAMPLE,
         output_func: str='relu'
     ):
         super().__init__()
-        assert n_enc_levels > 0
+        assert n_enc_blocks > 0
         
         self.encoder = torch.nn.Sequential()
         curr_channels = in_channels
         next_channels = conv_channels
 
-        for i in range(n_enc_levels):
+        for i in range(n_enc_blocks):
             enc_block = EncoderBlock(
                 in_channels=curr_channels,
                 out_channels=next_channels,
-                n_conv_units=n_conv_units,
+                n_conv_units=(n_init_units if i == 0 and n_init_units else n_conv_units),
                 kernel_size=kernel_size,
+                relu_leak=relu_leak,
+                norm_type=norm_type,
+                num_groups=num_groups,
                 apply_pooling=(i > 0),
-                pooling_type=pooling_type,
-                pooling_size=2,
+                pooling_type=pooling_type
             )
             self.encoder.add_module(f'level{i}', enc_block)
             curr_channels = next_channels
@@ -200,12 +194,15 @@ class UNet3D(torch.nn.Module):
         self.decoder = torch.nn.Sequential()
         next_channels = curr_channels // 2
         
-        for i in reversed(range(n_enc_levels - 1)):
+        for i in reversed(range(n_enc_blocks - 1)):
             dec_block = DecoderBlock(
                 in_channels=curr_channels + next_channels,
                 out_channels=next_channels,
-                kernel_size=kernel_size,
                 n_conv_units=n_conv_units,
+                kernel_size=kernel_size,
+                relu_leak=relu_leak,
+                norm_type=norm_type,
+                num_groups=num_groups,
                 upsample_mode=upsample_mode
             )
             self.decoder.add_module(f'level{i}', dec_block)
@@ -253,35 +250,38 @@ def count_params(model):
     return total
 
 
-def count_activations(model, input_):
+def count_activations(model, input_, ret_output=False):
     hooks, recorded = [], []
     seen = set()
 
-    def record(name):
+    def describe(t):
+        return tuple(t.shape), t.dtype, t.mean().item(), t.std().item()
+
+    def record_output_description(name):
         def hook(m, in_, out):
             key = id(out)
             if key not in seen:
-                recorded.append((name, tuple(out.shape), out.dtype))
+                recorded.append((name, describe(out)))
                 seen.add(key)
         return hook
 
     for name, m in model.named_modules():
-        hook = m.register_forward_hook(record(name))
+        hook = m.register_forward_hook(record_output_description(name))
         hooks.append(hook)
 
     model.eval()
     with torch.no_grad():
-        recorded.append(('input', tuple(input_.shape), input_.dtype))
-        model.forward(input_)
+        recorded.append(('input', describe(input_)))
+        output = model.forward(input_)
 
     for h in hooks:
         h.remove()
 
     total = 0
-    for name, shape, dtype in recorded:
+    for name, (shape, dtype, mean, std) in recorded:
         prod = int(np.prod(shape))
-        utils.log(f'{name:40s} {prod}\t{shape}\t{dtype}')
+        utils.log(f'{name:40s} {prod}\t{shape}\t{dtype}\t{mean:.4f}\t{std:.4f}')
         total += prod
 
-    return total
+    return total, output if ret_output else total
 

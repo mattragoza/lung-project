@@ -17,29 +17,30 @@ class TorchDataset(torch.utils.data.Dataset):
         return len(self.examples)
 
     def __getitem__(self, idx):
-        if idx in self.cache:
-            return self.cache[idx]
+        if idx not in self.cache:
+            self.cache[idx] = self.load_example(idx)        
+        return self.cache[idx]
 
+    def load_example(self, idx):
         ex = self.examples[idx]
         image = fileio.load_nibabel(ex.paths['input_image'])
         mask  = fileio.load_nibabel(ex.paths['material_mask'])
         mesh  = fileio.load_meshio(ex.paths['img_fields'])
 
-        def _as_tensor(a):
-            return torch.as_tensor(a, dtype=self.dtype, device='cpu')
+        def _as_cpu_tensor(a, dtype=None):
+            return torch.as_tensor(a, dtype=dtype or self.dtype, device='cpu')
 
         output = {
             'example': ex,
-            'affine': _as_tensor(image.affine),
-            'image':  _as_tensor(image.get_fdata()).unsqueeze(0),
-            'mask':   _as_tensor(mask.get_fdata()).unsqueeze(0),
+            'affine': _as_cpu_tensor(image.affine), # (4, 4)
+            'image':  _as_cpu_tensor(image.get_fdata()).unsqueeze(0), # (1, I, J, K)
+            'mask':   _as_cpu_tensor(mask.get_fdata(), dtype=torch.int).unsqueeze(0),
             'mesh':   mesh,
         }
-        if 'elast_field' in ex.paths:
-            elast = fileio.load_nibabel(ex.paths['elast_field'])
-            output['elast'] = _as_tensor(elast.get_fdata()).unsqueeze(0)
+        if 'elastic_field' in ex.paths:
+            elast = fileio.load_nibabel(ex.paths['elastic_field'])
+            output['elast'] = _as_cpu_tensor(elast.get_fdata()).unsqueeze(0)
 
-        self.cache[idx] = output
         return output
 
 

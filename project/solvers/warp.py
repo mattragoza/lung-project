@@ -53,6 +53,7 @@ class WarpFEMSolver(base.PDESolver):
         self.vector_degree = vector_degree
         self.scalar_dtype = scalar_dtype
         self.vector_dtype = vector_dtype
+
         self.device = device or wp.get_device()
 
     def init_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
@@ -202,7 +203,8 @@ class WarpFEMSolver(base.PDESolver):
     def adjoint_backward(self, loss_grad):
         self.context['loss'].grad = _as_warp_array(loss_grad, dtype=self.scalar_dtype)
         try:
-            self.tape.backward()
+            with wp.ScopedDevice(self.device):
+                self.tape.backward()
             return (
                 wp.to_torch(self.context['mu'].dof_values.grad),
                 wp.to_torch(self.context['lam'].dof_values.grad)
