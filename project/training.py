@@ -1,4 +1,5 @@
-import time
+import sys, os, time
+from pathlib import Path
 import numpy as np
 import torch
 torch.backends.cudnn.enabled = True
@@ -24,6 +25,12 @@ class Trainer:
         evaluator=None,
         supervised=False,
         solver_kws=None,
+        nu_value=0.4,
+        rho_bias=1000.,
+        rho_known=False,
+        scalar_degree=1,
+        vector_degree=1,
+        output_dir='checkpoints',
         device='cuda'
     ):
         self.model = model.to(device)
@@ -38,42 +45,40 @@ class Trainer:
         self.solver_kws = solver_kws or {}
         self.device = device
 
-        # physics settings
-        self.nu_value = 0.4
-        self.rho_known = False
-        self.rho_bias = 1000.
-        self.scalar_degree = 1
-        self.vector_degree = 1
+        # physics adapter settings
+        self.nu_value = nu_value
+        self.rho_bias = rho_bias
+        self.rho_known = rho_known
+        self.scalar_degree = scalar_degree
+        self.vector_degree = vector_degree
+
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(exist_ok=True, parents=True)
 
         self.epoch = 0
         self.cache = {}
 
-    def train(self, num_epochs, val_every=1, save_every=10, save_path=None, eval_train=False):
-
+    def train(self, num_epochs, val_every=1, save_every=10, eval_on_train=False):
         for _ in range(num_epochs):
             if self.val_loader and val_every and self.epoch % val_every == 0:
                 self.run_val_phase()
-            if save_path and save_every and self.epoch % save_every == 0:
-                self.save_state(save_path)
-            self.run_train_phase(run_eval=eval_train)
+            if self.output_dir and save_every and self.epoch % save_every == 0:
+                self.save_state()
+            self.run_train_phase(run_eval=eval_on_train)
             self.epoch += 1
-
         if self.val_loader:
             self.run_val_phase()
-        if self.test_loader:
-            self.run_test_phase()
-        if save_path:
-            self.save_state(save_path)
+        if self.output_dir:
+            self.save_state()
 
     def run_train_phase(self, run_eval=False):
         self.model.train()
-
         for i, batch in enumerate(self.train_loader):
             utils.log(f'[Epoch {self.epoch} | Train batch {i+1}/{len(self.train_loader)}]', end=' ')
             t0 = time.time()
 
             self.optimizer.zero_grad()
-            outputs = self.forward(batch, phase='train')
+            outputs = self.forward(batch, phase='train', run_solver=not self.supervised)
 
             loss = outputs['loss']
             if not torch.isfinite(loss):
@@ -81,47 +86,55 @@ class Trainer:
             loss.backward()
             self.optimizer.step()
 
-            if self.evaluator and run_eval:
+            if run_eval:
                 self.evaluator.evaluate(outputs, self.epoch, phase='train', batch=i)
 
             t1 = time.time()
-            utils.log(f'loss = {loss.item():.4f} | time = {t1 - t0:.4f}')
+            utils.log(f'loss = {loss.item():.4e} | time = {t1 - t0:.4f}')
 
-        if self.evaluator and run_eval:
-            ex_df, mat_df = self.evaluator.phase_end(self.epoch, phase='train')
+        if run_eval:
+            ex_df = self.evaluator.phase_end(self.epoch, phase='train')
             utils.log(f'Train metrics @ epoch {self.epoch}: \n{ex_df}')
 
     @torch.no_grad()
     def run_test_phase(self):
         self.model.eval()
-
         for i, batch in enumerate(self.test_loader):
-            utils.log(f'[Epoch {self.epoch} | Test batch {i+1}/{len(self.test_loader)}]')
+            utils.log(f'[Epoch {self.epoch} | Test batch {i+1}/{len(self.test_loader)}]', end=' ')
+            t0 = time.time()
 
-            outputs = self.forward(batch, phase='test')
+            outputs = self.forward(batch, phase='test', run_solver=True)
             if self.evaluator:
                 self.evaluator.evaluate(outputs, self.epoch, phase='test', batch=i)
 
+            t1 = time.time()
+            loss = outputs['loss']
+            utils.log(f'loss = {loss.item():.4e} | time = {t1 - t0:.4f}')
+
         if self.evaluator:
-            ex_df, mat_df = self.evaluator.phase_end(self.epoch, phase='test')
+            ex_df = self.evaluator.phase_end(self.epoch, phase='test')
             utils.log(f'Test metrics @ epoch {self.epoch}: \n{ex_df}')
 
     @torch.no_grad()
     def run_val_phase(self):
         self.model.eval()
-
         for i, batch in enumerate(self.val_loader):
-            utils.log(f'[Epoch {self.epoch} | Val batch {i+1}/{len(self.val_loader)}]')
+            utils.log(f'[Epoch {self.epoch} | Val batch {i+1}/{len(self.val_loader)}]', end=' ')
+            t0 = time.time()
 
-            outputs = self.forward(batch, phase='val')
+            outputs = self.forward(batch, phase='val', run_solver=True)
             if self.evaluator:
                 self.evaluator.evaluate(outputs, self.epoch, phase='val', batch=i)
 
+            t1 = time.time()
+            loss = outputs['loss']
+            utils.log(f'loss = {loss.item():.4e} | time = {t1 - t0:.4f}')
+
         if self.evaluator:
-            ex_df, mat_df = self.evaluator.phase_end(self.epoch, phase='val')
+            ex_df = self.evaluator.phase_end(self.epoch, phase='val')
             utils.log(f'Val metrics @ epoch {self.epoch}: \n{ex_df}')
 
-    def forward(self, batch, phase):
+    def forward(self, batch, phase, run_solver):
 
         image = batch['image'].to(self.device)
         mask  = batch['mask'].to(self.device)
@@ -136,47 +149,48 @@ class Trainer:
             'mask':    batch['mask'].cpu(),
             'E_pred':  E_pred.detach().cpu()
         }
-
         if 'elast' in batch:
             E_true = batch['elast'].to(self.device)
             outputs['E_true'] = batch['elast'].cpu()
 
         if self.supervised: # train to directly minimize E error
             outputs['loss'] = normalized_rmse_loss(E_pred, E_true, mask > 0)
-            return outputs
 
-        # unsupervised: train to minimize displacement error via PDE solver
-        loss = torch.zeros(batch_size, device=self.device, dtype=image.dtype)
-        pde_outputs = []
+        if run_solver: # compute simulated displacement error via PDE solver
+            pde_loss = torch.zeros(batch_size, device=self.device, dtype=image.dtype)
+            pde_outputs = []
 
-        for k in range(batch_size):
-            pde_context = self.get_pde_context(batch['example'][k], batch['mesh'][k])
+            for k in range(batch_size):
+                pde_context = self.get_pde_context(batch['example'][k], batch['mesh'][k])
 
-            pts_world = pde_context['pts_world'].to(self.device)
-            pts_voxel = transforms.world_to_voxel_coords(pts_world, batch['affine'][k])
+                pts_world = pde_context['pts_world'].to(self.device)
+                pts_voxel = transforms.world_to_voxel_coords(pts_world, batch['affine'][k])
 
-            E_interp = interpolation.interpolate_image(E_pred[k], pts_voxel)[...,0]
-            mu_values, lam_values = transforms.compute_lame_parameters(E_interp, self.nu_value)
+                E_interp = interpolation.interpolate_image(E_pred[k], pts_voxel)[...,0]
+                mu_values, lam_values = transforms.compute_lame_parameters(E_interp, self.nu_value)
 
-            pde_module = pde_context['module']
-            loss[k], res_values, u_sim_values = pde_module.forward(mu_values, lam_values)
+                pde_module = pde_context['module']
+                pde_loss[k], res_values, u_sim_values = pde_module.forward(mu_values, lam_values)
 
-            pde_outputs.append({
-                'scalar_degree': int(self.scalar_degree),
-                'vector_degree': int(self.vector_degree),
-                'verts':         pde_context['verts'].cpu(),
-                'cells':         pde_context['cells'].cpu(),
-                'vol_cells':     pde_context['vol_cells'].cpu(),
-                'mat_cells':     pde_context['mat_cells'].cpu(),
-                'E_true_cells':  pde_context['E_cells'].cpu(),
-                'u_true_values': pde_context['u_obs_values'].cpu(),
-                'E_pred_values': E_interp.detach().cpu(),
-                'u_pred_values': u_sim_values.detach().cpu(),
-                'res_values':    res_values.detach().cpu(),
-            })
+                pde_outputs.append({
+                    'scalar_degree': int(self.scalar_degree),
+                    'vector_degree': int(self.vector_degree),
+                    'verts':         pde_context['verts'].cpu(),
+                    'cells':         pde_context['cells'].cpu(),
+                    'vol_cells':     pde_context['vol_cells'].cpu(),
+                    'mat_cells':     pde_context['mat_cells'].cpu(),
+                    'E_true_cells':  pde_context['E_cells'].cpu(),
+                    'u_true_values': pde_context['u_obs_values'].cpu(),
+                    'E_pred_values': E_interp.detach().cpu(),
+                    'u_pred_values': u_sim_values.detach().cpu(),
+                    'res_values':    res_values.detach().cpu(),
+                })
 
-        outputs['loss'] = loss.mean()
-        outputs['pde']  = pde_outputs
+            outputs['pde']  = pde_outputs
+
+        if not self.supervised: # train to minimize simulation error
+            outputs['loss'] = pde_loss.mean()
+
         return outputs
 
     def get_pde_context(self, ex, mesh):
@@ -257,7 +271,9 @@ class Trainer:
         }
         return context
 
-    def save_state(self, path):
+    def save_state(self, path=None):
+        if path is None:
+            path = self.output_dir / f'checkpoint{self.epoch:05d}.pt'
         utils.log(f'Saving {path}')
         torch.save({
             'epoch': self.epoch,
@@ -265,7 +281,9 @@ class Trainer:
             'optim': self.optimizer.state_dict()
         }, path)
 
-    def load_state(self, path):
+    def load_state(self, path=None, epoch=None):
+        if path is None:
+            path = self.output_dir / f'checkpoint{epoch:05d}.pt'
         utils.log(f'Loading {path}')
         state = torch.load(path)
         self.epoch = state['epoch']

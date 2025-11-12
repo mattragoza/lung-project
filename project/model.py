@@ -283,5 +283,5 @@ def count_activations(model, input_, ret_output=False):
         utils.log(f'{name:40s} {prod}\t{shape}\t{dtype}\t{mean:.4f}\t{std:.4f}')
         total += prod
 
-    return total, output if ret_output else total
+    return (total, output) if ret_output else total
 

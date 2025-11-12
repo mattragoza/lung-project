@@ -65,27 +65,39 @@ def evaluate_metrics(pred, target=None, weight=None, profile=None):
 # ----- helper functions -----
 
 
-def _sum(a, w=None):
-    return np.sum((a * w) if w is not None else a)
+def _sum(arr, wts=None):
+    return np.sum((arr * wts) if wts is not None else arr)
 
 
-def _mean(a, w=None):
-    return np.average(a, weights=w) if w is not None else np.mean(a)
+def _mean(arr, wts=None):
+    return np.average(arr, weights=wts) if wts is not None else np.mean(arr)
 
 
-def _rms(arr, w=None):
-    return np.sqrt(_mean(arr**2, w))
+def _rms(arr, wts=None):
+    return np.sqrt(_mean(arr**2, wts))
+
+
+def _std(arr, wts=None):
+    return _rms(arr - _mean(arr))
 
 
 # ----- metric definitions -----
 
 
-def l2_norm(pred: np.ndarray, weight=None) -> float:
+def mean_norm(pred: np.ndarray, weight=None) -> float:
     '''
     mean(||pred||)
     '''
     mag = np.linalg.norm(pred, axis=1)
     return float(_mean(mag, weight))
+
+
+def std_norm(pred: np.ndarray, weight=None) -> float:
+    '''
+    std(||pred||)
+    '''
+    mag = np.linalg.norm(pred, axis=1)
+    return float(_std(mag, weight))
 
 
 def rms_norm(pred: np.ndarray, weight=None) -> float:
@@ -134,6 +146,16 @@ def normalized_rmse(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
     return float(num / den)
 
 
+def standardized_rmse(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
+    '''
+    SRMSE = RMS(||pred - target||) / STD(||pred - target||)
+    '''
+    err = np.linalg.norm(pred - target, axis=1)
+    num = _rms(err, weight)
+    den = _std(err, weight) + EPS
+    return float(num / den)
+
+
 def pearson_corr(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
     '''
     Pearson's correlation coefficient (component-wise)
@@ -156,12 +178,18 @@ def spearman_corr(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
     return float(result.statistic)
 
 
+def dice_score(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
+    A, B = (pred > 0), (target > 0)
+    numer = 2 * (A & B).sum()
+    denom = A.sum() + B.sum() + EPS
+    return float(numer / denom)
+
 # ----- register metrics and profiles -----
 
 registry = MetricRegistry()
 
-registry.add_metric('norm', l2_norm,  requires_target=False)
-registry.add_metric('rms',  rms_norm, requires_target=False)
+registry.add_metric('mean', mean_norm, requires_target=False)
+registry.add_metric('rms',  rms_norm,  requires_target=False)
 
 registry.add_metric('mae',   absolute_error,  requires_target=True)
 registry.add_metric('mre',   relative_error,  requires_target=True)
@@ -170,7 +198,11 @@ registry.add_metric('nrmse', normalized_rmse, requires_target=True)
 registry.add_metric('pcorr', pearson_corr,    requires_target=True)
 registry.add_metric('scorr', spearman_corr,   requires_target=True)
 
-registry.add_profile('u', ['norm', 'rms', 'rmse', 'nrmse', 'pcorr', 'scorr'])
-registry.add_profile('E', ['norm', 'rms',  'rmse', 'nrmse', 'pcorr', 'scorr'])
-registry.add_profile('res', ['norm', 'rms'])
+registry.add_metric('srmse', standardized_rmse, requires_target=True)
+registry.add_metric('dice', dice_score, requires_target=True)
+
+registry.add_profile('u', ['rms', 'rmse', 'nrmse', 'pcorr'])
+registry.add_profile('E', ['mean', 'rmse', 'srmse', 'pcorr'])
+registry.add_profile('res', ['mean', 'rms'])
+registry.add_profile('mat', ['dice'])
 

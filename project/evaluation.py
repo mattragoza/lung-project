@@ -29,6 +29,9 @@ class Evaluator:
         self.example_rows = defaultdict(list)
         self.material_rows = defaultdict(list)
 
+        self.output_dir = Path('./outputs')
+        self.output_dir.mkdir(exist_ok=True, parents=True)
+
     @torch.no_grad()
     def evaluate(self, outputs, epoch, phase, batch):
         batch_size = len(outputs['example'])
@@ -80,7 +83,7 @@ class Evaluator:
 
             self.example_rows[phase].append(ex_row)
 
-            # next evaluate metrics grouped by material label
+            # next, evaluate metrics grouped by material label
 
             for label in np.unique(mat_mask[sel]):
                 sel = (mat_mask == label)
@@ -99,27 +102,33 @@ class Evaluator:
 
                 self.material_rows[phase].append(mat_row)
 
-    def phase_end(self, epoch, phase, out_dir=None, clear=True):
-        ex_df  = pd.DataFrame(self.example_rows[phase])
-        mat_df = pd.DataFrame(self.material_rows[phase])
+    def phase_end(self, epoch, phase):
 
-        if out_dir:
-            out_dir = Path(out_dir)
-            out_dir.mkdir(exist_ok=True, parents=True)
-            ex_path  = out_dir / 'example_metrics.csv'
-            mat_path = out_dir / 'material_metrics.csv'
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        ex_path  = self.output_dir / 'example_metrics.csv'
+        mat_path = self.output_dir / 'material_metrics.csv'
 
-            for df, path in [(ex_df, ex_path), (mat_df, mat_path)]:
-                if df.empty:
-                    continue
-                write_header = (not path.is_file() or path.stat.st_size == 0)
-                df.to_csv(path, index=False, mode='a', header=write_header)
+        ex_df_all = pd.concat(
+            [pd.DataFrame(rows) for rows in self.example_rows.values()],
+            ignore_index=True
+        )
+        mat_df_all = pd.concat(
+            [pd.DataFrame(rows) for rows in self.material_rows.values()],
+            ignore_index=True
+        )
+        for df, path in [(ex_df_all, ex_path), (mat_df_all, mat_path)]:
+            if df.empty:
+                continue
+            tmp = path.with_suffix(path.suffix + '.tmp')
+            try:
+                utils.log(f'Saving {path}')
+                df.to_csv(tmp, index=False)
+                tmp.replace(path)
+            finally:
+                tmp.unlink(missing_ok=True)
 
-        if clear:
-            self.example_rows[phase].clear()
-            self.material_rows[phase].clear()
-
-        return ex_df, mat_df
+        # current phase metrics
+        return pd.DataFrame(self.example_rows[phase])
 
 
 if False: # DEPRECATED
@@ -179,35 +188,4 @@ if False: # DEPRECATED
     def save_metrics(self, path):
         self.metrics.to_csv(path)
 
-
-class Timer(object):
-
-    def __init__(self, index_cols, sync_cuda=False):
-        self.index_cols = index_cols
-        self.benchmarks = pd.DataFrame(columns=index_cols)
-        self.benchmarks.set_index(index_cols, inplace=True)
-        self.sync_cuda = sync_cuda
-
-    def start(self):
-        self.t_prev = time.time()
-
-    def tick(self, index):
-        if self.sync_cuda:
-            torch.cuda.synchronize()
-
-        t_curr, t_prev = time.time(), self.t_prev
-        self.benchmarks.loc[index, 'time'] = (t_curr - t_prev)
-        self.t_prev = t_curr
-
-        device_props = torch.cuda.get_device_properties(0)
-        self.benchmarks.loc[index, 'gpu_mem_total'] = device_props.total_memory
-        self.benchmarks.loc[index, 'gpu_mem_reserved'] = torch.cuda.memory_reserved()
-        self.benchmarks.loc[index, 'gpu_mem_allocated'] = torch.cuda.memory_allocated()
-
-        process = psutil.Process(os.getpid())
-        self.benchmarks.loc[index, 'mem_total'] = psutil.virtual_memory().total
-        self.benchmarks.loc[index, 'mem_used'] = process.memory_info().rss
-
-    def save_benchmarks(self, path):
-        self.benchmarks.to_csv(path)
 
