@@ -16,12 +16,12 @@ class MeshField:
             return self.cells
         if degree == 1 and self.nodes is not None:
             return self.nodes
-        raise ValueError(f'No dof values for degree {degree}')
+        raise ValueError(f'No values for degree {degree}')
 
     def to(self, device):
         cells = None if self.cells is None else self.cells.to(device) 
         nodes = None if self.nodes is None else self.nodes.to(device)
-        return Dofs(cells, nodes)
+        return MeshField(cells, nodes)
 
 
 class PhysicsContext:

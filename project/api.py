@@ -3,7 +3,7 @@ from .core import utils, fileio
 
 def _check_keys(config, valid, where=None):
     invalid = set(config.keys()) - set(valid)
-    if invalid and where is not None:
+    if invalid:
         _where = f' for {where}' if where else ''
         raise KeyError(f'Unexpected keys{_where}: {invalid} vs. {valid}')
 
