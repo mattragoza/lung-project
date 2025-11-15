@@ -79,5 +79,40 @@
 			"max_iter": 100,
 			"lbfgs_kws": {}
 		}
+	},
+	"training": {
+		"split": {"test_ratio": 0.2, "val_ratio": 0.1, "seed": 0},
+		"loader_kws": {
+			"batch_size": 1,
+			"shuffle": true,
+			"num_workers": 4,
+			"pin_memory": true
+		},
+		"model_arch": {
+			"conv_channels": 16,
+			"n_enc_blocks": 3,
+			"n_conv_units": 2,
+			"n_init_units": 1,
+			"kernel_size": 3,
+			"relu_leak": 0.01,
+			"norm_type": "group",
+			"num_groups": 8,
+			"pooling_type": "max",
+			"upsample_mode": "nearest",
+			"output_func": "pow10"
+		},
+		"optimizer": {
+			"lr": 1e-4
+		},
+		"trainer_kws": {
+			"nu_value": 0.4,
+			"rho_bias": 1000,
+			"rho_known": false,
+			"scalar_degree": 1,
+			"vector_degree": 1,
+			"solver_kws": {
+				"tv_reg_weight": 1e-4
+			}
+		}
 	}
 }

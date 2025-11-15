@@ -2,7 +2,6 @@ from __future__ import annotations
 from typing import Dict, Tuple, Optional
 import numpy as np
 import torch
-import meshio
 
 import warp as wp
 import warp.fem
@@ -45,16 +44,18 @@ class WarpFEMSolver(base.PDESolver):
     ):
         self.relative_loss = relative_loss
         self.tv_reg_weight = tv_reg_weight
+
         self.eps_reg = eps_reg
         self.eps_div = eps_div
-        self.cg_tol = cg_tol
+        self.cg_tol  = cg_tol
 
         self.scalar_degree = scalar_degree
         self.vector_degree = vector_degree
-        self.scalar_dtype = scalar_dtype
-        self.vector_dtype = vector_dtype
-
+        self.scalar_dtype  = scalar_dtype
+        self.vector_dtype  = vector_dtype
         self.device = device or wp.get_device()
+
+        self._initialized = False
 
     def init_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
         verts = _as_warp_array(verts, dtype=self.vector_dtype)
@@ -64,37 +65,38 @@ class WarpFEMSolver(base.PDESolver):
         self.interior = wp.fem.Cells(self.geometry)
         self.boundary = wp.fem.BoundarySides(self.geometry)
 
-        # function spaces
         self.S = wp.fem.make_polynomial_space(self.geometry, degree=self.scalar_degree, dtype=self.scalar_dtype)
         self.V = wp.fem.make_polynomial_space(self.geometry, degree=self.vector_degree, dtype=self.vector_dtype)
 
-        # trial and test functions
         self.u_trial  = wp.fem.make_trial(self.V, domain=self.interior)
         self.v_test   = wp.fem.make_test(self.V,  domain=self.interior)
         self.ub_trial = wp.fem.make_trial(self.V, domain=self.boundary)
         self.vb_test  = wp.fem.make_test(self.V,  domain=self.boundary)
 
-        # constants
         self.g = self.vector_dtype([0, 0, -9.81]) # m/s^2
         self.I = wp.diag(self.vector_dtype(1.0))
 
-    # ----- public interface methods -----
+        self._initialized = True
 
-    def make_scalar_field(self, vals=None, requires_grad=False):
+    def make_scalar_field(self, values=None, requires_grad=None):
+        assert self._initialized, 'Geometry not initialized'
         s = self.S.make_field()
-        if vals is not None:
-            wp.copy(s.dof_values, _as_warp_array(vals, dtype=self.scalar_dtype))
-        s.dof_values.requires_grad = requires_grad
+        if values is not None:
+            wp.copy(s.dof_values, _as_warp_array(values, dtype=self.scalar_dtype))
+        if requires_grad is not None:
+            s.dof_values.requires_grad = requires_grad
         return s
 
-    def make_vector_field(self, vals=None, requires_grad=False):
+    def make_vector_field(self, values=None, requires_grad=None):
+        assert self._initialized, 'Geometry not initialized'
         v = self.V.make_field()
-        if vals is not None:
-            wp.copy(v.dof_values, _as_warp_array(vals, dtype=self.vector_dtype))
-        v.dof_values.requires_grad = requires_grad
+        if values is not None:
+            wp.copy(v.dof_values, _as_warp_array(values, dtype=self.vector_dtype))
+        if requires_grad is not None:
+            v.dof_values.requires_grad = requires_grad
         return v
 
-    def simulate(self, mu, lam, rho, u_obs) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, mu, lam, rho, u_obs):
 
         with wp.ScopedDevice(self.device):
             mu = self.make_scalar_field(mu)
@@ -110,73 +112,12 @@ class WarpFEMSolver(base.PDESolver):
             u0 = self.apply_lifting(P, u_obs)
             f_tilde = self.shift_rhs(f, K, u0)
 
-            u_sim = self.make_vector_field()
-            self.solve_forward(K, u_sim, f_tilde, P, M, u0)
-
-            res = self.make_vector_field()
-            self.compute_residual(mu, lam, rho, u_sim, res)
-
-        return (
-            wp.to_torch(u_sim.dof_values),
-            wp.to_torch(res.dof_values)
-        )
-
-    def adjoint_setup(self, rho: torch.Tensor, u_obs: torch.Tensor):
-        self.cache = {}
-
-        with wp.ScopedDevice(self.device):
-            rho = self.make_scalar_field(rho)
-            u_obs = self.make_vector_field(u_obs)
-
-            P = self.assemble_projector()
-            f = self.assemble_forcing(rho)
-            u0 = self.apply_lifting(P, u_obs)
-
-        self.cache['P'] = P.to('cpu')
-        self.cache['f'] = f.to('cpu')
-        self.cache['u0'] = u0.to('cpu')
-
-        _move_field_to_device(rho, 'cpu')
-        _move_field_to_device(u_obs, 'cpu')
-
-        self.cache['rho'] = rho
-        self.cache['u_obs'] = u_obs
-
-        with wp.ScopedDevice('cpu'):
             u_sim = self.make_vector_field(requires_grad=True)
-            res = self.make_vector_field(requires_grad=True)
-
-        self.cache['u_sim'] = u_sim
-        self.cache['res'] = res
-
-    def adjoint_forward(self, mu: torch.Tensor, lam: torch.Tensor):
-
-        rho = self.cache['rho']
-        u_obs = self.cache['u_obs']
-        u_sim = self.cache['u_sim']
-        res = self.cache['res']
-
-        _move_field_to_device(rho, self.device)
-        _move_field_to_device(u_obs, self.device)
-        _move_field_to_device(u_sim, self.device)
-        _move_field_to_device(res, self.device)
-
-        P = self.cache['P'].to(self.device)
-        f = self.cache['f'].to(self.device)
-        u0 = self.cache['u0'].to(self.device)
-
-        with wp.ScopedDevice(self.device):
-            mu = self.make_scalar_field(mu, requires_grad=True)
-            lam = self.make_scalar_field(lam, requires_grad=True)
-
-            K = self.assemble_stiffness(mu, lam)
-            M = self.get_preconditioner(K)
-            f_tilde = self.shift_rhs(f, K, u0)
-
             self.solve_forward(K, u_sim, f_tilde, P, M, u0)
 
             self.tape = wp.Tape()
             with self.tape:
+                res = self.make_vector_field(requires_grad=True)
                 self.compute_residual(mu, lam, rho, u_sim, res)
 
             self.tape.record_func(
@@ -186,42 +127,40 @@ class WarpFEMSolver(base.PDESolver):
             with self.tape:
                 loss = self.compute_loss(mu, lam, u_obs, u_sim)
 
-        # track variables on device for adjoint backward
+        # track variables for adjoint backward
         self.context = {
-            'mu': mu,
-            'lam': lam,
+            'mu':    mu,
+            'lam':   lam,
+            'rho':   rho,
+            'u_obs': u_obs,
             'u_sim': u_sim,
-            'res': res,
-            'loss': loss
+            'res':   res,
+            'loss':  loss
         }
-        return (
-            wp.to_torch(u_sim.dof_values),
-            wp.to_torch(res.dof_values),
-            wp.to_torch(loss)
-        )
+        return {
+            'u_sim': wp.to_torch(u_sim.dof_values),
+            'res':   wp.to_torch(res.dof_values),
+            'loss':  wp.to_torch(loss)
+        }
 
-    def adjoint_backward(self, loss_grad):
-        self.context['loss'].grad = _as_warp_array(loss_grad, dtype=self.scalar_dtype)
+    def backward(self, loss_grad):
+        self.context['loss'].grad = _as_warp_array(loss_grad)
         try:
             with wp.ScopedDevice(self.device):
                 self.tape.backward()
-            return (
-                wp.to_torch(self.context['mu'].dof_values.grad),
-                wp.to_torch(self.context['lam'].dof_values.grad)
-            )
+            return {
+                'mu': wp.to_torch(self.context['mu'].dof_values.grad),
+                'lam': wp.to_torch(self.context['lam'].dof_values.grad),
+                'rho': wp.to_torch(self.context['lam'].dof_values.grad),
+                'u_obs': wp.to_torch(self.context['u_obs'].dof_values.grad) 
+            }
         finally:
-            _move_field_to_device(self.cache['rho'], 'cpu')
-            _move_field_to_device(self.cache['u_obs'], 'cpu')
-            _move_field_to_device(self.cache['u_sim'], 'cpu')
-            _move_field_to_device(self.cache['res'], 'cpu')
             del self.context
+            del self.tape
 
     def zero_grad(self):
-        for key in self.cache:
-            _zero_grad(self.cache[key])
         if hasattr(self, 'tape'):
             self.tape.reset()
-            del self.tape
 
     # ----- internal assembly methods -----
 

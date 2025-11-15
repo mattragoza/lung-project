@@ -1,15 +1,17 @@
 from typing import Optional, Any, List, Dict, Tuple, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 import numpy as np
 
 from . import base
+from ..core import utils
 
 
-def _parse_sid_code(subj: str):
+def _parse_sid_code(subj: str) -> str:
     parts = subj.split('.')
     if len(parts) == 2 and parts[0] == 'wss':
         return parts[1]
-    raise RuntimeError(f'failed to parse subject ID code: {subj}')
+    raise RuntimeError(f'failed to parse subject ID code: {subj:r}')
 
 
 def _parse_category(s: str) -> List[str]:
@@ -24,7 +26,7 @@ def _parse_aligned_dims(s: str) -> np.ndarray:
 def _parse_unit(s: str) -> float:
     try:
         return float(s)
-    except Exception:
+    except (TypeError, ValueError):
         return np.nan
 
 
@@ -40,7 +42,56 @@ def _resolve_unit(s: str, default: float, policy: str) -> float:
     return float(default)
 
 
-class ShapeNetDataset:
+DEFAULT_TAGS = {
+    'binary_mask':   'mask',
+    'surface_mesh':  'trimesh',
+    'region_mask':   'regions',
+    'volume_mesh':   'tetmesh',
+    'material_mask': 'material',
+    'density_field': 'density',
+    'elastic_field': 'elastic',
+    'input_image':   'image',
+    'material_mesh': 'mat',
+    'simulate_mesh': 'sim',
+    'interp_mesh':   'int',
+}
+
+DEPENDENCY_GRAPH = {
+    'binary_mask':   [],
+    'surface_mesh':  [],
+    'region_mask':   ['binary_mask'],
+    'volume_mesh':   ['region_mask'],
+    'material_mask': ['region_mask'],
+    'density_field': ['material_mask'],
+    'elastic_field': ['material_mask'],
+    'input_image':   ['material_mask'],
+    'material_mesh': ['material_mask', 'volume_mesh'],
+    'simulate_mesh': ['material_mesh'],
+    'interp_mesh':   ['input_image', 'simulate_mesh']
+}
+
+def _resolve_dependencies(node, graph):
+    deps, visited = [], set()
+    def _visit(n):
+        for d in graph.get(n, []):
+            if d not in visited:
+                _visit(d)
+                visited.add(d)
+                deps.append(d)
+    _visit(node)
+    return deps
+
+
+def _resolve_names_from_tags(tags, sep='_'):
+    tags = utils.update_defaults(tags, **DEFAULT_TAGS)
+    names = {}
+    for role, tag in tags.items():
+        deps = _resolve_dependencies(role, DEPENDENCY_GRAPH)
+        names[role] = sep.join([tags[d] for d in deps] + [tag])
+    return names
+
+
+class ShapeNetDataset(base.Dataset):
     '''
     <data_root>/
         models-COLLADA/
@@ -63,11 +114,17 @@ class ShapeNetDataset:
         taxonomy.txt
         categories.synset.csv
     '''
-    SOURCE_VARIANT = 'models'
     ID_COLUMN = 'fullId'
 
-    def __init__(self, data_root: str | Path):
-        self.root = Path(data_root)
+    def __init__(self, root: str|Path):
+        self.root = Path(root)
+        if not self.root.is_dir():
+            raise RuntimeError(f'Invalid directory: {root}')
+        self._metadata_loaded = False
+
+    def ensure_metadata(self):
+        if not self._metadata_loaded:
+            self.load_metadata()
 
     def load_metadata(self):
         import pandas as pd
@@ -76,104 +133,90 @@ class ShapeNetDataset:
         self.materials  = pd.read_csv(self.root / 'materials.csv')
         self.densities  = pd.read_csv(self.root / 'densities.csv')
         self.taxonomy = load_taxonomy(self.root / 'taxonomy.txt')
+        self._metadata_loaded = True
 
-    def subjects(self) -> List[str]:
+    def subjects(self) -> Iterable[str]:
+        self.ensure_metadata()
         return self.metadata[self.ID_COLUMN].to_list()
 
-    def path(
-        self,
-        subject: str,
-        variant: str,
-        asset_type: str,
-        **selectors
-    ):
+    def path(self, subject: str, variant: str, asset_type: str, name: Optional[str]=None) -> Path:
         sid_code = _parse_sid_code(subject)
 
-        if variant == self.SOURCE_VARIANT:
+        if not variant: # source paths ignore name arg
             if asset_type == 'mesh':
                 return self.root / 'models-OBJ' / 'models' / f'{sid_code}.obj'
-
             elif asset_type == 'mask':
-                return self.root / 'models-binvox-solid' / f'{sid_code}.binvox'
-        else:
+                return self.root / 'models-binvox-solid'/ f'{sid_code}.binvox'
+            else:
+                raise RuntimeError(f'Invalid source asset type: {asset_type:r}')
+
+        elif name:
             base_dir = self.root / variant / sid_code
-
             if asset_type == 'mesh':
-                mesh_tag = selectors['mesh_tag']
-                return base_dir / 'meshes' / f'{mesh_tag}.xdmf'
-
+                return base_dir / 'meshes' / f'{name}.xdmf'
             elif asset_type == 'mask':
-                mask_tag = selectors['mask_tag']
-                return base_dir / 'masks' / f'{mask_tag}.nii.gz'
-
+                return base_dir / 'masks' / f'{name}.nii.gz'
             elif asset_type == 'field':
-                field_tag = selectors['field_tag']
-                return base_dir / 'fields' / f'{field_tag}.nii.gz'
-
+                return base_dir / 'fields' / f'{name}.nii.gz'
             elif asset_type == 'image':
-                image_tag = selectors['image_tag']
-                return base_dir / 'images' / f'{image_tag}.nii.gz'
-
-            raise RuntimeError(f'unrecognized asset type: {asset_type}')
+                return base_dir / 'images' / f'{name}.nii.gz'
+            else:
+                raise RuntimeError(f'Invalid variant asset type: {asset_type:r}')
+        else:
+            raise ValueError(f'Variant paths require a name')
 
     def examples(
         self,
-        subjects: Optional[List[str]]=None,
+        subjects: Optional[str|Path|List[str]]=None,
         variant: Optional[str]=None,
         parse_metadata: bool=None,
         unit_policy: str='prefer_metadata',
         default_unit: float=1e-2,
-        surface_tag: str='surface',
-        binary_tag: str='binary',
-        region_tag: str='regions',
-        volume_tag: str='volume',
-        mat_fields_tag: str='mat_fields',
-        sim_fields_tag: str='sim_fields',
-        img_fields_tag: str='img_fields',
-        material_tag: str='material',
-        image_tag: str='generated',
+        selectors: Dict[str, str]=None
     ):
         subject_iter = subjects or self.subjects()
+        subject_list = base._resolve_subject_list(subject_iter)
+
+        self.ensure_metadata()
         md = self.metadata.set_index(self.ID_COLUMN)
         if parse_metadata is None:
             parse_metadata = (variant is not None)
 
-        for subj in subject_iter:
+        names = _resolve_names_from_tags(selectors)
+
+        for s in subject_list:
             paths = {}
-            paths['source_mesh'] = self.path(subj, self.SOURCE_VARIANT, asset_type='mesh')
-            paths['source_mask'] = self.path(subj, self.SOURCE_VARIANT, asset_type='mask')
+            paths['source_mesh'] = self.path(s, variant=None, asset_type='mesh')
+            paths['source_mask'] = self.path(s, variant=None, asset_type='mask')
 
-            raw_meta = dict(md.loc[subj])
-            meta = {'raw': raw_meta}
-
+            metadata = {'raw': dict(md.loc[s])}
             if parse_metadata:
-                meta['category'] = _parse_category(md.loc[subj, 'category'])
-                meta['dims'] = _parse_aligned_dims(md.loc[subj, 'aligned.dims'])
-                meta['unit'] = _resolve_unit(md.loc[subj, 'unit'], default_unit, unit_policy)
+                metadata['category'] = _parse_category(md.loc[s, 'category'])
+                metadata['dims'] = _parse_aligned_dims(md.loc[s, 'aligned.dims'])
+                metadata['unit'] = _resolve_unit(md.loc[s, 'unit'], default_unit, unit_policy)
 
-            if variant: # generated by preprocessing pipeline
-                paths['surface_mesh'] = self.path(subj, variant, asset_type='mesh', mesh_tag=surface_tag)
-                paths['binary_mask']  = self.path(subj, variant, asset_type='mask', mask_tag=binary_tag)
+            if variant: # assets generated by preprocessing
+                v = variant
+                paths['binary_mask']   = self.path(s, v, 'mask', name=names['binary_mask'])
+                paths['region_mask']   = self.path(s, v, 'mask', name=names['region_mask'])
+                paths['material_mask'] = self.path(s, v, 'mask', name=names['material_mask'])
 
-                paths['region_mask'] = self.path(subj, variant, asset_type='mask', mask_tag=region_tag)
-                paths['volume_mesh'] = self.path(subj, variant, asset_type='mesh', mesh_tag=volume_tag)
+                paths['surface_mesh']  = self.path(s, v, 'mesh', name=names['surface_mesh'])
+                paths['volume_mesh']   = self.path(s, v, 'mesh', name=names['volume_mesh'])
+                paths['material_mesh'] = self.path(s, v, 'mesh', name=names['material_mesh'])
+                paths['simulate_mesh'] = self.path(s, v, 'mesh', name=names['simulate_mesh'])
+                paths['interp_mesh']   = self.path(s, v, 'mesh', name=names['interp_mesh'])
 
-                paths['material_mask'] = self.path(subj, variant, asset_type='mask', mask_tag=material_tag)
-                paths['mat_fields'] = self.path(subj, variant, asset_type='mesh', mesh_tag=mat_fields_tag)
-                paths['sim_fields'] = self.path(subj, variant, asset_type='mesh', mesh_tag=sim_fields_tag)
-                paths['img_fields'] = self.path(subj, variant, asset_type='mesh', mesh_tag=img_fields_tag)
-                paths['input_image'] = self.path(subj, variant, asset_type='image', image_tag=image_tag)
-
-                paths['density_field'] = self.path(subj, variant, asset_type='field', field_tag='density')
-                paths['elastic_field'] = self.path(subj, variant, asset_type='field', field_tag='elasticity')
-                paths['disp_field']  = self.path(subj, variant, asset_type='field', field_tag='displacement')
+                paths['input_image']   = self.path(s, v, 'image', name=names['input_image'])
+                paths['density_field'] = self.path(s, v, 'field', name=names['density_field'])
+                paths['elastic_field'] = self.path(s, v, 'field', name=names['elastic_field'])
 
             yield base.Example(
                 dataset='ShapeNet',
-                subject=subj,
                 variant=variant,
+                subject=s,
                 paths=paths,
-                metadata=meta
+                metadata=metadata
             )
 
 

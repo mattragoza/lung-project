@@ -1,14 +1,7 @@
-import sys
-import inspect
-import argparse
-import time
-import random
-import numpy as np
-import pandas as pd
-import torch
-
+import sys, time, random
 
 VERBOSE = True
+
 
 def set_verbose(val: bool):
     global VERBOSE
@@ -16,6 +9,7 @@ def set_verbose(val: bool):
 
 
 def log(msg, end='\n'):
+    import torch
     is_worker = torch.utils.data.get_worker_info()
     if VERBOSE and not is_worker:
         print(msg, end=end, file=sys.stdout, flush=True)
@@ -34,6 +28,9 @@ def pprint(
     _depth=0,
     _tab=''
 ):
+    import numpy as np
+    import pandas as pd
+    import torch
     type_name = type(obj).__name__
 
     if isinstance(obj, torch.Tensor):
@@ -115,6 +112,7 @@ def update_defaults(overrides=None, **defaults):
 
 
 def missing(val):
+    import pandas as pd
     return pd.isna(val) or str(val).strip() == ''
 
 
@@ -122,48 +120,29 @@ def namespace(dct, name):
     return {f'{name}.{k}': v for k, v in dct.items()}
 
 
-def is_iterable(obj):
-    return hasattr(obj, '__iter__') and not isinstance(obj, str)
+def is_iterable(obj, string_ok=False):
+    if isinstance(obj, str):
+        return string_ok
+    return hasattr(obj, '__iter__')
 
 
-def as_iterable(obj):
-    return obj if is_iterable(obj) else [obj]
+def as_iterable(obj, string_ok=False):
+    return obj if is_iterable(obj, string_ok) else [obj]
 
 
-def get_random_seed(max_seed):
-    time.sleep((time.time() % 1) / 1000)
-    return int(time.time() * 1e6) % 4294967295 # 2^32 - 1
-
-
-def set_random_seed(random_seed=None):
-    if random_seed is None:
-        random_seed = get_random_seed()
-    print(f'Setting random seed to {random_seed}')
-    random.seed(random_seed)
-    np.random.seed(random_seed)
-    torch.manual_seed(random_seed)
-
-
-def timer(sync):
-    if sync:
-        torch.cuda.synchronize()
-    return time.time()
-
-
-def as_bool(s):
-    if isinstance(s, str):
-        s = s.lower()
-        if s in {'true', 't', '1'}:
+def as_bool(val):
+    if isinstance(val, str):
+        val = val.lower()
+        if val in {'true', 't', '1'}:
             return True
-        elif s in {'false', 'f', '0'}:
+        elif val in {'false', 'f', '0'}:
             return False
-        else:
-            raise ValueError(f'{repr(s)} is not a valid bool string')
-    else:
-        return bool(s)
+        raise ValueError(f'Invalid boolean string: {val:r}')
+    return bool(val)
 
 
 def generate_argument_parser(func):
+    import inspect, argparse
 
     # get full argument specification
     argspec = inspect.getfullargspec(func)
@@ -199,6 +178,7 @@ def main(func):
     '''
     Decorator for auto parsing arguments and calling the main function
     '''
+    import inspect
     parent = inspect.stack()[1].frame
     __name__ = parent.f_locals.get('__name__')
     if __name__ == '__main__':
@@ -212,3 +192,4 @@ def main(func):
         func(**kwargs)
 
     return func
+

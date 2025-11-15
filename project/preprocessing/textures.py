@@ -20,6 +20,35 @@ DEFAULT_IQR_MULT = 4.0
 DEFAULT_USE_SOLID = True
 
 
+class TextureCache:
+
+    def __init__(
+        self,
+        annotations: str,
+        iqr_mult: float=DEFAULT_IQR_MULT,
+        use_solid: bool=DEFAULT_USE_SOLID,
+        weights=None
+    ):
+        self.df = load_texture_annotations(annotations)
+        self.iqr_mult  = iqr_mult
+        self.use_solid = use_solid
+        self.weights   = weights
+
+    def sample_field(self, mat_name, points, rng):
+        sel = self.df.material == mat_name
+        if not sel.any():
+            print(self.df)
+            raise RuntimeError(f'No textures for material name {mat_name!r}')
+        return sample_texture_field(
+            self.df[sel],
+            points=points,
+            rng=rng,
+            iqr_mult=self.iqr_mult,
+            use_solid=self.use_solid,
+            weights=self.weights
+        )
+
+
 def load_texture_annotations(path):
     import pandas as pd
     df = pd.read_csv(path)
@@ -27,7 +56,6 @@ def load_texture_annotations(path):
     return df
 
 
-@lru_cache(maxsize=256)
 def load_texture_2d(path, iqr_mult=DEFAULT_IQR_MULT, invert=False):
     a = fileio.load_imageio(path)
     a = skimage.util.img_as_float(a)
@@ -42,7 +70,6 @@ def load_texture_2d(path, iqr_mult=DEFAULT_IQR_MULT, invert=False):
     return 1. - a if invert else a
 
 
-@lru_cache(maxsize=32)
 def load_texture_3d(path, iqr_mult=DEFAULT_IQR_MULT, invert=False):
     a = fileio.load_nibabel(path).get_fdata()
     a = skimage.util.img_as_float(a)
@@ -120,125 +147,4 @@ def sample_texture_field(
                 for i, s in sampled.iterrows()
         ]
         return interpolate_triplanar(textures, points, weights)
-
-
-def bandlimited_noise(shape, corr_len, rng, eps=1e-12):
-    z = rng.normal(size=shape).astype(np.float32)
-    if corr_len < eps:
-        return z
-
-    kx, ky, kz = np.meshgrid(
-        np.fft.fftfreq(shape[0]),
-        np.fft.fftfreq(shape[1]),
-        np.fft.fftfreq(shape[2]),
-        indexing='ij'
-    )
-    kk = kx*kx + ky*ky + kz*kz
-
-    sigma = 1.0 / (2*np.pi*corr_len)
-    H = np.exp(-0.5 * kk / (sigma*sigma))
-    Z = np.fft.fftn(z)
-    zf = np.fft.ifftn(H * Z).real
-
-    zf -= zf.mean()
-    zf /= (zf.std() + eps)
-    return zf
-
-
-def generate_volumetric_image(
-    mat_mask: np.ndarray,
-    affine: np.ndarray,
-    mat_df: pd.DataFrame,
-    tex_df: pd.DataFrame,
-
-    # texture parameters
-    iqr_mult: float=DEFAULT_IQR_MULT,
-    use_solid: bool=DEFAULT_USE_SOLID,
-    weights=None,
-    seed=0,
-
-    # noise parameters
-    tex_noise_len: float=0.,
-    tex_noise_std: float=0.,
-    mul_noise_len: float=0.,
-    mul_noise_std: float=0.,
-    add_noise_len: float=0.,
-    add_noise_std: float=0.,
-    mat_sigma: float=1.,
-    psf_sigma: float=0.,
-):
-    '''
-    Args:
-        mat_mask: (I, J, K) voxel mask of material labels
-        affine: (4, 4) voxel -> world coordinate mapping
-        mat_df: material catalog df indexed by label
-        tex_df: texture annotations (materials and paths)
-    Returns:
-        (I, J, K) volumetric image with intensity bias and
-            texture derived from the material labels
-    '''
-    rng = np.random.default_rng(seed)
-
-    I, J, K = mat_mask.shape
-    points = np.stack(np.mgrid[0:I,0:J,0:K], axis=-1).reshape(-1, 3)
-    image  = np.zeros((I, J, K), dtype=np.float32)
-    
-    tex_noise = bandlimited_noise(mat_mask.shape, tex_noise_len, rng)
-    mul_noise = bandlimited_noise(mat_mask.shape, mul_noise_len, rng)
-    add_noise = bandlimited_noise(mat_mask.shape, add_noise_len, rng)
-
-    labels = np.unique(mat_mask)
-
-    # compute material blend weights
-    blend = np.zeros((len(labels), I, J, K), dtype=float)
-    for i, label in enumerate(labels):
-        if i == 0:
-            blend[i] = (mat_mask == 0)
-        else:
-            blend[i] = (mat_mask != 0) * scipy.ndimage.gaussian_filter((mat_mask == label).astype(float), sigma=mat_sigma, mode='wrap')
-
-    blend /= (blend.sum(axis=0, keepdims=True) + 1e-12)
-
-    #blend *= scipy.ndimage.gaussian_filter((mat_mask == label).astype(float), sigma=mat_sigma, mode='wrap')
-
-    # for each unique value in material mask,
-    for i, label in enumerate(labels):
-
-        # select region with mask value
-        sel_region = (mat_mask == label)
-        sel_points = points[sel_region.reshape(-1)]
-
-        # get material info for region
-        mat_info = mat_df.loc[label]
-        mat_name = mat_info.material_key
-        img_bias = mat_info.image_bias
-        img_range = mat_info.image_range if label > 0 else 0
-
-        utils.log(f'{mat_name} | bias = {img_bias:.4f} range = {img_range:.4f}')
-
-        # sample 3d texture field associated with material
-        mat_tex_df = tex_df[(tex_df.material == mat_name)]
-
-        if len(mat_tex_df) > 0:
-            t_interp = sample_texture_field(mat_tex_df, points, rng, iqr_mult, use_solid, weights).reshape(I,J,K)
-        else:
-            t_interp = 0.0
-
-        # add texture noise
-        t_interp = t_interp + tex_noise_std * tex_noise
-
-        # assign image values using image params + texture
-        image += blend[i] * (img_bias + img_range * t_interp)
-
-    # global multiplicative noise
-    if mul_noise_std > 0:
-        image *= (1.0 + mul_noise_std * mul_noise)
-
-    image = scipy.ndimage.gaussian_filter(image, sigma=psf_sigma, mode='wrap')
-
-    # global additive noise
-    if add_noise_std > 0:
-        image += add_noise_std * add_noise
-
-    return image
 

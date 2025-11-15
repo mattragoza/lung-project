@@ -5,12 +5,11 @@ import trimesh
 from ..core import utils, transforms
 
 
-def repair_surface_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+def repair_surface_mesh(mesh: trimesh.Trimesh, use_pymeshfix: False) -> trimesh.Trimesh:
     '''
     Process a triangular mesh to fix several issues
     and attempt to make it a watertight surface.
     '''
-    import pymeshfix
     mesh = mesh.copy()
 
     utils.log('Initial mesh state:')
@@ -25,14 +24,16 @@ def repair_surface_mesh(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     utils.log('\nAfter trimesh repair:')
     utils.log(utils.pprint(get_mesh_info(mesh), ret_string=True))
 
-    mesh_fixer = pymeshfix.MeshFix(mesh.vertices, mesh.faces)
-    mesh_fixer.repair(verbose=utils.VERBOSE)
-    mesh = trimesh.Trimesh(vertices=mesh_fixer.v, faces=mesh_fixer.f, process=False)
+    if use_pymeshfix:
+        import pymeshfix
+        mesh_fixer = pymeshfix.MeshFix(mesh.vertices, mesh.faces)
+        mesh_fixer.repair(verbose=utils.VERBOSE)
+        mesh = trimesh.Trimesh(vertices=mesh_fixer.v, faces=mesh_fixer.f, process=False)
+
     trimesh.repair.fix_normals(mesh)
 
     utils.log('\nAfter pymeshfix repair:')
     utils.log(utils.pprint(get_mesh_info(mesh), ret_string=True))
-
     return mesh
 
 
@@ -116,6 +117,7 @@ def query_face_labels(
     mesh: trimesh.Trimesh,
     labels: np.ndarray,
     points: np.ndarray,
+    method: str,
     chunk_size=10000
 ) -> np.ndarray:
     '''
@@ -127,11 +129,15 @@ def query_face_labels(
         labels: (N,) array of face labels
         points: (M,3) array of query points,
             in same coordinate system as mesh
+        method: 'closest_point' | 'nearby_faces'
     Returns:
         values: (M,) array of label values
     '''
     import sys, tqdm
     assert points.ndim == 2 and points.shape[1] == 3
+
+    if method not in {'closest_point', 'nearby_faces'}:
+        raise ValueError(f'Invalid query method: {method:r}')
 
     query = trimesh.proximity.ProximityQuery(mesh)
     points = np.asarray(points, dtype=np.float32)
@@ -143,9 +149,11 @@ def query_face_labels(
     
     for start in tqdm.tqdm(range(0, len(points), chunk_size), file=sys.stdout):
         end = min(start + chunk_size, len(points))
-        #_, _, face_inds = query.on_surface(points[start:end])
-        candidates = trimesh.proximity.nearby_faces(mesh, points[start:end])
-        face_inds = np.array([_most_common_value(c) for c in candidates], dtype=int)
+        if method == 'closest_point':
+            _, _, face_inds = query.on_surface(points[start:end])
+        elif method == 'nearby_faces':
+            candidates = trimesh.proximity.nearby_faces(mesh, points[start:end])
+            face_inds = np.array([_most_common_value(c) for c in candidates], dtype=int)
         output[start:end] = labels[face_inds]
     
     return output
@@ -155,7 +163,8 @@ def assign_voxel_labels(
     mask: np.ndarray,
     affine: np.ndarray,
     mesh: trimesh.Trimesh,
-    labels: np.ndarray
+    labels: np.ndarray,
+    method: str,
 ) -> np.ndarray:
     '''
     Assign labels to nonzero voxels by computing the
@@ -170,6 +179,7 @@ def assign_voxel_labels(
         affine: (4, 4) voxel -> model coordinate map
         mesh: trimesh.Trimesh in model coordinates
         labels: (N,) array of face labels
+        method: 'closest_point' | 'nearby_faces'
     Returns:
         labeled: (I, J, K) labeled voxel mask
     Returns:
@@ -179,6 +189,6 @@ def assign_voxel_labels(
     points_model = transforms.voxel_to_world_coords(points_voxel, affine)
 
     labeled = np.zeros_like(mask, dtype=np.int16) # reserve background = 0
-    labeled[I, J, K] = query_face_labels(mesh, labels, points_model) + 1
+    labeled[I, J, K] = query_face_labels(mesh, labels, points_model, method) + 1
     return labeled
 

@@ -43,36 +43,48 @@ def build_material_catalog(include_background=True):
     return mats.sort_index()
 
 
-def assign_image_parameters(
-    mat_df,
-    d_ref=1, d_pow=1, # density feature
-    e_ref=1, e_pow=1, # elastic feature
-    b0=0, b_d=0, b_e=0, b_de=0, # image bias coefs
-    r0=0, r_d=0, r_e=0, r_de=0, # image range coefs
-    background=0,
+def compute_intensity_model(
+    density: np.ndarray,
+    elastic: np.ndarray,
+    density_scale: float=1.0,
+    elastic_scale: float=1.0,
+    density_power: float=1.0,
+    elastic_power: float=1.0,
+    bias_offset: float=0.0,
+    bias_from_density: float=0.0,
+    bias_from_elastic: float=0.0,
+    bias_from_product: float=0.0,
+    range_offset: float=0.0,
+    range_from_density: float=0.0,
+    range_from_elastic: float=0.0,
+    range_from_product: float=0.0,
     eps=1e-6
 ):
-    df = mat_df.copy()
-
     def _compute_feature(val, ref, power):
-        return np.maximum(val / ref, eps) ** power
+        return np.maximum(val.astype(float) / float(ref), eps) ** float(power)
 
-    d = _compute_feature(df['density_val'], d_ref, d_pow)
-    e = _compute_feature(df['elastic_val'], e_ref, e_pow)
+    d = _compute_feature(density, density_scale, density_power)
+    e = _compute_feature(elastic, elastic_scale, elastic_power)
 
     def _compute_param(x, y, c0, c_x, c_y, c_xy):
-        return c0 + c_x * x + c_y * y + c_xy * x * y
+        return c0 + float(c_x) * x + float(c_y) * y + float(c_xy) * x*y
 
-    df['density_feat'] = d
-    df['elastic_feat'] = e
-    df['image_bias']  = _compute_param(d, e, b0, b_d, b_e, b_de)
-    df['image_range'] = _compute_param(d, e, r0, r_d, r_e, r_de)
+    b = _compute_param(d, e, bias_offset, bias_from_density, bias_from_elastic, bias_from_product)
+    r = _compute_param(d, e, range_offset, range_from_density, range_from_elastic, range_from_product)
 
-    return df
+    return {
+        'density_feat': d,
+        'elastic_feat': e,
+        'intensity_bias': b,
+        'intensity_range': r
+    }
+
+
+# ----- assigning materials to regions -----
 
 
 def sample_region_materials(
-    region_mask, prior, vote_rate=1e-3, min_votes=1, seed=0
+    region_mask, prior, sample_rate=0, min_samples=1, seed=0
 ):
     '''
     Assign materials to a multi-label region mask by sampling
@@ -86,8 +98,9 @@ def sample_region_materials(
     Args:
         region_mask: (I, J, K) int array of region labels
         prior: (M,) float array of material probabilities
-        vote_rate: number of votes per voxel (default: 1e-3)
-        min_votes: minimum votes per region (default: 1)
+        min_samples: minimum samples per region (default: 1)
+        sample_rate: number of samples per voxel (default: 1e-3)
+            Reduce this parameter to increase the variance.
         seed: random seed
     Returns:
         material_map: (N,) int array mapping region labels
@@ -101,11 +114,11 @@ def sample_region_materials(
 
     sel = regions > 0 # exclude background
     regions, sizes = regions[sel], sizes[sel]
-    n_votes = np.maximum(vote_rate * sizes, min_votes)
+    n_samples = np.maximum(min_samples, sizes * sample_rate)
 
     utils.log(f'Region labels: {regions}')
     utils.log(f'Region sizes:  {sizes}')
-    utils.log(f'Region votes: {n_votes}')
+    utils.log(f'Region votes:  {n_samples}')
 
     if regions.size == 0:
         return np.zeros(1, dtype=int) # only background
@@ -131,13 +144,13 @@ def sample_region_materials(
     for idx in size_order:
         region, size = int(regions[idx]), int(sizes[idx])
 
-        # sample votes from prior distribution
-        n_votes = max(min_votes, int(vote_rate * size))
-        votes = rng.multinomial(n_votes, prior)
+        # sample materials from prior distribution
+        n_samples = max(min_samples, int(size * sample_rate))
+        samples = rng.multinomial(n_samples, prior)
 
         # apply slight jitter to break ties
-        jitter = rng.uniform(-0.1, 0.1, size=votes.size)
-        ranked = materials[np.argsort(-(votes + jitter))]
+        jitter = rng.uniform(-0.1, 0.1, size=samples.size)
+        ranked = materials[np.argsort(-(samples + jitter))]
 
         neighbors = {assigned.get(nb) for nb in adjacent.get(region, [])}
         neighbors.discard(None)
@@ -163,7 +176,7 @@ def sample_region_materials(
     return material_map
 
 
-def assign_materials_to_regions(region_mask, sample_kws=None):
+def assign_materials_to_regions(region_mask, sampling_kws=None):
     region_mask = region_mask.astype(int, copy=False)
 
     utils.log('Building material catalog')
@@ -172,7 +185,7 @@ def assign_materials_to_regions(region_mask, sample_kws=None):
 
     utils.log('Sampling materials per region')
     prior = mat_df.loc[1:, 'material_freq'].to_numpy() # exclude background
-    material_by_region = sample_region_materials(region_mask, prior, **(sample_kws or {}))
+    material_by_region = sample_region_materials(region_mask, prior, **(sampling_kws or {}))
 
     utils.log(material_by_region)
     return material_by_region
@@ -193,10 +206,10 @@ def assign_material_properties(material_labels):
     return density_values, elastic_values
 
 
-def compute_region_materials(reg_mask, mat_mask):
-    lut = -np.ones(reg_mask.max() + 1, dtype=int)
-    for r in np.unique(reg_mask):
-        vals = mat_mask[reg_mask == r]
-        lut[r] = int(np.bincount(vals).argmax())
-    return lut
+def infer_material_by_region(region_labels, material_labels):
+    most_common = -np.ones(region_labels.max() + 1, dtype=int)
+    for r in np.unique(region_labels):
+        m = material_labels[region_labels == r]
+        most_common[r] = int(np.bincount(m).argmax())
+    return most_common
 

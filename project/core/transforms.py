@@ -135,26 +135,26 @@ def node_to_cell_values(cells, node_vals):
     return node_vals[cells].mean(axis=1)
 
 
-def cell_to_node_values(verts, cells, cell_vals, eps=1e-12):
+def cell_to_node_values(verts, cells, cell_values, eps=1e-12):
     vol = compute_cell_volume(verts, cells)
     num = np.zeros(len(verts), dtype=float)
     den = np.zeros(len(verts), dtype=float)
     for i, vert_inds in enumerate(cells):
         for j in vert_inds:
-            num[j] += vol[i] * cell_vals[i]
+            num[j] += vol[i] * cell_values[i]
             den[j] += vol[i]
     return num / np.maximum(den, eps)
 
 
-def cell_to_node_labels(verts, cells, cell_vals, eps=1e-12):
+def cell_to_node_labels(verts, cells, cell_labels):
     vol = compute_cell_volume(verts, cells)
-    num = np.zeros(len(verts), dtype=float)
-    den = np.zeros(len(verts), dtype=float)
+    num_verts = len(verts)
+    max_label = int(cell_labels.max())
+    acc = np.zeros((num_verts, max_label + 1), dtype=float)
     for i, vert_inds in enumerate(cells):
         for j in vert_inds:
-            num[j] += vol[i] * cell_vals[i]
-            den[j] += vol[i]
-    return num / np.maximum(den, eps)
+            acc[j, cell_labels[i]] += vol[i]
+    return np.argmax(acc, axis=1)
 
 
 def smooth_mesh_values(verts, cells, node_vals, cell_vals, degree):

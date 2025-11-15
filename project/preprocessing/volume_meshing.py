@@ -21,7 +21,7 @@ def _affine_spacing(A):
 def generate_mesh_from_mask(
     mask: np.ndarray,
     affine: np.ndarray,
-    use_affine_spacing: bool=True,
+    use_affine_spacing: bool=False,
     pygalmesh_kws: Dict[str, Any]=None,
     random_seed: int=0,
     label_key: str='label'
@@ -32,7 +32,7 @@ def generate_mesh_from_mask(
     Args:
         mask: (I, J, K) voxel mask (binary or region)
         affine: (4, 4) voxel to world coordinate map
-        use_world_spacing: If True, use affine spacing
+        use_affine_spacing: If True, use affine spacing
             when generating the mesh, otherwise mesh in
             voxel coordinates. The returned mesh will be
             in the world coordinate system either way.

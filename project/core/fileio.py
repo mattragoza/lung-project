@@ -1,5 +1,3 @@
-import numpy as np
-
 from . import utils
 
 
@@ -74,6 +72,7 @@ def load_fenics(path, label_key='label'):
 
 def load_analyze75(img_file, shape, dtype=None):
     # source: https://stackoverflow.com/questions/27507928/loading-analyze-7-5-format-images-in-python
+    import numpy as np
     utils.log(f'Loading {path}')
     dtype = dtype or np.int16
     array = np.fromfile(img_file, dtype=dtype).reshape(shape)
@@ -84,6 +83,12 @@ def load_analyze75(img_file, shape, dtype=None):
         item_size * shape[0] * shape[1]
     )
     return array.copy()
+
+
+def load_config(path):
+    if path.endswith('.json'):
+        return load_json(path)
+    return load_yaml(path)
 
 
 def load_json(path):
@@ -101,8 +106,15 @@ def load_yaml(path):
 
 
 def load_xyz(path, dtype=float):
+    import numpy as np
     utils.log(f'Loading {path}')
     with open(path) as f:
         data = [line.strip().split() for line in f]
     return np.array(data, dtype=dtype)
+
+
+def load_subject_list(path, key='subject', **csv_kws):
+    import pandas as pd
+    df = pd.read_csv(path, **csv_kws)
+    return df[key].to_list()
 

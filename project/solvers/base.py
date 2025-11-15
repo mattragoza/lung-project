@@ -1,60 +1,71 @@
 from __future__ import annotations
 from typing import Dict, Tuple, Optional
-import meshio
 import torch
 
 
 class PDESolver:
 
+    @classmethod
+    def get_subclass(cls, name):
+        if name in {'warp', 'warp.fem', 'WarpFEMSolver'}:
+            from . import warp
+            return warp.WarpFEMSolver
+        elif name in {'fenics', 'dolfin', 'FenicsFEMSolver'}:
+            from . import fenics
+            return fenics.FenicsFEMSolver
+        raise ValueError(f'Invalid solver class: {name}')
+
     def init_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
         raise NotImplementedError
 
-    def simulate(self, mu, lam, rho, u_obs) -> torch.Tensor:
+    def forward(
+        self,
+        mu: torch.Tensor,
+        lam: torch.Tensor,
+        rho: torch.Tensor,
+        u_obs: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
         raise NotImplementedError
 
-    def adjoint_setup(self, rho, u_obs):
-        raise NotImplementedError
-
-    def adjoint_forward(self, mu, lam) -> torch.Tensor:
-        raise NotImplementedError
-
-    def adjoint_backward(self, loss_grad) -> Dict[str, torch.Tensor]:
+    def backward(self, loss_grad: torch.Tensor) -> Dict[str, torch.Tensor]:
         raise NotImplementedError
 
     def zero_grad(self):
         raise NotImplementedError
 
-
-class PDESolverModule(torch.nn.Module):
-
-    def __init__(
-        self,
-        solver: PDESolver, 
-        verts: torch.Tensor,
-        cells: torch.Tensor,
-        rho:   torch.Tensor,
-        u_obs: torch.Tensor
-    ):
-        super().__init__()
-        self.solver = solver
-        self.solver.init_geometry(verts, cells)
-        self.solver.adjoint_setup(rho, u_obs)
-
-    def forward(self, mu: torch.Tensor, lam: torch.Tensor):
-        return PDESolverFn.apply(self.solver, mu, lam)
+    def solve(self, mu, lam, rho, u_obs):
+        loss, res, u_sim = PDESolveFn.apply(self, mu, lam, rho, u_obs)
+        return {'loss': loss, 'res': res, 'u_sim': u_sim}
 
 
-class PDESolverFn(torch.autograd.Function):
+class PDESolveFn(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, solver: PDESolver, mu: torch.Tensor, lam: torch.Tensor):
+    def forward(
+        ctx,
+        solver: PDESolver,
+        mu: torch.Tensor,
+        lam: torch.Tensor,
+        rho: torch.Tensor,
+        u_obs: torch.Tensor
+    ):
         ctx.solver = solver
         solver.zero_grad()
-        u_sim, res, loss = solver.adjoint_forward(mu, lam)
-        return loss, res.detach(), u_sim.detach()
+        outputs = solver.forward(mu, lam, rho, u_obs)
+        return (
+            outputs['loss'],
+            outputs['res'].detach(),
+            outputs['u_sim'].detach()
+        )
 
     @staticmethod
     def backward(ctx, grad_loss, grad_res=None, grad_u=None):
-        mu_grad, lam_grad = ctx.solver.adjoint_backward(grad_loss)
-        return None, mu_grad, lam_grad
+        grad_inputs = ctx.solver.backward(grad_loss)
+        return (
+            None,
+            grad_inputs['mu'],
+            grad_inputs['lam'],
+            grad_inputs['rho'],
+            grad_inputs['u_obs']
+        )
 

@@ -4,7 +4,6 @@ from ..core import utils
 
 
 def infer_binvox_affine(binvox, points):
-
     shape = np.asarray(binvox.dims)
     translate = np.asarray(binvox.translate)
     scale = float(binvox.scale)

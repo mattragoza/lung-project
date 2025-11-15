@@ -5,21 +5,19 @@ import skimage
 from ..core import utils, transforms
 
 
-def cleanup_binary_mask(
-    mask: np.ndarray, max_components=1, background_kws=None
-) -> np.ndarray:
+def filter_binary_mask(mask: np.ndarray, foreground_kws=None, background_kws=None) -> np.ndarray:
+    foreground_kws = utils.update_defaults(foreground_kws)
+    background_kws = utils.update_defaults(background_kws)
+
     utils.log(f'Filtering foreground (removing blobs)')
-    mask = filter_connected_components(
-        mask != 0, max_components=max_components
-    )
+    mask = filter_connected_components(mask != 0, **foreground_kws)
+
     utils.log(f'Filtering background (filling holes)')
-    mask = ~filter_connected_components(
-        mask == 0, **(background_kws or {})
-    )
+    mask = ~filter_connected_components(mask == 0, **background_kws)
     return mask
 
 
-def cleanup_region_mask(input_mask, **filter_kws):
+def filter_region_mask(input_mask, **filter_kws):
     output_mask = np.zeros_like(input_mask)
 
     # filter connected components in each region
@@ -40,10 +38,10 @@ def cleanup_region_mask(input_mask, **filter_kws):
 
 def filter_connected_components(
     mask,
-    min_count=30,
+    min_voxels=0,
     min_percent=0,
     max_components=None,
-    keep_largest=True,
+    keep_largest=False,
     connectivity=1
 ):
     # label connected regions and measure their size
@@ -74,7 +72,7 @@ def filter_connected_components(
     for rank, i in enumerate(size_order):
         l, c, p = int(labels[i]), int(counts[i]), float(percents[i])
 
-        size_ok = (c >= min_count) and (p >= min_percent)
+        size_ok = (c >= min_voxels) and (p >= min_percent)
         hit_cap = max_components and (output_components >= max_components)
         keep = (size_ok and not hit_cap) or (keep_largest and rank == 0)
 
@@ -119,9 +117,10 @@ def compute_cross_section_metrics(mask, p=[5, 50, 95]):
     return np.percentile(a[a > 0], p)
 
 
-
-def pad_array_and_affine(array, affine, pad):
-    array = np.pad(array, pad, mode='constant', constant_values=0)
+def pad_array_and_affine(array, affine, pad: int|float=0, value=0):
+    if isinstance(pad, float):
+        pad = int(np.ceil(pad * max(array.shape)))
+    array = np.pad(array, pad, mode='constant', constant_values=value)
     origin = np.array(affine[:3,3])
     spacing = np.diag(affine[:3,:3])
     affine = transforms.build_affine_matrix(origin - pad * spacing, spacing)
