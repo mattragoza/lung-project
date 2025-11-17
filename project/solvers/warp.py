@@ -8,23 +8,18 @@ import warp.fem
 import warp.optim.linear
 
 wp.init()
-wp.config.quiet = False
+wp.config.quiet = True
 
 from . import base
 from ..core import utils
 
 
-def _as_warp_array(t, **kwargs):
+def _as_warp_array(t: torch.Tensor, **kwargs) -> wp.array:
     return wp.from_torch(t.contiguous().detach(), **kwargs)
 
 
-def _zero_grad(a: wp.array):
-    if getattr(a, 'grad', None) is not None:
-        a.grad.zero_()
-
-
-def _move_field_to_device(field, device):
-    field.dof_values = field.dof_values.to(device)
+def _cpu_torch_grad(a: wp.array) -> torch.Tensor | None:
+    return wp.to_torch(a.grad).cpu() if a.requires_grad else None
 
 
 class WarpFEMSolver(base.PDESolver):
@@ -57,7 +52,7 @@ class WarpFEMSolver(base.PDESolver):
 
         self._initialized = False
 
-    def init_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
+    def bind_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
         verts = _as_warp_array(verts, dtype=self.vector_dtype)
         cells = _as_warp_array(cells, dtype=wp.int32)
 
@@ -85,6 +80,8 @@ class WarpFEMSolver(base.PDESolver):
             wp.copy(s.dof_values, _as_warp_array(values, dtype=self.scalar_dtype))
         if requires_grad is not None:
             s.dof_values.requires_grad = requires_grad
+        elif values is not None:
+            s.dof_values.requires_grad = values.requires_grad
         return s
 
     def make_vector_field(self, values=None, requires_grad=None):
@@ -94,14 +91,37 @@ class WarpFEMSolver(base.PDESolver):
             wp.copy(v.dof_values, _as_warp_array(values, dtype=self.vector_dtype))
         if requires_grad is not None:
             v.dof_values.requires_grad = requires_grad
+        elif values is not None:
+            v.dof_values.requires_grad = values.requires_grad
         return v
 
-    def forward(self, mu, lam, rho, u_obs):
+    def solve(self, mu, lam, rho, u_bc):
 
         with wp.ScopedDevice(self.device):
             mu = self.make_scalar_field(mu)
             lam = self.make_scalar_field(lam)
             rho = self.make_scalar_field(rho)
+            u_bc = self.make_vector_field(u_bc)
+
+            K = self.assemble_stiffness(mu, lam)
+            f = self.assemble_forcing(rho)
+            M = self.get_preconditioner(K)
+
+            P = self.assemble_projector()
+            u0 = self.apply_lifting(P, u_bc)
+            f_tilde = self.shift_rhs(f, K, u0)
+            u_sim = self.make_vector_field()
+            self.solve_forward(K, u_sim, f_tilde, P, M, u0)
+
+        return wp.to_torch(u_sim.dof_values)
+
+    def forward(self, mu, lam, rho, u_bc, u_obs):
+
+        with wp.ScopedDevice(self.device):
+            mu = self.make_scalar_field(mu)
+            lam = self.make_scalar_field(lam)
+            rho = self.make_scalar_field(rho)
+            u_bc = self.make_vector_field(u_bc)
             u_obs = self.make_vector_field(u_obs)
 
             K = self.assemble_stiffness(mu, lam)
@@ -109,7 +129,7 @@ class WarpFEMSolver(base.PDESolver):
             M = self.get_preconditioner(K)
 
             P = self.assemble_projector()
-            u0 = self.apply_lifting(P, u_obs)
+            u0 = self.apply_lifting(P, u_bc)
             f_tilde = self.shift_rhs(f, K, u0)
 
             u_sim = self.make_vector_field(requires_grad=True)
@@ -125,13 +145,14 @@ class WarpFEMSolver(base.PDESolver):
                 arrays=[res.dof_values, u_sim.dof_values]
             )
             with self.tape:
-                loss = self.compute_loss(mu, lam, u_obs, u_sim)
+                loss = self.compute_loss(mu, lam, u_sim, u_obs)
 
-        # track variables for adjoint backward
+        # track variables for backward pass
         self.context = {
             'mu':    mu,
             'lam':   lam,
             'rho':   rho,
+            'u_bc':  u_bc,
             'u_obs': u_obs,
             'u_sim': u_sim,
             'res':   res,
@@ -149,10 +170,11 @@ class WarpFEMSolver(base.PDESolver):
             with wp.ScopedDevice(self.device):
                 self.tape.backward()
             return {
-                'mu': wp.to_torch(self.context['mu'].dof_values.grad),
-                'lam': wp.to_torch(self.context['lam'].dof_values.grad),
-                'rho': wp.to_torch(self.context['lam'].dof_values.grad),
-                'u_obs': wp.to_torch(self.context['u_obs'].dof_values.grad) 
+                'mu': _cpu_torch_grad(self.context['mu'].dof_values),
+                'lam': _cpu_torch_grad(self.context['lam'].dof_values),
+                'rho': _cpu_torch_grad(self.context['rho'].dof_values),
+                'u_bc': _cpu_torch_grad(self.context['u_bc'].dof_values),
+                'u_obs': _cpu_torch_grad(self.context['u_obs'].dof_values)
             }
         finally:
             del self.context
@@ -204,8 +226,8 @@ class WarpFEMSolver(base.PDESolver):
         wp.fem.normalize_dirichlet_projector(P)
         return P
 
-    def apply_lifting(self, P, u_obs):
-        u0 = P @ u_obs.dof_values
+    def apply_lifting(self, P, u_bc):
+        u0 = P @ u_bc.dof_values
         return u0
 
     def shift_rhs(self, f, K, u0):
@@ -250,7 +272,7 @@ class WarpFEMSolver(base.PDESolver):
             output=res.dof_values
         )
 
-    def compute_loss(self, mu, lam, u_obs, u_sim):
+    def compute_loss(self, mu, lam, u_sim, u_obs):
         num = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
         den = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
 

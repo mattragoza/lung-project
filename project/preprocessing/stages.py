@@ -7,7 +7,7 @@ def preprocess_binary_mask(mask_path, mesh_path, output_path, config):
     _check_keys(
         config,
         valid={'foreground_filter', 'background_filter', 'center_mask', 'pad_amount'},
-        where='preprocess_binary_mask'
+        where='binary_mask'
     )
     from . import affine_fitting, mask_cleanup
 
@@ -35,7 +35,7 @@ def preprocess_surface_mesh(input_path, output_path, config):
     _check_keys(
         config,
         valid={'run_pymeshfix'},
-        where='preprocess_surface_mesh'
+        where='surface_mesh'
     )
     from . import surface_meshing
     import meshio
@@ -55,7 +55,7 @@ def create_mesh_region_mask(mask_path, mesh_path, output_path, config):
     _check_keys(
         config,
         valid={'label_method', 'region_filter'},
-        where='create_mesh_region_mask'
+        where='region_mask'
     )
     from . import surface_meshing, mask_cleanup
 
@@ -82,7 +82,7 @@ def create_volume_mesh_from_mask(mask_path, output_path, config):
     _check_keys(
         config,
         valid={'use_affine_spacing', 'meshing_parameters'},
-        where='create_volume_mesh_from_mask'
+        where='volume_mesh'
     )
     from . import volume_meshing
     nifti = fileio.load_nibabel(mask_path)
@@ -104,7 +104,7 @@ def create_material_mask(mask_path, output_path, density_path, elastic_path, con
     _check_keys(
         config,
         valid={'material_sampling'},
-        where='create_material_mask'
+        where='material_mask'
     )
     from . import materials
 
@@ -131,7 +131,7 @@ def create_material_mask(mask_path, output_path, density_path, elastic_path, con
 
 
 def create_material_fields(regions_path, materials_path, mesh_path, output_path, config):
-    _check_keys(config, valid=set(), where='create_material_fields')
+    _check_keys(config, valid=set(), where='material_mesh')
     from ..core import transforms, interpolation
     from . import materials
 
@@ -166,7 +166,7 @@ def generate_volumetric_image(mask_path, output_path, config):
     _check_keys(
         config,
         valid={'intensity_model', 'texture_source', 'noise_model'},
-        where='generate_volumetric_image'
+        where='image_generation'
     )
     from . import materials, textures, image_generation
 
@@ -202,7 +202,7 @@ def generate_volumetric_image(mask_path, output_path, config):
 
 
 def interpolate_image_fields(image_path, mesh_path, output_path, config):
-    _check_keys(config, valid={'order', 'mode'}, where='interpolate_image_fields')
+    _check_keys(config, valid={'order', 'mode'}, where='image_interpolation')
     from ..core import transforms
     import scipy.ndimage
 
@@ -232,7 +232,7 @@ def simulate_displacement_field(mesh_path, output_path, unit_m, config):
     _check_keys(
         config,
         valid={'physics_adapter', 'pde_solver'},
-        where='simulate_displacement_field'
+        where='displacement_simulation'
     )
     from .. import physics
 
@@ -247,13 +247,13 @@ def simulate_displacement_field(mesh_path, output_path, unit_m, config):
         pde_solver_kws=pde_solver_kws,
         **physics_adapter_kws
     )
-    loss, outputs = physics_adapter.simulate_forward(mesh, unit_m, bc_spec=None)
+    outputs = physics_adapter.simulate(mesh, unit_m, bc_spec=None)
 
     for k, v in outputs.items():
         utils.log((k, v.shape, v.dtype, v.mean()))
-        if v.shape[0] == len(verts):
+        if v.shape[0] == mesh.points.shape[0]:
             mesh.point_data[k] = v.astype(np.float32)
-        elif v.shape[0] == len(cells):
+        elif v.shape[0] == mesh.cells.shape[0]:
             mesh.cell_data_dict[k] = [v.astype(np.float32)]
         else:
             raise ValueError(f'Invalid mesh field shape: {v.shape}')

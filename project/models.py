@@ -210,7 +210,7 @@ class UNet3D(torch.nn.Module):
             next_channels = curr_channels // 2
         
         self.output_conv = torch.nn.Conv3d(curr_channels, out_channels, kernel_size=1)
-        self.output_func = _get_output_fn(output_func)
+        self.output_func = get_output_fn(output_func)
 
     def forward(self, x):
         features = []
@@ -227,7 +227,7 @@ class UNet3D(torch.nn.Module):
         return self.output_func(theta)
 
 
-def _get_output_fn(name):
+def get_output_fn(name):
     if name == 'relu':
         return F.relu
     elif name == 'softplus':

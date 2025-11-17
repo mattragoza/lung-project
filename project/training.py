@@ -43,7 +43,6 @@ class Trainer:
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
         self.epoch = 0
-        self.cache = {}
 
     def train(self, num_epochs, val_every=1, save_every=10, eval_on_train=False):
 
@@ -152,11 +151,12 @@ class Trainer:
             outputs['pde'] = []
 
             for k in range(batch_size):
-                sim_loss[k], pde_outputs = self.physics_adapter.simulate(
+                sim_loss[k], pde_outputs = self.physics_adapter.voxel_simulation_loss(
                     mesh=batch['mesh'][k],
                     unit_m=batch['example'][k].metadata['unit'],
                     affine=batch['affine'][k],
-                    E_pred=E_pred[k]
+                    E_vox=E_pred[k],
+                    bc_spec=None
                 )
                 outputs['pde'].append(pde_outputs)
 

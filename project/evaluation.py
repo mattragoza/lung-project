@@ -43,59 +43,60 @@ class Evaluator:
         }
         for k in range(batch_size):
             ex = outputs['example'][k]
-            mat_mask = _to_numpy(outputs['mask'][k]).reshape(-1, 1)
-            E_true_vox = _to_numpy(outputs['E_true'][k]).reshape(-1, 1) # Pa
-            E_pred_vox = _to_numpy(outputs['E_pred'][k]).reshape(-1, 1) # Pa
-
-            sel = (mat_mask > 0)
             ex_row = {**base, 'subject': ex.subject}
-            ex_row['num_voxels'] = int(np.count_nonzero(sel))
-            ex_row |= _eval(E_pred_vox[sel], E_true_vox[sel], name='E_voxel')
+            mat_labels = set()
+
+            if 'mask' in outputs:
+                mat_mask = _to_numpy(outputs['mask'][k]).reshape(-1, 1)
+                E_true_vox = _to_numpy(outputs['E_true'][k]).reshape(-1, 1) # Pa
+                E_pred_vox = _to_numpy(outputs['E_pred'][k]).reshape(-1, 1) # Pa
+
+                sel = (mat_mask > 0)
+                ex_row['num_voxels'] = int(np.count_nonzero(sel))
+                ex_row |= _eval(E_pred_vox[sel], E_true_vox[sel], name='E_vox')
+
+                mat_labels |= set(np.unique(mat_mask[sel]))
 
             if 'pde' in outputs:
                 pde_output = outputs['pde'][k]
+                vol_cells = _to_numpy(pde_output['volume'])
+                mat_cells = _to_numpy(pde_output['material'])
 
-                cells = _to_numpy(pde_output['cells'])
-                vol_cells = _to_numpy(pde_output['vol_cells'])
-                mat_cells = _to_numpy(pde_output['mat_cells'])
-                E_true_cells = _to_numpy(pde_output['E_true_cells']) # Pa
-                E_pred_vals = _to_numpy(pde_output['E_pred_values']) # Pa
-                u_true_vals = _to_numpy(pde_output['u_true_values']) # meters
-                u_pred_vals = _to_numpy(pde_output['u_pred_values']) # meters
-                res_vals = _to_numpy(pde_output['res_values'])
-        
-                # true scalar fields are defined on mesh cells
-                #   pred scalar fields may need to be mapped from nodes to cells
-                if pde_output['scalar_degree'] == 0:
-                    E_pred_cells = E_pred_vals
-                elif pde_output['scalar_degree'] == 1:
-                    E_pred_cells = transforms.node_to_cell_values(cells, E_pred_vals)
-
-                # the vector fields are nodal, evaluate on cells for volume weighting
-                assert pde_output['vector_degree'] == 1
-                u_true_cells = transforms.node_to_cell_values(cells, u_true_vals)
-                u_pred_cells = transforms.node_to_cell_values(cells, u_pred_vals)
-                res_cells    = transforms.node_to_cell_values(cells, res_vals)
-
+                E_true_cells = _to_numpy(pde_output['E_true']) # Pa
+                E_pred_cells = _to_numpy(pde_output['E_pred']) # Pa
+                u_true_cells = _to_numpy(pde_output['u_true']) # meters
+                u_pred_cells = _to_numpy(pde_output['u_pred']) # meters
+                res_cells = _to_numpy(pde_output['residual'])
+    
                 ex_row |= _eval(E_pred_cells, E_true_cells, vol_cells, name='E_cell')
                 ex_row |= _eval(u_pred_cells, u_true_cells, vol_cells, name='u_cell')
                 ex_row |= _eval(res_cells, None, vol_cells, name='res_cell')
 
+                mat_labels |= set(np.unique(mat_cells))
+
+            ex_row['num_materials'] = len(mat_labels)
             self.example_rows[phase].append(ex_row)
 
-            # next, evaluate metrics grouped by material label
-
-            for label in np.unique(mat_mask[sel]):
-                sel = (mat_mask == label)
+            # next, group by material label
+            for label in sorted(mat_labels):
                 mat_row = {**base, 'subject': ex.subject, 'material': int(label)}
-                mat_row['num_voxels'] = int(np.count_nonzero(sel))
-                mat_row |= _eval(E_pred_vox[sel], E_true_vox[sel], name='E_voxel')
+
+                if 'mask' in outputs:
+                    sel = (mat_mask == label)
+                    mat_row['num_voxels'] = int(np.count_nonzero(sel))
+                    mat_row |= _eval(E_pred_vox[sel], E_true_vox[sel], name='E_vox')
 
                 if 'pde' in outputs:
                     sel = (mat_cells == label)
+                    num_cells = int(np.count_nonzero(sel))
+                    if num_cells == 0:
+                        continue
                     vol_mat = vol_cells[sel]
+                    if np.sum(vol_mat) <= 0:
+                        utils.warn('WARNING: Zero-sum cell volume for subject {ex.subject}, material {label}; skipping.')
+                        continue
 
-                    mat_row['num_cells'] = int(np.count_nonzero(sel))
+                    mat_row['num_cells'] = num_cells
                     mat_row |= _eval(E_pred_cells[sel], E_true_cells[sel], vol_mat, name='E_cell')
                     mat_row |= _eval(u_pred_cells[sel], u_true_cells[sel], vol_mat, name='u_cell')
                     mat_row |= _eval(res_cells[sel], None, vol_mat, name='res_cell')

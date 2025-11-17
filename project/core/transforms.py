@@ -178,11 +178,6 @@ def compute_youngs_modulus(mu, nu=0.4):
     return 2*(1 + nu)*mu
 
 
-def parameterize_youngs_modulus(theta_global, theta_local):
-    theta = theta_global + theta_local - theta_local.mean()
-    return torch.pow(10, theta)
-
-
 def compute_density_from_CT(ct, m_atten_ratio=1., density_water=1000.):
 
     # HU = 1000 (mu_x - mu_water) / mu_water

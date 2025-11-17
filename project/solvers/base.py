@@ -15,7 +15,16 @@ class PDESolver:
             return fenics.FenicsFEMSolver
         raise ValueError(f'Invalid solver class: {name}')
 
-    def init_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
+    def bind_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
+        raise NotImplementedError
+
+    def solve(
+        self,
+        mu: torch.Tensor,
+        lam: torch.Tensor,
+        rho: torch.Tensor,
+        u_bc: torch.Tensor
+    ) -> torch.Tensor:
         raise NotImplementedError
 
     def forward(
@@ -23,7 +32,8 @@ class PDESolver:
         mu: torch.Tensor,
         lam: torch.Tensor,
         rho: torch.Tensor,
-        u_obs: torch.Tensor
+        u_bc: torch.Tensor,
+        u_obs: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
         raise NotImplementedError
 
@@ -33,12 +43,12 @@ class PDESolver:
     def zero_grad(self):
         raise NotImplementedError
 
-    def solve(self, mu, lam, rho, u_obs):
-        loss, res, u_sim = PDESolveFn.apply(self, mu, lam, rho, u_obs)
-        return {'loss': loss, 'res': res, 'u_sim': u_sim}
+    def loss(self, mu, lam, rho, u_bc, u_obs):
+        loss, res, u_sim = PDELossFn.apply(self, mu, lam, rho, u_bc, u_obs)
+        return loss, {'res': res, 'u_sim': u_sim}
 
 
-class PDESolveFn(torch.autograd.Function):
+class PDELossFn(torch.autograd.Function):
 
     @staticmethod
     def forward(
@@ -47,11 +57,12 @@ class PDESolveFn(torch.autograd.Function):
         mu: torch.Tensor,
         lam: torch.Tensor,
         rho: torch.Tensor,
+        u_bc: torch.Tensor,
         u_obs: torch.Tensor
     ):
         ctx.solver = solver
         solver.zero_grad()
-        outputs = solver.forward(mu, lam, rho, u_obs)
+        outputs = solver.forward(mu, lam, rho, u_bc, u_obs)
         return (
             outputs['loss'],
             outputs['res'].detach(),
@@ -59,13 +70,19 @@ class PDESolveFn(torch.autograd.Function):
         )
 
     @staticmethod
-    def backward(ctx, grad_loss, grad_res=None, grad_u=None):
-        grad_inputs = ctx.solver.backward(grad_loss)
+    def backward(
+        ctx,
+        loss_grad: torch.Tensor,
+        res_grad: Optional[torch.Tensor]=None,
+        u_sim_grad: Optional[torch.Tensor]=None
+    ):
+        input_grads = ctx.solver.backward(loss_grad)
         return (
             None,
-            grad_inputs['mu'],
-            grad_inputs['lam'],
-            grad_inputs['rho'],
-            grad_inputs['u_obs']
+            input_grads.get('mu'),
+            input_grads.get('lam'),
+            input_grads.get('rho'),
+            input_grads.get('u_bc'),
+            input_grads.get('u_obs')
         )
 

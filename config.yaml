@@ -80,6 +80,9 @@ preprocessing:
         mode: "nearest"
 
 optimization:
+    parameters:
+        init_value: 3.0
+        param_func: "pow10"
     physics_adapter:
         nu_value: 0.4
         rho_bias: 1000
@@ -89,10 +92,12 @@ optimization:
     pde_solver:
         _class: WarpFEMSolver
         tv_reg_weight: 0.0001
-    global_phase:
+    optimizer:
+        _class: LBFGS
+        lr: 1.0
         max_iter: 100
-    local_phase:
-        max_iter: 100
+        history_size: 10
+        line_search_fn: "strong_wolfe"
 
 training:
     split:
@@ -118,9 +123,6 @@ training:
         pooling_type: "max"
         upsample_mode: "nearest"
         output_func: "pow10"
-    optimizer:
-        _class: AdamW
-        lr: 0.0001
     physics_adapter:
         nu_value: 0.4
         rho_bias: 1000
@@ -130,6 +132,9 @@ training:
     pde_solver:
         _class: WarpFEMSolver
         tv_reg_weight: 0.0001
+    optimizer:
+        _class: AdamW
+        lr: 0.0001
     trainer:
         supervised: false
         num_epochs: 100

@@ -33,7 +33,7 @@ def preprocess_shapenet(ex, config):
         {'binary_mask', 'surface_mesh', 'region_mask', 'volume_mesh'} |
         {'material_mask', 'material_mesh', 'displacement_simulation'} |
         {'image_generation', 'image_interpolation'},
-        where='preprocess_shapenet'
+        where='preprocessing[shapenet]'
     )
     _ensure_output(
         stages.preprocess_binary_mask,
@@ -104,7 +104,7 @@ def preprocess_copdgene(ex, config):
         config,
         {'image_resampling', 'image_segmentation'} |
         {'region_mask', 'volume_mesh', 'deformable_registration'},
-        where='preprocess_copdgene'
+        where='preprocessing[copdgene]'
     )
     _ensure_output(
         stages.resample_image_on_reference,

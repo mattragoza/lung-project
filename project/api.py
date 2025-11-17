@@ -4,15 +4,15 @@ from .core import utils, fileio
 def _check_keys(config, valid, where=None):
     invalid = set(config.keys()) - set(valid)
     if invalid:
-        _where = f' for {where}' if where else ''
-        raise KeyError(f'Unexpected keys{_where}: {invalid} vs. {valid}')
+        _loc = f' for {where}' if where else ''
+        raise KeyError(f'Unexpected keys{_loc}: {invalid} vs. {valid}')
 
 
 def get_examples(config):
     _check_keys(
         config,
         valid={'name', 'root', 'examples', 'metadata', 'selectors'},
-        where='get_examples'
+        where='dataset'
     )
     from . import datasets
 
@@ -35,7 +35,8 @@ def run_validate(examples, output):
     for ex in examples:
         utils.log('Validating subject {ex.subject}')
         try:
-            rows.append(validation.validate_example(ex))
+            reuslt = validation.validate_example(ex)
+            rows.append(result)
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
             continue
@@ -45,7 +46,7 @@ def run_validate(examples, output):
 
 
 def run_preprocess(examples, config):
-    # config keys are validated in preprocessing.api
+    # config keys are validated in preprocessing.api pipelines
     from . import preprocessing
     for ex in examples:
         utils.log(f'Preprocessing subject {ex.subject}')
@@ -57,19 +58,23 @@ def run_preprocess(examples, config):
 
 
 def run_optimize(examples, config, output):
-    _check_keys(
-        config,
-        valid={'physics_adapter', 'pde_solver', 'global_phase', 'local_phase'},
-        where='run_optimize'
-    )
     from . import optimization
+    import pandas as pd
+    rows = []
     for ex in examples:
         utils.log(f'Optimizing subject {ex.subject}')
         try:
-            optimization.optimize_example(ex, config)
+            result = optimization.optimize_example(ex, config)
+            rows.append({
+                'dataset': ex.dataset,
+                'subject': ex.subject,
+                'variant': ex.variant,
+                'method':  'optimize',
+                **result
+            })
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
-            continue
+            raise
     df = pd.DataFrame(rows)
     if output:
         df.to_csv(output, index=False)
@@ -80,7 +85,7 @@ def run_training(examples, config):
         config,
         {'split', 'loader', 'model', 'optimizer', 'evaluator'} |
         {'physics_adapter', 'pde_solver', 'trainer'},
-        where=run_training
+        where='training'
     )
     from . import datasets, models, training, evaluation, physics
     import torch
