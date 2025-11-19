@@ -1,5 +1,6 @@
 import sys, time, random
 
+
 VERBOSE = True
 
 
@@ -105,6 +106,13 @@ def pprint(
             out += f'\n{_tab}└── <{not_shown} more items>'
 
     return out if ret_string else print(out)
+
+
+def check_keys(config, valid, where=None):
+    invalid = set(config.keys()) - set(valid)
+    if invalid:
+        _loc = f' for {where}' if where else ''
+        raise KeyError(f'Unexpected keys{_loc}: {invalid} vs. {valid}')
 
 
 def update_defaults(overrides=None, **defaults):

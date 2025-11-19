@@ -3,20 +3,18 @@ import numpy as np
 import torch
 
 from .core import utils, fileio
-from .api import _check_keys
     
 
-def optimize_example(ex, config):
-    _check_keys(
+def optimize_example(ex, config, output_path):
+    utils.check_keys(
         config,
-        {'physics_adapter', 'pde_solver', 'parameters', 'optimizer', 'evaluator'},
+        valid={'physics_adapter', 'pde_solver', 'parameters', 'optimizer', 'evaluator'},
         where='optimization'
     )
     from . import physics, models, evaluation
 
     mesh_path = ex.paths['interp_mesh']
     unit_m = float(ex.metadata['unit'])
-
     mesh = fileio.load_meshio(mesh_path)
 
     physics_adapter_kws = config.get('physics_adapter', {})
@@ -31,11 +29,10 @@ def optimize_example(ex, config):
     param_kws = config.get('parameters', {}).copy()
     param_fn = models.get_output_fn(param_kws.pop('param_func'))
     param = physics_adapter.init_param_field(mesh, unit_m, **param_kws)
-    param.requires_grad = True
 
     def fn_local(param):
-        E = param_fn(param)
-        loss, outputs = physics_adapter.simulation_loss(mesh, unit_m, E, bc_spec=None)
+        E_pred = param_fn(param)
+        loss, outputs = physics_adapter.simulation_loss(mesh, unit_m, E_pred, bc_spec=None)
         return loss
 
     def fn_global(param):
@@ -49,17 +46,39 @@ def optimize_example(ex, config):
     optimize_fn(fn_global, param, optimizer)
     optimize_fn(fn_local,  param, optimizer)
 
-    E = param_fn(param)
-    loss, pde_outputs = physics_adapter.simulation_loss(mesh, unit_m, E, bc_spec=None)
+    E_pred = param_fn(param)
+    loss, pde_outputs = physics_adapter.simulation_loss(mesh, unit_m, E_pred, bc_spec=None)
 
     evaluator_kws = config.get('evaluator', {})
     evaluator = evaluation.Evaluator(**evaluator_kws)
 
     outputs = {'example': [ex], 'pde': [pde_outputs], 'loss': loss}
     evaluator.evaluate(outputs, epoch=0, phase='optimize', batch=0)
-    result = evaluator.phase_end(epoch=0, phase='optimize')
-    print(result.T)
-    return result
+    metrics = evaluator.phase_end(epoch=0, phase='optimize')
+    metrics = {
+        'dataset': ex.dataset,
+        'subject': ex.subject,
+        'variant': ex.variant,
+        'method':  'optimize',
+        **metrics
+    }
+    print(metrics.T)
+
+    def _assign_mesh_field(m, name):
+        m.point_data[name] = pde_outputs[name].nodes.numpy()
+        m.cell_data[name] = [pde_outputs[name].cells.numpy()]
+
+    output_mesh = mesh.copy()
+    _assign_mesh_field(output_mesh, 'rho_true')
+    _assign_mesh_field(output_mesh, 'rho_pred')
+    _assign_mesh_field(output_mesh, 'E_true')
+    _assign_mesh_field(output_mesh, 'E_pred')
+    print(output_mesh)
+
+    output_path.make_dirs(parents=True)
+    project.core.fileio.save_meshio(output_path, output_mesh)
+
+    return metrics
 
 
 def optimize_fn(fn, param, optimizer, max_iter=100):
@@ -95,13 +114,9 @@ class OptimizationHistory:
         utils.log('iter\tloss (rel_delta)\tgrad_norm (rel_init)\tparam_norm (update_norm)')
 
     def update(self, loss, param):
-        curr_loss  = float(loss.detach().item())
-        curr_grad  = float(param.detach().norm().item())
-        curr_param = param.detach().cpu().numpy()
-
-        self.loss_history.append(curr_loss)
-        self.grad_history.append(curr_grad)
-        self.param_history.append(curr_param)
+        self.loss_history.append(float(loss.detach().item()))
+        self.grad_history.append(float(param.grad.detach().norm().item()))
+        self.param_history.append(param.detach().cpu().numpy())
 
     def converged(self, it, tol=1e-3, eps=1e-12):
         from numpy.linalg import norm

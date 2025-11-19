@@ -4,7 +4,7 @@ import project
 
 def parse_args(argv):
     p = argparse.ArgumentParser()
-    p.add_argument('--config', type=str, required=True, help='Config file (JSON or YAML)')
+    p.add_argument('--config', type=str, required=True, help='Path to config file')
     p.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
     p.add_argument('--supervised', type=project.core.utils.as_bool, default=False)
     p.add_argument('--learning_rate', type=float, default=None)

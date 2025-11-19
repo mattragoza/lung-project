@@ -1,15 +1,26 @@
-from .core import utils, fileio
+from .core import utils
 
 
-def _check_keys(config, valid, where=None):
-    invalid = set(config.keys()) - set(valid)
-    if invalid:
-        _loc = f' for {where}' if where else ''
-        raise KeyError(f'Unexpected keys{_loc}: {invalid} vs. {valid}')
+class RunOutputs:
+
+    def __init__(self, stage: str, root: str='outputs'):
+        from pathlib import Path
+        self.root = Path(root)
+        self.stage = str(stage)
+
+    @property
+    def base_dir(self):
+        return self.root / self.stage
+
+    def csv_path(self, name):
+        return self.base_dir / (name + '.csv')
+
+    def mesh_path(self, ex, name):
+        return self.base_dir / ex.subject / 'meshes' / (name + '.xdmf')
 
 
 def get_examples(config):
-    _check_keys(
+    utils.check_keys(
         config,
         valid={'name', 'root', 'examples', 'metadata', 'selectors'},
         where='dataset'
@@ -29,59 +40,78 @@ def get_examples(config):
     return dataset.list_examples(selectors=selector_kws, **metadata_kws)
 
 
-def run_validate(examples, output):
+def run_validate(examples, config):
     from . import validation
+
+    config = config.copy()
+    outputs = RunOutputs(stage='validate', **config.pop('outputs', {}))
+
     rows = []
     for ex in examples:
-        utils.log('Validating subject {ex.subject}')
+        utils.log(f'Validating subject {ex.subject}')
         try:
-            reuslt = validation.validate_example(ex)
+            result = validation.validate_example(ex)
             rows.append(result)
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
             continue
-    df = pd.DataFrame(rows)
-    if output:
-        df.to_csv(output, index=False)
+
+    if rows:
+        import pandas as pd
+        csv_path = outputs.csv_path(name='metrics')
+        csv_path.make_dirs(parents=True)
+        df = pd.DataFrame(rows).to_csv(output, index=False)
 
 
 def run_preprocess(examples, config):
-    # config keys are validated in preprocessing.api pipelines
     from . import preprocessing
+
+    config = config.copy()
+    outputs = RunOutputs(stage='preprocess', **config.pop('outputs', {}))
+
+    rows = []
     for ex in examples:
         utils.log(f'Preprocessing subject {ex.subject}')
         try:
-            preprocessing.api.preprocess_example(ex, config)
+            result = preprocessing.api.preprocess_example(ex, config)
+            rows.append(result)
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
-            raise
+            continue
+
+    if rows:
+        import pandas as pd
+        csv_path = outputs.csv_path(name='metrics')
+        csv_path.make_dirs(parents=True)
+        df = pd.DataFrame(rows).to_csv(output, index=False)
 
 
-def run_optimize(examples, config, output):
+def run_optimize(examples, config):
     from . import optimization
-    import pandas as pd
+
+    config = config.copy()
+    outputs = RunOutputs(stage='optimize', **config.pop('outputs', {}))
+
     rows = []
     for ex in examples:
         utils.log(f'Optimizing subject {ex.subject}')
         try:
-            result = optimization.optimize_example(ex, config)
-            rows.append({
-                'dataset': ex.dataset,
-                'subject': ex.subject,
-                'variant': ex.variant,
-                'method':  'optimize',
-                **result
-            })
+            output_path = outputs.mesh_path(ex, name='optimized')
+            result = optimization.optimize_example(ex, config, output_path)
+            rows.append(result)
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
             raise
-    df = pd.DataFrame(rows)
-    if output:
-        df.to_csv(output, index=False)
+
+    if rows:
+        import pandas as pd
+        csv_path = outputs.csv_path(name='metrics')
+        csv_path.make_dirs(parents=True)
+        df = pd.DataFrame(rows).to_csv(output, index=False)
 
 
 def run_training(examples, config):
-    _check_keys(
+    utils.check_keys(
         config,
         {'split', 'loader', 'model', 'optimizer', 'evaluator'} |
         {'physics_adapter', 'pde_solver', 'trainer'},
@@ -89,6 +119,10 @@ def run_training(examples, config):
     )
     from . import datasets, models, training, evaluation, physics
     import torch
+
+    config = config.copy()
+    outputs = RunOutputs(stage='training', **config.pop('outputs', {}))
+
     utils.log('Running training')
 
     split_kws = config.get('split', {})

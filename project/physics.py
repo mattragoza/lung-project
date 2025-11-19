@@ -172,22 +172,27 @@ class PhysicsAdapter:
 
     def _package(self, ctx, inputs, outputs):
         return {
-            'volume':   ctx.volume.cpu(),
-            'material': ctx.material.cells.cpu(),
-            'rho_true': ctx.rho.cells.cpu(),
-            'E_true':   ctx.E.cells.cpu(),
-            'rho_pred': _as_cell_values(ctx.cells, inputs['rho'], self.scalar_degree).cpu(),
-            'E_pred':   _as_cell_values(ctx.cells, inputs['E'], self.scalar_degree).cpu(),
-            'u_true':   _as_cell_values(ctx.cells, inputs['u_obs'], self.vector_degree).cpu(),
-            'u_pred':   _as_cell_values(ctx.cells, outputs['u_sim'], self.vector_degree).cpu(),
-            'residual': _as_cell_values(ctx.cells, outputs['res'], self.vector_degree).cpu()
+            'volume':   ctx.volume,
+            'material': ctx.material,
+            'rho_true': ctx.rho,
+            'E_true':   ctx.E,
+            'rho_pred': _as_mesh_field(ctx, inputs['rho'], self.scalar_degree),
+            'E_pred':   _as_mesh_field(ctx, inputs['E'], self.scalar_degree),
+            'u_true':   _as_mesh_field(ctx, inputs['u_obs'], self.vector_degree),
+            'u_pred':   _as_mesh_field(ctx, outputs['u_sim'], self.vector_degree),
+            'residual': _as_mesh_field(ctx, outputs['res'], self.vector_degree)
         }
 
 
-def _as_cell_values(cells, values, degree):
+def _as_mesh_field(ctx, values, degree: int) -> MeshField:
+    values = values.detach().cpu()
     if degree == 0:
-        return values
+        cell_vals = values
+        node_vals = transforms.cell_to_node_values(ctx.verts, ctx.cells, values, ctx.volume)
     elif degree == 1:
-        return transforms.node_to_cell_values(cells, values)
-    raise ValueError(f'Invalid degree: {degree}')
+        node_vals = values
+        cell_vals = transforms.node_to_cell_values(ctx.cells, values)
+    else:
+        raise ValueError(f'Cannot convert degree {degree}')
+    return MeshField(cell_vals, node_vals)
 

@@ -13,8 +13,7 @@ def main(argv):
     args = parse_args(argv)
     config = project.core.fileio.load_config(args.config)
     examples = project.api.get_examples(config['dataset'])
-    project.api.run_validate(examples, args.output)
-
+    project.api.run_validate(examples, config['validation'])
 
 
 if __name__ == '__main__':

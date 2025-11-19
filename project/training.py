@@ -142,6 +142,7 @@ class Trainer:
             'mask':    batch['mask'].cpu(),
             'E_pred':  E_pred.detach().cpu()
         }
+    
         if 'elast' in batch:
             E_true = batch['elast'].to(self.device)
             outputs['E_true'] = batch['elast'].cpu()

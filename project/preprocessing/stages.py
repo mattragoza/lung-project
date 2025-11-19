@@ -1,10 +1,9 @@
 import numpy as np
-from ..core import fileio, utils, metrics
-from ..api import _check_keys
+from ..core import fileio, utils
 
 
 def preprocess_binary_mask(mask_path, mesh_path, output_path, config):
-    _check_keys(
+    utils.check_keys(
         config,
         valid={'foreground_filter', 'background_filter', 'center_mask', 'pad_amount'},
         where='binary_mask'
@@ -32,7 +31,7 @@ def preprocess_binary_mask(mask_path, mesh_path, output_path, config):
 
 
 def preprocess_surface_mesh(input_path, output_path, config):
-    _check_keys(
+    utils.check_keys(
         config,
         valid={'run_pymeshfix'},
         where='surface_mesh'
@@ -52,7 +51,7 @@ def preprocess_surface_mesh(input_path, output_path, config):
 
 
 def create_mesh_region_mask(mask_path, mesh_path, output_path, config):
-    _check_keys(
+    utils.check_keys(
         config,
         valid={'label_method', 'region_filter'},
         where='region_mask'
@@ -79,7 +78,7 @@ def create_mesh_region_mask(mask_path, mesh_path, output_path, config):
 
 
 def create_volume_mesh_from_mask(mask_path, output_path, config):
-    _check_keys(
+    utils.check_keys(
         config,
         valid={'use_affine_spacing', 'meshing_parameters'},
         where='volume_mesh'
@@ -101,7 +100,7 @@ def create_volume_mesh_from_mask(mask_path, output_path, config):
 
 
 def create_material_mask(mask_path, output_path, density_path, elastic_path, config):
-    _check_keys(
+    utils.check_keys(
         config,
         valid={'material_sampling'},
         where='material_mask'
@@ -131,7 +130,7 @@ def create_material_mask(mask_path, output_path, density_path, elastic_path, con
 
 
 def create_material_fields(regions_path, materials_path, mesh_path, output_path, config):
-    _check_keys(config, valid=set(), where='material_mesh')
+    utils.check_keys(config, valid=set(), where='material_mesh')
     from ..core import transforms, interpolation
     from . import materials
 
@@ -163,7 +162,7 @@ def create_material_fields(regions_path, materials_path, mesh_path, output_path,
 
 
 def generate_volumetric_image(mask_path, output_path, config):
-    _check_keys(
+    utils.check_keys(
         config,
         valid={'intensity_model', 'texture_source', 'noise_model'},
         where='image_generation'
@@ -202,7 +201,7 @@ def generate_volumetric_image(mask_path, output_path, config):
 
 
 def interpolate_image_fields(image_path, mesh_path, output_path, config):
-    _check_keys(config, valid={'order', 'mode'}, where='image_interpolation')
+    utils.check_keys(config, valid={'order', 'mode'}, where='image_interpolation')
     from ..core import transforms
     import scipy.ndimage
 
@@ -229,7 +228,7 @@ def interpolate_image_fields(image_path, mesh_path, output_path, config):
 
 
 def simulate_displacement_field(mesh_path, output_path, unit_m, config):
-    _check_keys(
+    utils.check_keys(
         config,
         valid={'physics_adapter', 'pde_solver'},
         where='displacement_simulation'

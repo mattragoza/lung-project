@@ -1,5 +1,4 @@
 from ..core import utils
-from ..api import _check_keys
 from . import stages
 
 
@@ -28,7 +27,7 @@ def preprocess_example(ex, config):
     
 
 def preprocess_shapenet(ex, config):
-    _check_keys(
+    utils.check_keys(
         config,
         {'binary_mask', 'surface_mesh', 'region_mask', 'volume_mesh'} |
         {'material_mask', 'material_mesh', 'displacement_simulation'} |
@@ -100,7 +99,7 @@ def preprocess_shapenet(ex, config):
 
 
 def preprocess_copdgene(ex, config):
-    _ensure_output(
+    utils.check_keys(
         config,
         {'image_resampling', 'image_segmentation'} |
         {'region_mask', 'volume_mesh', 'deformable_registration'},

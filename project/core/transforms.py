@@ -135,8 +135,9 @@ def node_to_cell_values(cells, node_vals):
     return node_vals[cells].mean(axis=1)
 
 
-def cell_to_node_values(verts, cells, cell_values, eps=1e-12):
-    vol = compute_cell_volume(verts, cells)
+def cell_to_node_values(verts, cells, cell_values, vol=None, eps=1e-12):
+    if vol is None:
+        vol = compute_cell_volume(verts, cells)
     num = np.zeros(len(verts), dtype=float)
     den = np.zeros(len(verts), dtype=float)
     for i, vert_inds in enumerate(cells):
