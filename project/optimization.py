@@ -30,24 +30,27 @@ def optimize_example(ex, config, output_path):
     param_fn = models.get_output_fn(param_kws.pop('param_func'))
     param = physics_adapter.init_param_field(mesh, unit_m, **param_kws)
 
-    def fn_local(param):
-        E_pred = param_fn(param)
-        loss, outputs = physics_adapter.simulation_loss(mesh, unit_m, E_pred, bc_spec=None)
+    def fn_local(theta):
+        E_pred = param_fn(theta)
+        loss = physics_adapter.simulation_loss(mesh, unit_m, E_pred, bc_spec=None, ret_outputs=False)
         return loss
 
-    def fn_global(param):
-        p_mean = param.mean().expand(param.shape)
-        return fn_local(p_mean)
+    def fn_global(theta):
+        return fn_local(theta.mean().expand(theta.shape))
 
     optimizer_kws = config.get('optimizer', {}).copy()
     optimizer_cls = getattr(torch.optim, optimizer_kws.pop('_class'))
-    optimizer = optimizer_cls([param], **optimizer_kws)
 
+    optimizer = optimizer_cls([param], **optimizer_kws)
     optimize_fn(fn_global, param, optimizer)
+
+    optimizer = optimizer_cls([param], **optimizer_kws)
     optimize_fn(fn_local,  param, optimizer)
 
     E_pred = param_fn(param)
-    loss, pde_outputs = physics_adapter.simulation_loss(mesh, unit_m, E_pred, bc_spec=None)
+    loss, pde_outputs = physics_adapter.simulation_loss(mesh, unit_m, E_pred, bc_spec=None, ret_outputs=True)
+
+    utils.pprint(pde_outputs)
 
     evaluator_kws = config.get('evaluator', {})
     evaluator = evaluation.Evaluator(**evaluator_kws)
@@ -55,13 +58,10 @@ def optimize_example(ex, config, output_path):
     outputs = {'example': [ex], 'pde': [pde_outputs], 'loss': loss}
     evaluator.evaluate(outputs, epoch=0, phase='optimize', batch=0)
     metrics = evaluator.phase_end(epoch=0, phase='optimize')
-    metrics = {
-        'dataset': ex.dataset,
-        'subject': ex.subject,
-        'variant': ex.variant,
-        'method':  'optimize',
-        **metrics
-    }
+    metrics['dataset'] = ex.dataset
+    metrics['variant'] = ex.variant
+    metrics['subject'] = ex.subject
+    metrics['method'] = 'optimize'
     print(metrics.T)
 
     def _assign_mesh_field(m, name):
@@ -73,10 +73,13 @@ def optimize_example(ex, config, output_path):
     _assign_mesh_field(output_mesh, 'rho_pred')
     _assign_mesh_field(output_mesh, 'E_true')
     _assign_mesh_field(output_mesh, 'E_pred')
+    _assign_mesh_field(output_mesh, 'u_true')
+    _assign_mesh_field(output_mesh, 'u_pred')
+    _assign_mesh_field(output_mesh, 'residual')
     print(output_mesh)
 
-    output_path.make_dirs(parents=True)
-    project.core.fileio.save_meshio(output_path, output_mesh)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_meshio(output_path, output_mesh)
 
     return metrics
 

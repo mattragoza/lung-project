@@ -48,10 +48,11 @@ def run_validate(examples, config):
 
     rows = []
     for ex in examples:
-        utils.log(f'Validating subject {ex.subject}')
+        utils.log(f'Validating subject: {ex.subject}')
         try:
             result = validation.validate_example(ex)
-            rows.append(result)
+            if result is not None:
+                rows.append(result)
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
             continue
@@ -59,8 +60,8 @@ def run_validate(examples, config):
     if rows:
         import pandas as pd
         csv_path = outputs.csv_path(name='metrics')
-        csv_path.make_dirs(parents=True)
-        df = pd.DataFrame(rows).to_csv(output, index=False)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        df = pd.DataFrame(rows).to_csv(csv_path, index=False)
 
 
 def run_preprocess(examples, config):
@@ -71,10 +72,11 @@ def run_preprocess(examples, config):
 
     rows = []
     for ex in examples:
-        utils.log(f'Preprocessing subject {ex.subject}')
+        utils.log(f'Preprocessing subject: {ex.subject}')
         try:
             result = preprocessing.api.preprocess_example(ex, config)
-            rows.append(result)
+            if result is not None:
+                rows.append(result)
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
             continue
@@ -82,8 +84,8 @@ def run_preprocess(examples, config):
     if rows:
         import pandas as pd
         csv_path = outputs.csv_path(name='metrics')
-        csv_path.make_dirs(parents=True)
-        df = pd.DataFrame(rows).to_csv(output, index=False)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        df = pd.DataFrame(rows).to_csv(csv_path, index=False)
 
 
 def run_optimize(examples, config):
@@ -94,11 +96,12 @@ def run_optimize(examples, config):
 
     rows = []
     for ex in examples:
-        utils.log(f'Optimizing subject {ex.subject}')
+        utils.log(f'Optimizing subject: {ex.subject}')
         try:
             output_path = outputs.mesh_path(ex, name='optimized')
             result = optimization.optimize_example(ex, config, output_path)
-            rows.append(result)
+            if result is not None:
+                rows.append(result)
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
             raise
@@ -106,8 +109,8 @@ def run_optimize(examples, config):
     if rows:
         import pandas as pd
         csv_path = outputs.csv_path(name='metrics')
-        csv_path.make_dirs(parents=True)
-        df = pd.DataFrame(rows).to_csv(output, index=False)
+        csv_path.make_dirs(parents=True, exist_ok=True)
+        df = pd.DataFrame(rows).to_csv(csv_path, index=False)
 
 
 def run_training(examples, config):

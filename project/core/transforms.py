@@ -138,8 +138,12 @@ def node_to_cell_values(cells, node_vals):
 def cell_to_node_values(verts, cells, cell_values, vol=None, eps=1e-12):
     if vol is None:
         vol = compute_cell_volume(verts, cells)
-    num = np.zeros(len(verts), dtype=float)
-    den = np.zeros(len(verts), dtype=float)
+    if isinstance(cell_values, torch.Tensor):
+        num = torch.zeros(len(verts), dtype=float, device=cell_values.device)
+        den = torch.zeros(len(verts), dtype=float, device=cell_values.device)
+    else:
+        num = np.zeros(len(verts), dtype=float)
+        den = np.zeros(len(verts), dtype=float)
     for i, vert_inds in enumerate(cells):
         for j in vert_inds:
             num[j] += vol[i] * cell_values[i]

@@ -1,3 +1,4 @@
+from typing import List, Dict, Any
 from collections import defaultdict
 from pathlib import Path
 import numpy as np
@@ -14,7 +15,7 @@ def _to_numpy(t):
 
 def _eval(pred, target, weight=None, name=None, profile=None):
     if profile is None:
-        profile = 'res' if name[0] == 'r' else name[0]
+        profile = name.split('_')[0]
     metrics = mm.evaluate_metrics(pred, target, weight, profile)
     return utils.namespace(metrics, name) if name else metrics
 
@@ -33,7 +34,7 @@ class Evaluator:
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
     @torch.no_grad()
-    def evaluate(self, outputs, epoch, phase, batch):
+    def evaluate(self, outputs: Dict[str, Any], epoch: int, phase: str, batch: int):
         batch_size = len(outputs['example'])
         base = {
             'epoch': int(epoch),
@@ -46,7 +47,7 @@ class Evaluator:
             ex_row = {**base, 'subject': ex.subject}
             mat_labels = set()
 
-            if 'mask' in outputs:
+            if 'mask' in outputs: # voxel domain
                 mat_mask = _to_numpy(outputs['mask'][k]).reshape(-1, 1)
                 E_true_vox = _to_numpy(outputs['E_true'][k]).reshape(-1, 1) # Pa
                 E_pred_vox = _to_numpy(outputs['E_pred'][k]).reshape(-1, 1) # Pa
@@ -57,17 +58,20 @@ class Evaluator:
 
                 mat_labels |= set(np.unique(mat_mask[sel]))
 
-            if 'pde' in outputs:
+            if 'pde' in outputs: # mesh domain
                 pde_output = outputs['pde'][k]
                 vol_cells = _to_numpy(pde_output['volume'])
-                mat_cells = _to_numpy(pde_output['material'])
+                mat_cells = _to_numpy(pde_output['material'].cells)
 
-                E_true_cells = _to_numpy(pde_output['E_true']) # Pa
-                E_pred_cells = _to_numpy(pde_output['E_pred']) # Pa
-                u_true_cells = _to_numpy(pde_output['u_true']) # meters
-                u_pred_cells = _to_numpy(pde_output['u_pred']) # meters
-                res_cells = _to_numpy(pde_output['residual'])
+                rho_true_cells = _to_numpy(pde_output['rho_true'].cells)
+                rho_pred_cells = _to_numpy(pde_output['rho_pred'].cells)
+                E_true_cells = _to_numpy(pde_output['E_true'].cells) # Pa
+                E_pred_cells = _to_numpy(pde_output['E_pred'].cells) # Pa
+                u_true_cells = _to_numpy(pde_output['u_true'].cells) # meters
+                u_pred_cells = _to_numpy(pde_output['u_pred'].cells) # meters
+                res_cells = _to_numpy(pde_output['residual'].cells)
     
+                ex_row |= _eval(rho_pred_cells, rho_true_cells, vol_cells, name='rho_cell')
                 ex_row |= _eval(E_pred_cells, E_true_cells, vol_cells, name='E_cell')
                 ex_row |= _eval(u_pred_cells, u_true_cells, vol_cells, name='u_cell')
                 ex_row |= _eval(res_cells, None, vol_cells, name='res_cell')
@@ -97,6 +101,7 @@ class Evaluator:
                         continue
 
                     mat_row['num_cells'] = num_cells
+                    mat_row |= _eval(rho_pred_cells[sel], rho_true_cells[sel], vol_mat, name='rho_cell')
                     mat_row |= _eval(E_pred_cells[sel], E_true_cells[sel], vol_mat, name='E_cell')
                     mat_row |= _eval(u_pred_cells[sel], u_true_cells[sel], vol_mat, name='u_cell')
                     mat_row |= _eval(res_cells[sel], None, vol_mat, name='res_cell')
@@ -130,63 +135,4 @@ class Evaluator:
 
         # current phase metrics
         return pd.DataFrame(self.example_rows[phase])
-
-
-if False: # DEPRECATED
-    def evaluate(self, anat, e_pred, e_true, u_pred, u_true, mask, disease_mask, index):
-        region_mask = mask
-        binary_mask = (mask > 0)
-
-        u_error = mean_relative_error(u_pred, u_true, binary_mask)
-        self.metrics.loc[index, 'u_error'] = u_error.item()
-        self.metrics.loc[index, 'u_pred_norm'] = mean_norm(u_pred, binary_mask).item()
-        self.metrics.loc[index, 'u_true_norm'] = mean_norm(u_true, binary_mask).item()
-
-        e_error = mean_relative_error(e_pred, e_true, binary_mask)
-        self.metrics.loc[index, 'e_error'] = e_error.item()
-        self.metrics.loc[index, 'e_pred_norm'] = mean_norm(e_pred, binary_mask).item()
-        self.metrics.loc[index, 'e_true_norm'] = mean_norm(e_true, binary_mask).item()
-
-        self.metrics.loc[index, 'CTE'] = contrast_transfer_efficiency(
-            e_pred[...,0], e_true[...,0], region_mask
-        ).item()
-
-        corr_mat = correlation_matrix([
-            e_pred, e_true, anat,
-            (anat < -950),
-            (anat < -900),
-            (anat < -850),
-            disease_mask[...,0:1],
-            disease_mask[...,1:2],
-            disease_mask[...,2:3],
-        ], binary_mask)
-
-        self.metrics.loc[index, 'e_true_corr'] = corr_mat[0,1].item()
-        self.metrics.loc[index, 'e_anat_corr'] = corr_mat[0,2].item()
-        self.metrics.loc[index, 'true_anat_corr'] = corr_mat[1,2].item()
-
-        self.metrics.loc[index, 'e_950_corr'] = corr_mat[0,3].item()
-        self.metrics.loc[index, 'e_900_corr'] = corr_mat[0,4].item()
-        self.metrics.loc[index, 'e_850_corr'] = corr_mat[0,5].item()
-
-        self.metrics.loc[index, 'true_950_corr'] = corr_mat[1,3].item()
-        self.metrics.loc[index, 'true_900_corr'] = corr_mat[1,4].item()
-        self.metrics.loc[index, 'true_850_corr'] = corr_mat[1,5].item()
-
-        self.metrics.loc[index, 'e_dis0_corr'] = corr_mat[0,6].item()
-        self.metrics.loc[index, 'e_dis1_corr'] = corr_mat[0,7].item()
-        self.metrics.loc[index, 'e_dis2_corr'] = corr_mat[0,8].item()
-
-        self.metrics.loc[index, 'true_dis0_corr'] = corr_mat[1,6].item()
-        self.metrics.loc[index, 'true_dis1_corr'] = corr_mat[1,7].item()
-        self.metrics.loc[index, 'true_dis2_corr'] = corr_mat[1,8].item()
-
-        return u_error
-
-    def summarize(self):
-        pass
-
-    def save_metrics(self, path):
-        self.metrics.to_csv(path)
-
 

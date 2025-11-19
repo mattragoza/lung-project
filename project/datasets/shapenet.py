@@ -66,8 +66,8 @@ DEPENDENCY_GRAPH = {
     'elastic_field': ['material_mask'],
     'input_image':   ['material_mask'],
     'material_mesh': ['material_mask', 'volume_mesh'],
+    'interp_mesh':   ['input_image', 'material_mesh'],
     'simulate_mesh': ['material_mesh'],
-    'interp_mesh':   ['input_image', 'simulate_mesh']
 }
 
 def _resolve_dependencies(node, graph):

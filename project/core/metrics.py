@@ -230,8 +230,9 @@ registry.add_metric('scorr', spearman_corr,   requires_target=True)
 registry.add_metric('srmse', standardized_rmse, requires_target=True)
 registry.add_metric('dice', dice_score, requires_target=True)
 
-registry.add_profile('u', ['mean', 'rms', 'rmse', 'nrmse', 'srmse', 'pcorr', 'scorr'])
+registry.add_profile('rho', ['mean', 'rms', 'rmse', 'nrmse', 'srmse', 'pcorr', 'scorr'])
 registry.add_profile('E', ['mean', 'rms', 'rmse', 'nrmse', 'srmse', 'pcorr', 'scorr'])
+registry.add_profile('u', ['mean', 'rms', 'rmse', 'nrmse', 'srmse', 'pcorr', 'scorr'])
 registry.add_profile('res', ['mean', 'rms'])
 registry.add_profile('mat', ['dice'])
 

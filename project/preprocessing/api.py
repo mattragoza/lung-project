@@ -34,33 +34,33 @@ def preprocess_shapenet(ex, config):
         {'image_generation', 'image_interpolation'},
         where='preprocessing[shapenet]'
     )
-    _ensure_output(
+    _ensure_output( # binary mask
         stages.preprocess_binary_mask,
         mask_path=ex.paths['source_mask'],
         mesh_path=ex.paths['source_mesh'],
         output_path=ex.paths['binary_mask'],
         config=config.get('binary_mask', {})
     )
-    _ensure_output(
+    _ensure_output( # surface mesh
         stages.preprocess_surface_mesh,
         input_path=ex.paths['source_mesh'],
         output_path=ex.paths['surface_mesh'],
         config=config.get('surface_mesh', {})
     )
-    _ensure_output(
+    _ensure_output( # region mask
         stages.create_mesh_region_mask,
         mask_path=ex.paths['binary_mask'],
         mesh_path=ex.paths['source_mesh'],
         output_path=ex.paths['region_mask'],
         config=config.get('region_mask', {})
     )
-    _ensure_output(
+    _ensure_output( # volume mesh
         stages.create_volume_mesh_from_mask,
         mask_path=ex.paths['region_mask'],
         output_path=ex.paths['volume_mesh'],
         config=config.get('volume_mesh', {})
     )
-    _ensure_output(
+    _ensure_output( # material mask
         stages.create_material_mask,
         mask_path=ex.paths['region_mask'],
         output_path=ex.paths['material_mask'],
@@ -68,7 +68,7 @@ def preprocess_shapenet(ex, config):
         elastic_path=ex.paths['elastic_field'],
         config=config.get('material_mask', {})
     )
-    _ensure_output(
+    _ensure_output( # material mesh
         stages.create_material_fields,
         regions_path=ex.paths['region_mask'],
         materials_path=ex.paths['material_mask'],
@@ -76,20 +76,20 @@ def preprocess_shapenet(ex, config):
         output_path=ex.paths['material_mesh'],
         config=config.get('material_mesh', {})
     )
-    _ensure_output(
+    _ensure_output( # input image
         stages.generate_volumetric_image,
         mask_path=ex.paths['material_mask'],
         output_path=ex.paths['input_image'],
         config=config.get('image_generation', {})
     )
-    _ensure_output(
+    _ensure_output( # interp mesh
         stages.interpolate_image_fields,
         image_path=ex.paths['input_image'],
         mesh_path=ex.paths['material_mesh'],
         output_path=ex.paths['interp_mesh'],
         config=config.get('image_interpolation', {})
     )
-    _ensure_output(
+    _ensure_output( # simulate mesh
         stages.simulate_displacement_field,
         mesh_path=ex.paths['interp_mesh'],
         output_path=ex.paths['simulate_mesh'],
