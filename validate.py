@@ -5,7 +5,6 @@ import project
 def parse_args(argv):
     p = argparse.ArgumentParser()
     p.add_argument('--config', required=True, help='Path to config file')
-    p.add_argument('--output', default=None, help='Output csv path')
     return p.parse_args(argv)
 
 
