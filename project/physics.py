@@ -1,12 +1,11 @@
-from typing import Optional
+from __future__ import annotations
+from typing import Optional, Tuple
 from dataclasses import dataclass
 import meshio
 import torch
 
 from .core import utils, transforms, interpolation
 from . import solvers
-
-def _exists(val): return val is not None
 
 
 @dataclass
@@ -15,9 +14,9 @@ class MeshField:
     nodes: Optional[torch.Tensor] = None
 
     def __getitem__(self, degree: int):
-        if degree == 0 and _exists(self.cells):
+        if degree == 0 and self.cells is not None:
             return self.cells
-        if degree == 1 and _exists(self.nodes):
+        if degree == 1 and self.nodes is not None:
             return self.nodes
         raise ValueError(f'No values for degree {degree}')
 
@@ -32,7 +31,9 @@ class PhysicsContext:
     ):
         cells  = mesh.cells_dict['tetra']
         verts  = mesh.points * unit_m # world units -> meters
+
         volume = transforms.compute_cell_volume(verts, cells)
+        adjacency = transforms.compute_node_adjacency(verts, cells, volume)
 
         # world points for interpolating voxel fields
         pts_nodes = mesh.points
@@ -49,8 +50,8 @@ class PhysicsContext:
         img_cells = mesh.cell_data_dict['image']['tetra']
         img_nodes = mesh.point_data['image']
 
-        imf_cells = transforms.smooth_mesh_values(verts, cells, img_nodes, img_cells, degree=0)
-        imf_nodes = transforms.smooth_mesh_values(verts, cells, img_nodes, img_cells, degree=1)
+        imf_cells = (img_cells + transforms.node_to_cell_values(cells, img_nodes)) / 2
+        imf_nodes = (img_nodes + transforms.cell_to_node_values(adjacency, img_cells)) / 2
 
         # store CPU tensors- let solver manage device
         def _cpu(a, dtype=None):
@@ -58,7 +59,9 @@ class PhysicsContext:
 
         self.verts  = _cpu(verts) # meters
         self.cells  = _cpu(cells, torch.int)
-        self.volume = _cpu(volume)
+
+        self.volume    = _cpu(volume)
+        self.adjacency = transforms.compute_node_adjacency(self.verts, self.cells, self.volume)
 
         self.material = MeshField(_cpu(mat_cells, torch.int), None)
         self.points   = MeshField(_cpu(pts_cells), _cpu(pts_nodes)) # world units
@@ -118,18 +121,21 @@ class PhysicsAdapter:
             self.ctx_cache[key] = PhysicsContext(solver, mesh, unit_m)
         return self.ctx_cache[key]
 
+    def clear_cache(self):
+        self.ctx_cache.clear()
+
     # ----- material / BCs / observations -----
 
-    def get_density(self, ctx):
+    def get_density(self, ctx: PhysicsContext) -> torch.Tensor:
         if self.rho_known:
             return ctx.rho[self.scalar_degree]
         return ctx.image_f[self.scalar_degree] * self.rho_bias
 
-    def get_boundary_condition(self, ctx, bc_spec):
+    def get_boundary_condition(self, ctx, bc_spec) -> torch.Tensor:
         template = ctx.points[self.vector_degree]
         return torch.zeros_like(template)
 
-    def get_observations(self, ctx, bc_spec):
+    def get_observations(self, ctx, bc_spec) -> Tuple[torch.Tensor, torch.Tensor]:
         if bc_spec not in ctx.bc_cache:
             E = ctx.E[self.scalar_degree]
             rho = ctx.rho[self.scalar_degree]
@@ -141,12 +147,12 @@ class PhysicsAdapter:
 
     # ----- public API methods -----
 
-    def init_param_field(self, mesh, unit_m, init_value):
+    def init_param_field(self, mesh: meshio.Mseh, unit_m: float, init_value: float):
         ctx = self.get_context(mesh, unit_m)
         template = ctx.E[self.scalar_degree]
         return torch.full_like(template, init_value, requires_grad=True)
 
-    def simulate(self, mesh, unit_m, bc_spec):
+    def simulate(self, mesh: meshio.Mesh, unit_m: float, bc_spec: Any):
         ctx = self.get_context(mesh, unit_m)
         E = ctx.E[self.scalar_degree]
         rho = ctx.rho[self.scalar_degree]

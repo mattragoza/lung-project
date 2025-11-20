@@ -131,23 +131,29 @@ def compute_cell_volume(verts, cells):
     return np.abs(np.linalg.det(M)) / 6
 
 
+def compute_node_adjacency(verts, cells, volume):
+    inds, vals = [], []
+    for c, vert_inds in enumerate(cells):
+        for v in vert_inds:
+            inds.append([int(v), int(c)])
+            vals.append(float(volume[c]))
+
+    inds = np.array(inds).T
+    shape = len(verts), len(cells)
+    if isinstance(verts, torch.Tensor):
+        return torch.sparse_coo_tensor(inds, vals, shape)
+    else:
+        import scipy.sparse
+        return scipy.sparse.coo_array((vals, inds), shape)
+
+
 def node_to_cell_values(cells, node_vals):
     return node_vals[cells].mean(axis=1)
 
 
-def cell_to_node_values(verts, cells, cell_values, vol=None, eps=1e-12):
-    if vol is None:
-        vol = compute_cell_volume(verts, cells)
-    if isinstance(cell_values, torch.Tensor):
-        num = torch.zeros(len(verts), dtype=float, device=cell_values.device)
-        den = torch.zeros(len(verts), dtype=float, device=cell_values.device)
-    else:
-        num = np.zeros(len(verts), dtype=float)
-        den = np.zeros(len(verts), dtype=float)
-    for i, vert_inds in enumerate(cells):
-        for j in vert_inds:
-            num[j] += vol[i] * cell_values[i]
-            den[j] += vol[i]
+def cell_to_node_values(cells_to_nodes, cell_vals, eps=1e-12):
+    num = cells_to_nodes @ cell_vals
+    den = cells_to_nodes.sum(axis=1)
     return num / np.maximum(den, eps)
 
 

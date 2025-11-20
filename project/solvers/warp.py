@@ -53,6 +53,7 @@ class WarpFEMSolver(base.PDESolver):
         self._initialized = False
 
     def bind_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
+        assert not self._initialized, 'Geometry already initialized'
         verts = _as_warp_array(verts, dtype=self.vector_dtype)
         cells = _as_warp_array(cells, dtype=wp.int32)
 
@@ -70,7 +71,6 @@ class WarpFEMSolver(base.PDESolver):
 
         self.g = self.vector_dtype([0, 0, -9.81]) # m/s^2
         self.I = wp.diag(self.vector_dtype(1.0))
-
         self._initialized = True
 
     def make_scalar_field(self, values=None, requires_grad=None):
