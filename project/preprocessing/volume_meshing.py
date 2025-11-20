@@ -52,9 +52,15 @@ def generate_mesh_from_mask(
         **(pygalmesh_kws or {})
     )
 
-    # clean mesh and map auto-generated cell labels to input labels
+    # relabel and clean up generated mesh
+    mesh = split_mesh_by_cell_type(mesh)['tetra']
+    mesh = reindex_cell_labels(mesh, mask, label_key)
+    mesh = remove_background_cells(mesh, label_key)
     mesh = remove_unreferenced_points(mesh)
-    mesh = reindex_cell_labels(mesh, mask, new_key=label_key)
+
+    # sanity check - no cells should be labeled as mask background
+    background_cells = count_labeled_cells(mesh, 'tetra', label_key, value=0)
+    assert background_cells == 0, background_cells
 
     # pygalmesh uses voxel spacing to generate the mesh,
     # not the full affine. To convert to world coords, we
@@ -70,7 +76,7 @@ def generate_mesh_from_mask(
     utils.log(mesh)
 
     # return only the tetra cells, not triangles
-    return split_mesh_by_cell_type(mesh)['tetra']
+    return mesh
 
 
 # --- cell region labels ---
@@ -105,11 +111,6 @@ def reindex_cell_labels(
         cell_data=new_cell_data,
         point_data=mesh.point_data,
     )
-
-    # sanity check - no cells should be labeled as mask background
-    cells_labeled_bg = count_labeled_cells(mesh, 'tetra', new_key, value=0)
-    assert cells_labeled_bg == 0, cells_labeled_bg
-
     return mesh
 
 
@@ -235,6 +236,40 @@ def filter_mesh_points(mesh: meshio.Mesh, point_inds: np.ndarray) -> meshio.Mesh
         cells=new_cells,
         point_data=new_point_data,
         cell_data=new_cell_data,
+    )
+
+
+def remove_background_cells(mesh: meshio.Mesh, label_key, label_val=0):
+    labels = mesh.cell_data_dict[label_key]['tetra']
+    cell_inds = labels != label_val
+    n_before = labels.shape[0]
+    n_after  = int(cell_inds.sum())
+    n_drop   = n_before - n_after
+    if n_drop > 0:
+        ret = filter_mesh_cells(mesh, cell_inds)
+    else:
+        ret = mesh
+    utils.log(f'Removed {n_drop} background cell(s)')
+    return ret
+
+
+def filter_mesh_cells(mesh: meshio.Mesh, cell_inds: np.ndarray) -> meshio.Mesh:
+    assert len(mesh.cells) == 1, 'Expected a single cell block'
+    new_cells = []
+    new_cell_data = {k: [] for k in mesh.cell_data.keys()}
+
+    for i, block in enumerate(mesh.cells):
+        new_cells.append(meshio.CellBlock(block.type, block.data[cell_inds]))
+        for k, v_list in mesh.cell_data.items():
+            vals = np.asarray(v_list[i])
+            assert vals.shape[0] == block.data.shape[0]
+            new_cell_data[k].append(vals[cell_inds])
+
+    return meshio.Mesh(
+        points=mesh.points,
+        cells=new_cells,
+        point_data=mesh.point_data,
+        cell_data=new_cell_data
     )
 
 

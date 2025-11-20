@@ -57,8 +57,8 @@ class PhysicsContext:
         def _cpu(a, dtype=None):
             return torch.as_tensor(a, dtype=dtype or torch.float, device='cpu')
 
-        self.verts  = _cpu(verts) # meters
-        self.cells  = _cpu(cells, torch.int)
+        self.verts = _cpu(verts) # meters
+        self.cells = _cpu(cells, torch.int)
 
         self.volume    = _cpu(volume)
         self.adjacency = transforms.compute_node_adjacency(self.verts, self.cells, self.volume)
