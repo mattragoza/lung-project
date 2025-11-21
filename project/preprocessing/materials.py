@@ -22,25 +22,35 @@ def _make_data_frame(data, prefix):
     return pd.DataFrame(data, columns=[f'{prefix}_{c}' for c in DATA_COLUMNS])
 
 
-def build_material_catalog(include_background=True):
+def build_material_catalog(add_background=True):
     dens = _make_data_frame(DENSITY_DATA, prefix='density')
     elas = _make_data_frame(ELASTIC_DATA, prefix='elastic')
 
     mats = pd.merge(dens, elas, how='cross')
-    mats['material_key'] = mats['density_key'] + mats['elastic_key']
+    mats['material_name'] = mats['density_key'] + mats['elastic_key']
     mats['material_freq'] = mats['density_freq'] * mats['elastic_freq']
     mats['material_freq'] /= mats['material_freq'].sum()
 
     mats['poisson_ratio'] = POISSON_RATIO # constant for now
 
-    if include_background:
+    if add_background:
         mats.loc[-1, :] = 0.
         mats.loc[-1, 'material_key'] = 'Background'
-
-        # shift index so background is 0
-        mats.index += 1
+        mats.index += 1 # shift so background index is 0
 
     return mats.sort_index()
+
+
+def load_material_catalog(csv_path, add_background=True):
+    import pandas as pd
+    req_cols = ['material_name', 'density_val', 'elastic_val', 'material_freq']
+    mat_df = pd.read_csv(csv_path)
+    assert set(mat_df.columns) >= set(req_cols)
+    if add_background:
+        mat_df.loc[-1, :] = 0.
+        mat_df.loc[-1, 'material_name'] = 'Background'
+        mat_df.index += 1 # shift so background index is 0
+    return mat_df.sort_index()
 
 
 def compute_intensity_model(
@@ -176,12 +186,8 @@ def sample_region_materials(
     return material_map
 
 
-def assign_materials_to_regions(region_mask, sampling_kws=None):
+def assign_materials_to_regions(region_mask, mat_df, sampling_kws=None):
     region_mask = region_mask.astype(int, copy=False)
-
-    utils.log('Building material catalog')
-    mat_df = build_material_catalog(include_background=True)
-    utils.log(mat_df)
 
     utils.log('Sampling materials per region')
     prior = mat_df.loc[1:, 'material_freq'].to_numpy() # exclude background
@@ -191,8 +197,7 @@ def assign_materials_to_regions(region_mask, sampling_kws=None):
     return material_by_region
 
 
-def assign_material_properties(material_labels):
-    mat_df = build_material_catalog(include_background=True)
+def assign_material_properties(material_labels, mat_df):
 
     density_by_material = mat_df['density_val'].to_numpy()
     elastic_by_material = mat_df['elastic_val'].to_numpy()

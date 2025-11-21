@@ -102,7 +102,7 @@ def create_volume_mesh_from_mask(mask_path, output_path, config):
 def create_material_mask(mask_path, output_path, density_path, elastic_path, config):
     utils.check_keys(
         config,
-        valid={'material_sampling'},
+        valid={'material_catalog', 'material_sampling'},
         where='material_mask'
     )
     from . import materials
@@ -110,14 +110,18 @@ def create_material_mask(mask_path, output_path, density_path, elastic_path, con
     nifti = fileio.load_nibabel(mask_path)
     region_mask = nifti.get_fdata().astype(np.int16)
 
+    utils.log('Loading material catalog')
+    mat_df = materials.load_material_catalog(config['material_catalog'])
+    utils.log(mat_df)
+
     region_mats = materials.assign_materials_to_regions(
-        region_mask, sampling_kws=config.get('material_sampling')
+        region_mask, mat_df, sampling_kws=config.get('material_sampling')
     )
     mat_mask = region_mats[region_mask]
 
     # NOTE we can always recover material properties from material label + catalog,
     #   we choose to save the material property masks here for supervised training
-    rho_mask, E_mask = materials.assign_material_properties(mat_mask)
+    rho_mask, E_mask = materials.assign_material_properties(mat_mask, mat_df)
 
     density_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(density_path, rho_mask.astype(np.float32), nifti.affine)
@@ -130,7 +134,7 @@ def create_material_mask(mask_path, output_path, density_path, elastic_path, con
 
 
 def create_material_fields(regions_path, materials_path, mesh_path, output_path, config):
-    utils.check_keys(config, valid=set(), where='material_mesh')
+    utils.check_keys(config, valid={'material_catalog'}, where='material_mesh')
     from ..core import transforms, interpolation
     from . import materials
 
@@ -146,16 +150,22 @@ def create_material_fields(regions_path, materials_path, mesh_path, output_path,
     mat_cells = region_to_material[reg_cells]
     mesh.cell_data['material'] = [mat_cells]
 
+    utils.log('Loading material catalog')
+    mat_df = materials.load_material_catalog(config['material_catalog'])
+    utils.log(mat_df)
+
     # get material properties from material labels and assign to cells
-    rho_cells, E_cells = materials.assign_material_properties(mat_cells)
+    rho_cells, E_cells = materials.assign_material_properties(mat_cells, mat_df)
     mesh.cell_data['rho'] = [rho_cells]
     mesh.cell_data['E']   = [E_cells]
 
     # map material properties from cells to nodes
     verts, cells = mesh.points, mesh.cells_dict['tetra']
+    volume = transforms.compute_cell_volume(verts, cells)
+    cells_to_nodes = transforms.compute_node_adjacency(verts, cells, volume)
     mesh.point_data['mat'] = transforms.cell_to_node_labels(verts, cells, mat_cells)
-    mesh.point_data['rho'] = transforms.cell_to_node_values(verts, cells, rho_cells)
-    mesh.point_data['E']   = transforms.cell_to_node_values(verts, cells, E_cells)
+    mesh.point_data['rho'] = transforms.cell_to_node_values(cells_to_nodes, rho_cells)
+    mesh.point_data['E']   = transforms.cell_to_node_values(cells_to_nodes, E_cells)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_meshio(output_path, mesh)
@@ -164,7 +174,7 @@ def create_material_fields(regions_path, materials_path, mesh_path, output_path,
 def generate_volumetric_image(mask_path, output_path, config):
     utils.check_keys(
         config,
-        valid={'intensity_model', 'texture_source', 'noise_model'},
+        valid={'material_catalog', 'intensity_model', 'texture_source', 'noise_model'},
         where='image_generation'
     )
     from . import materials, textures, image_generation
@@ -172,9 +182,10 @@ def generate_volumetric_image(mask_path, output_path, config):
     nifti = fileio.load_nibabel(mask_path)
     mask = nifti.get_fdata().astype(int)
 
-    utils.log('Computing intensity model')
-    mat_df = materials.build_material_catalog()
+    utils.log('Loading material catalog')
+    mat_df = materials.load_material_catalog(config['material_catalog'])
 
+    utils.log('Computing intensity model')
     density = mat_df['density_val']
     elastic = mat_df['elastic_val']    
 
@@ -185,6 +196,7 @@ def generate_volumetric_image(mask_path, output_path, config):
     mat_df['elastic_feat'] = outputs['elastic_feat']
     mat_df['intensity_bias'] = outputs['intensity_bias']
     mat_df['intensity_range'] = outputs['intensity_range']
+    utils.log(mat_df)
 
     utils.log('Initializing texture cache')
     tex_kws = config.get('texture_source', {})

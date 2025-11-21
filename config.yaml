@@ -36,9 +36,11 @@ preprocessing:
             lloyd: true
             odt: true
     material_mask:
+        material_catalog: "2025-11-20_materials.csv"
         material_sampling:
             sample_rate: 0.0001
-    material_mesh: {}
+    material_mesh:
+        material_catalog: "2025-11-20_materials.csv"
     displacement_simulation:
         physics_adapter:
             nu_value: 0.4
@@ -48,6 +50,7 @@ preprocessing:
         pde_solver:
             _class: WarpFEMSolver
     image_generation:
+        material_catalog: "2025-11-20_materials.csv"
         intensity_model:
             density_scale: 1000.0
             density_power: 1.0
@@ -62,7 +65,7 @@ preprocessing:
             range_from_elastic: 0.0
             range_from_product: 1.0
         texture_source:
-            annotations: "/ocean/projects/asc170022p/mtragoza/lung-project/notebooks/shapenet/2025-11-05_annotations.csv"
+            annotations: "/ocean/projects/asc170022p/mtragoza/lung-project/notebooks/shapenet/2025-11-20_annotations.csv"
             use_solid: true
             iqr_mult: 4.0
         noise_model:

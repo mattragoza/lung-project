@@ -34,8 +34,8 @@ class TextureCache:
         self.use_solid = use_solid
         self.weights   = weights
 
-    def sample_field(self, mat_name, points, rng):
-        sel = self.df.material == mat_name
+    def sample_field(self, tex_type, points, rng):
+        sel = (self.df.texture_class == tex_type)
         if not sel.any():
             print(self.df)
             raise RuntimeError(f'No textures for material name {mat_name!r}')
@@ -52,7 +52,15 @@ class TextureCache:
 def load_texture_annotations(path):
     import pandas as pd
     df = pd.read_csv(path)
-    assert set(df.columns) >= {'material', 'path', 'solid_path', 'solid_selected'}
+    print()
+    assert set(df.columns) >= {
+        'texture_class',
+        'image_path',
+        'image_valid',
+        'solid_path',
+        'solid_valid',
+        'inverted'
+    }, df.columns
     return df
 
 
@@ -132,18 +140,19 @@ def sample_texture_field(
     assert points.ndim == 2 and points.shape[1] == 3, points.shape
     points = _apply_random_transform(points, rng)
     if use_solid:
-        if 'solid_selected' in mat_tex_df:
-            selected = mat_tex_df.solid_selected.fillna(False)
-            mat_tex_df = mat_tex_df[selected]
+        valid = mat_tex_df.solid_valid.fillna(False)
+        mat_tex_df = mat_tex_df[valid]
         assert len(mat_tex_df) > 0
         sampled = mat_tex_df.sample(1, random_state=rng).iloc[0]
         texture = load_texture_3d(sampled.solid_path, iqr_mult, sampled.inverted)
         return interpolate_solid(texture, points)
     else: # use triplanar
+        valid = mat_tex_df.image_valid.fillna(False)
+        mat_tex_df = mat_tex_df[valid]
         assert len(mat_tex_df) > 0
         sampled = mat_tex_df.sample(3, replace=True)
         textures = [
-            load_texture_2d(s.path, iqr_mult, s.inverted)
+            load_texture_2d(s.image_path, iqr_mult, s.inverted)
                 for i, s in sampled.iterrows()
         ]
         return interpolate_triplanar(textures, points, weights)

@@ -55,14 +55,16 @@ def generate_volumetric_image(
 
         # get material info for region
         mat_info = mat_df.loc[label]
-        mat_name = mat_info.material_key
+        print(mat_info.keys())
+        mat_name = mat_info.material_name
+        tex_type = mat_info.texture_class
         img_bias = mat_info.intensity_bias
         img_range = mat_info.intensity_range if label > 0 else 0
 
         utils.log(f'{mat_name} | bias = {img_bias:.4f} range = {img_range:.4f}')
 
         if label > 0:
-            t_interp = tex_cache.sample_field(mat_name, points, rng).reshape(I, J, K)
+            t_interp = tex_cache.sample_field(tex_type, points, rng).reshape(I, J, K)
         else:
             t_interp = np.zeros((I, J, K), dtype=float)
         image += blend[i] * (img_bias + img_range * (t_interp + tex_noise))
