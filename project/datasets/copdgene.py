@@ -18,7 +18,7 @@ def _parse_image_name(name: str):
     raise RuntimeError(f'failed to parse image name: {name}')
 
 
-class COPDGeneDataset(base.BaseDataset):
+class COPDGeneDataset(base.Dataset):
     '''
     <data_root>/
         Images/<subject>/<visit>/

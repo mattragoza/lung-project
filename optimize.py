@@ -1,16 +1,9 @@
-import sys, os, argparse
+import sys, os
 import project
 
 
-def parse_args(argv):
-    p = argparse.ArgumentParser()
-    p.add_argument('--config', required=True, help='Path to config file')
-    return p.parse_args(argv)
-
-
 def main(argv):
-    args = parse_args(argv)
-    config = project.core.fileio.load_config(args.config)
+    config = project.core.cli.get_config_from_argv(argv)
     examples = project.api.get_examples(config['dataset'])
     project.api.run_optimize(examples, config['optimization'])
 

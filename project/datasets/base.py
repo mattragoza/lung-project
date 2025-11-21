@@ -55,7 +55,7 @@ class Dataset:
         elif n in {'emory4dct', 'emory-4dct', 'dirlab'}:
             from . import emory4dct
             return emory4dct.Emory4DCTDataset
-        raise ValueError('Invalid dataset name: {name:r}')
+        raise ValueError(f'Invalid dataset name: {name!r}')
 
     def get_subset(self, subjects: str|Path|List[str], variant: str) -> DataSubset:
         return DataSubset(self, subjects=subjects, variant=variant)
