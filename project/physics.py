@@ -29,8 +29,8 @@ class PhysicsContext:
         mesh:   meshio.Mesh,
         unit_m: float
     ):
-        cells  = mesh.cells_dict['tetra']
-        verts  = mesh.points * unit_m # world units -> meters
+        cells = mesh.cells_dict['tetra']
+        verts = mesh.points * unit_m # world units -> meters
 
         volume = transforms.compute_cell_volume(verts, cells)
         adjacency = transforms.compute_node_adjacency(verts, cells, volume)

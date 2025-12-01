@@ -36,7 +36,7 @@ class Trainer:
         self.evaluator = evaluator
 
         self.physics_adapter = physics_adapter
-        self.supservised = supervised
+        self.supervised = supervised
         self.device = device
 
         self.output_dir = Path(output_dir)
@@ -155,7 +155,7 @@ class Trainer:
                 sim_loss[k], pde_outputs = self.physics_adapter.voxel_simulation_loss(
                     mesh=batch['mesh'][k],
                     unit_m=batch['example'][k].metadata['unit'],
-                    affine=batch['affine'][k],
+                    affine=batch['affine'][k].to(self.device),
                     E_vox=E_pred[k],
                     bc_spec=None
                 )

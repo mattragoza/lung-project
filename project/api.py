@@ -94,23 +94,23 @@ def run_optimize(examples, config):
     config = config.copy()
     outputs = RunOutputs(stage='optimize', **config.pop('outputs', {}))
 
-    rows = []
+    all_metrics = []
     for ex in examples:
         utils.log(f'Optimizing subject: {ex.subject}')
         try:
             output_path = outputs.mesh_path(ex, name='optimized')
-            result = optimization.optimize_example(ex, config, output_path)
-            if result is not None:
-                rows.append(result)
+            metrics = optimization.optimize_example(ex, config, output_path)
+            if metrics is not None:
+                all_metrics.append(metrics)
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
             raise
 
-    if rows:
+    if all_metrics:
         import pandas as pd
         csv_path = outputs.csv_path(name='metrics')
-        csv_path.make_dirs(parents=True, exist_ok=True)
-        df = pd.DataFrame(rows).to_csv(csv_path, index=False)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        df = pd.concat(all_metrics).to_csv(csv_path, index=False)
 
 
 def run_training(examples, config):
