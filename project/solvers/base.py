@@ -6,7 +6,7 @@ import torch
 class PDESolver:
 
     @classmethod
-    def get_subclass(cls, name):
+    def get_subclass(cls, name: str):
         if name in {'warp', 'warp.fem', 'WarpFEMSolver'}:
             from . import warp
             return warp.WarpFEMSolver
@@ -33,11 +33,11 @@ class PDESolver:
         lam: torch.Tensor,
         rho: torch.Tensor,
         u_bc: torch.Tensor,
-        u_obs: torch.Tensor,
-    ) -> Dict[str, torch.Tensor]:
+        u_obs: torch.Tensor
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
         raise NotImplementedError
 
-    def backward(self, loss_grad: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def backward(self, loss_grad: torch.Tensor, context: Dict) -> Dict[str, torch.Tensor]:
         raise NotImplementedError
 
     def zero_grad(self):
@@ -61,8 +61,9 @@ class PDELossFn(torch.autograd.Function):
         u_obs: torch.Tensor
     ):
         ctx.solver = solver
+        ctx.tensors = (mu, lam, rho, u_bc, u_obs)
         solver.zero_grad()
-        outputs = solver.forward(mu, lam, rho, u_bc, u_obs)
+        outputs, ctx.context = solver.forward(mu, lam, rho, u_bc, u_obs)
         return (
             outputs['loss'],
             outputs['res'].detach(),
@@ -76,13 +77,18 @@ class PDELossFn(torch.autograd.Function):
         res_grad: Optional[torch.Tensor]=None,
         u_sim_grad: Optional[torch.Tensor]=None
     ):
-        input_grads = ctx.solver.backward(loss_grad)
+        input_grads = ctx.solver.backward(loss_grad, ctx.context)
+        mu, lam, rho, u_bc, u_obs = ctx.tensors
         return (
             None,
-            input_grads.get('mu'),
-            input_grads.get('lam'),
-            input_grads.get('rho'),
-            input_grads.get('u_bc'),
-            input_grads.get('u_obs')
+            _on_device(input_grads.get('mu'), mu.device),
+            _on_device(input_grads.get('lam'), lam.device),
+            _on_device(input_grads.get('rho'), rho.device),
+            _on_device(input_grads.get('u_bc'), u_bc.device),
+            _on_device(input_grads.get('u_obs'), u_obs.device)
         )
+
+
+def _on_device(t, device):
+    return t.to(device=device) if torch.is_tensor(t) else t
 

@@ -8,25 +8,27 @@ from ..core import utils, fileio
 
 class TorchDataset(torch.utils.data.Dataset):
 
-    def __init__(self, examples: List[Example], dtype=torch.float32):
+    def __init__(self, examples: List[Example], dtype=torch.float32, cache=False):
         self.examples = examples
         self.dtype = dtype
-        self._cache = {}
+        self.cache = {} if cache else None
 
     def __len__(self):
         return len(self.examples)
 
     def __getitem__(self, idx):
-        if idx not in self._cache:
-            self._cache[idx] = self.load_example(idx)        
-        return self._cache[idx]
-
-    def load_example(self, idx):
         ex = self.examples[idx]
+        if self.cache is None:
+            return self.load_example(ex)
+        key = id(ex)
+        if key not in self.cache:
+            self.cache[key] = self.load_example(ex)
+        return self.cache[key]
 
+    def load_example(self, ex):
         image = fileio.load_nibabel(ex.paths['input_image'])
         mask  = fileio.load_nibabel(ex.paths['material_mask'])
-        mesh  = fileio.load_meshio(ex.paths['image_mesh'])
+        mesh  = fileio.load_meshio(ex.paths['interp_mesh'])
 
         def _as_cpu_tensor(a, dtype=None):
             return torch.as_tensor(a, dtype=dtype or self.dtype, device='cpu')

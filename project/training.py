@@ -22,7 +22,7 @@ class Trainer:
         physics_adapter,
         test_loader=None,
         val_loader=None,
-        evaluator=None,
+        callbacks=None,
         supervised=False,
         output_dir='checkpoints',
         device='cuda'
@@ -33,7 +33,7 @@ class Trainer:
         self.train_loader = train_loader
         self.test_loader = test_loader
         self.val_loader = val_loader
-        self.evaluator = evaluator
+        self.callbacks = callbacks or []
 
         self.physics_adapter = physics_adapter
         self.supervised = supervised
@@ -42,19 +42,25 @@ class Trainer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
-        self.epoch = 0
+        self.epoch = 0 # number of complete epochs
+        self.step  = 0 # number of optimizer steps
 
-    def train(self, num_epochs, val_every=1, save_every=10, eval_on_train=False):
+    # ----- training loop / phases -----
+
+    def train(self, num_epochs, val_every=1, save_every=5):
+        self.start_train()
 
         for _ in range(num_epochs):
-            if self.val_loader and val_every and self.epoch % val_every == 0:
-                self.run_val_phase()
+            self.start_epoch()
 
             if self.output_dir and save_every and self.epoch % save_every == 0:
                 self.save_state()
 
-            self.run_train_phase(eval_on_train)
-            self.epoch += 1
+            if self.val_loader and val_every and self.epoch % val_every == 0:
+                self.run_val_phase()
+
+            self.run_train_phase()
+            self.end_epoch()
 
         if self.val_loader:
             self.run_val_phase()
@@ -62,12 +68,13 @@ class Trainer:
         if self.output_dir:
             self.save_state()
 
-    def run_train_phase(self, run_eval=False):
-        self.model.train()
+        self.end_train()
+
+    def run_train_phase(self):
+        self.start_phase(phase='train')
 
         for i, batch in enumerate(self.train_loader):
-            utils.log(f'[Epoch {self.epoch} | Train batch {i+1}/{len(self.train_loader)}]', end=' ')
-            t0 = time.time()
+            self.start_batch(phase='train', batch=i, loader=self.train_loader)
 
             self.optimizer.zero_grad()
             outputs = self.forward(batch, run_physics=not self.supervised)
@@ -78,54 +85,78 @@ class Trainer:
 
             loss.backward()
             self.optimizer.step()
+            self.step += 1
 
-            if run_eval:
-                self.evaluator.evaluate(outputs, self.epoch, phase='train', batch=i)
+            self.end_batch(phase='train', batch=i, outputs=outputs)
 
-            t1 = time.time()
-            utils.log(f'loss = {loss.item():.4e} | time = {t1 - t0:.4f}')
-
-        if run_eval:
-            metrics = self.evaluator.phase_end(self.epoch, phase='train')
-            utils.log(f'Train metrics @ epoch {self.epoch}: \n{metrics}')
+        self.end_phase(phase='train')
 
     @torch.no_grad()
-    def run_test_phase(self):
-        self.model.eval()
+    def run_test_phase(self, sync_cuda=False):
+        self.start_phase(phase='test')
 
         for i, batch in enumerate(self.test_loader):
-            utils.log(f'[Epoch {self.epoch} | Test batch {i+1}/{len(self.test_loader)}]', end=' ')
-            t0 = time.time()
+            self.batch_start(phase='test', batch=i, loader=self.test_loader)
 
             outputs = self.forward(batch, run_physics=True)
-            if self.evaluator:
-                self.evaluator.evaluate(outputs, self.epoch, phase='test', batch=i)
 
-            t1 = time.time()
-            utils.log(f'loss = {outputs["loss"].item():.4e} | time = {t1 - t0:.4f}')
+            self.batch_end(phase='test', batch=i, outputs=outputs)
 
-        if self.evaluator:
-            metrics = self.evaluator.phase_end(self.epoch, phase='test')
-            utils.log(f'Test metrics @ epoch {self.epoch}: \n{metrics}')
+        self.end_phase(phase='test')
 
     @torch.no_grad()
-    def run_val_phase(self):
-        self.model.eval()
+    def run_val_phase(self, sync_cuda=False):
+        self.start_phase(phase='val')
 
         for i, batch in enumerate(self.val_loader):
-            utils.log(f'[Epoch {self.epoch} | Val batch {i+1}/{len(self.val_loader)}]', end=' ')
-            t0 = time.time()
+            self.start_batch(phase='val', batch=i, loader=self.val_loader)
 
             outputs = self.forward(batch, run_physics=True)
-            if self.evaluator:
-                self.evaluator.evaluate(outputs, self.epoch, phase='val', batch=i)
 
-            t1 = time.time()
-            utils.log(f'loss = {outputs["loss"].item():.4e} | time = {t1 - t0:.4f}')
+            self.end_batch(phase='val', batch=i, outputs=outputs)
 
-        if self.evaluator:
-            metrics = self.evaluator.phase_end(self.epoch, phase='val')
-            utils.log(f'Val metrics @ epoch {self.epoch}: \n{metrics}')
+        self.end_phase(phase='val')
+
+    # ----- callback hooks -----
+
+    def start_train(self):
+        for cb in self.callbacks:
+            cb.on_train_start()
+
+    def end_train(self):
+        for cb in self.callbacks:
+            cb.on_train_end()
+
+    def start_epoch(self):
+        for cb in self.callbacks:
+            cb.on_epoch_start(self.epoch)
+
+    def end_epoch(self):
+        for cb in self.callbacks:
+            cb.on_epoch_end(self.epoch)
+        self.epoch += 1
+
+    def start_phase(self, phase: str):
+        if phase.lower() == 'train':
+            self.model.train()
+        else:
+            self.model.eval()
+        for cb in self.callbacks:
+            cb.on_phase_start(self.epoch, phase)
+
+    def end_phase(self, phase: str):
+        for cb in self.callbacks:
+            cb.on_phase_end(self.epoch, phase)
+
+    def start_batch(self, phase: str, batch: int, loader):
+        for cb in self.callbacks:
+            cb.on_batch_start(self.epoch, phase, batch, self.step, loader=loader)
+
+    def end_batch(self, phase: str, batch: int, outputs):
+        for cb in self.callbacks:
+            cb.on_batch_end(self.epoch, phase, batch, self.step, outputs=outputs)
+
+    # ----- forward pass -----
 
     def forward(self, batch, run_physics):
 
@@ -142,7 +173,6 @@ class Trainer:
             'mask':    batch['mask'].cpu(),
             'E_pred':  E_pred.detach().cpu()
         }
-    
         if 'elast' in batch:
             E_true = batch['elast'].to(self.device)
             outputs['E_true'] = batch['elast'].cpu()
@@ -155,7 +185,7 @@ class Trainer:
                 sim_loss[k], pde_outputs = self.physics_adapter.voxel_simulation_loss(
                     mesh=batch['mesh'][k],
                     unit_m=batch['example'][k].metadata['unit'],
-                    affine=batch['affine'][k].to(self.device),
+                    affine=batch['affine'][k],
                     E_vox=E_pred[k],
                     bc_spec=None
                 )
@@ -168,6 +198,8 @@ class Trainer:
             outputs['loss'] = sim_loss.mean()
 
         return outputs
+
+    # ----- saving / loading state -----
 
     def save_state(self, path=None):
         if path is None:

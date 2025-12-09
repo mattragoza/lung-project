@@ -45,7 +45,7 @@ class ConvUnit3D(torch.nn.Module):
         elif norm_type == 'instance':
             self.norm = torch.nn.InstanceNorm3d(out_channels, affine=True)
         else:
-            raise ValueError(f'invalid norm type: {norm_type}')
+            raise ValueError(f'Invalid norm type: {norm_type}')
 
         self.act = torch.nn.LeakyReLU(negative_slope=relu_leak, inplace=True)
 
@@ -108,7 +108,7 @@ class EncoderBlock(torch.nn.Module):
         elif pooling_type == 'avg':
             self.pooling = torch.nn.AvgPool3d(kernel_size=pooling_size)
         else:
-            raise ValueError(f'invalid pooling_type: {pooling_type}')
+            raise ValueError(f'Invalid pooling_type: {pooling_type}')
         
         self.conv_block = ConvBlock3D(
             in_channels=in_channels,

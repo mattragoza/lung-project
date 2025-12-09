@@ -17,9 +17,15 @@ from ..core import utils
 def _as_warp_array(t: torch.Tensor, **kwargs) -> wp.array:
     return wp.from_torch(t.contiguous().detach(), **kwargs)
 
+def _copy_warp_array(src, dst):
+    try:
+        wp.copy(src=src, dest=dst)
+    except RuntimeError as exc:
+        print(src.shape, dst.shape)
+        raise exc
 
-def _cpu_torch_grad(a: wp.array) -> torch.Tensor | None:
-    return wp.to_torch(a.grad).cpu() if a.requires_grad else None
+def _torch_grad(a: wp.array) -> torch.Tensor | None:
+    return wp.to_torch(a.grad) if a.requires_grad else None
 
 
 class WarpFEMSolver(base.PDESolver):
@@ -30,7 +36,7 @@ class WarpFEMSolver(base.PDESolver):
         tv_reg_weight: float=0.0, # 1e-4 to 5e-2
         eps_reg: float=1e-3,
         eps_div: float=1e-12,
-        cg_tol: float=1e-5,
+        cg_tol:  float=1e-5,
         scalar_degree: int=1,
         vector_degree: int=1,
         scalar_dtype=wp.float32,
@@ -48,36 +54,38 @@ class WarpFEMSolver(base.PDESolver):
         self.vector_degree = vector_degree
         self.scalar_dtype  = scalar_dtype
         self.vector_dtype  = vector_dtype
-        self.device = device or wp.get_device()
+
+        self.device = device or wp.get_device(device)
 
         self._initialized = False
 
     def bind_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
-        assert not self._initialized, 'Geometry already initialized'
-        verts = _as_warp_array(verts, dtype=self.vector_dtype)
-        cells = _as_warp_array(cells, dtype=wp.int32)
+        with wp.ScopedDevice(self.device):
+            verts = _as_warp_array(verts, dtype=self.vector_dtype)
+            cells = _as_warp_array(cells, dtype=wp.int32)
 
-        self.geometry = wp.fem.Tetmesh(cells, verts, build_bvh=True)
-        self.interior = wp.fem.Cells(self.geometry)
-        self.boundary = wp.fem.BoundarySides(self.geometry)
+            self.geometry = wp.fem.Tetmesh(cells, verts, build_bvh=True)
+            self.interior = wp.fem.Cells(self.geometry)
+            self.boundary = wp.fem.BoundarySides(self.geometry)
 
-        self.S = wp.fem.make_polynomial_space(self.geometry, degree=self.scalar_degree, dtype=self.scalar_dtype)
-        self.V = wp.fem.make_polynomial_space(self.geometry, degree=self.vector_degree, dtype=self.vector_dtype)
+            self.S = wp.fem.make_polynomial_space(self.geometry, degree=self.scalar_degree, dtype=self.scalar_dtype)
+            self.V = wp.fem.make_polynomial_space(self.geometry, degree=self.vector_degree, dtype=self.vector_dtype)
 
-        self.u_trial  = wp.fem.make_trial(self.V, domain=self.interior)
-        self.v_test   = wp.fem.make_test(self.V,  domain=self.interior)
-        self.ub_trial = wp.fem.make_trial(self.V, domain=self.boundary)
-        self.vb_test  = wp.fem.make_test(self.V,  domain=self.boundary)
+            self.u_trial  = wp.fem.make_trial(self.V, domain=self.interior)
+            self.v_test   = wp.fem.make_test(self.V,  domain=self.interior)
+            self.ub_trial = wp.fem.make_trial(self.V, domain=self.boundary)
+            self.vb_test  = wp.fem.make_test(self.V,  domain=self.boundary)
 
-        self.g = self.vector_dtype([0, 0, -9.81]) # m/s^2
-        self.I = wp.diag(self.vector_dtype(1.0))
-        self._initialized = True
+            self.g = self.vector_dtype([0, 0, -9.81]) # m/s^2
+            self.I = wp.diag(self.vector_dtype(1.0))
+            self._initialized = True
 
     def make_scalar_field(self, values=None, requires_grad=None):
         assert self._initialized, 'Geometry not initialized'
         s = self.S.make_field()
         if values is not None:
-            wp.copy(s.dof_values, _as_warp_array(values, dtype=self.scalar_dtype))
+            array_vals = _as_warp_array(values, dtype=self.scalar_dtype)
+            _copy_warp_array(src=array_vals, dst=s.dof_values)
         if requires_grad is not None:
             s.dof_values.requires_grad = requires_grad
         elif values is not None:
@@ -88,7 +96,8 @@ class WarpFEMSolver(base.PDESolver):
         assert self._initialized, 'Geometry not initialized'
         v = self.V.make_field()
         if values is not None:
-            wp.copy(v.dof_values, _as_warp_array(values, dtype=self.vector_dtype))
+            array_vals = _as_warp_array(values, dtype=self.vector_dtype)
+            _copy_warp_array(src=array_vals, dst=v.dof_values)
         if requires_grad is not None:
             v.dof_values.requires_grad = requires_grad
         elif values is not None:
@@ -135,20 +144,24 @@ class WarpFEMSolver(base.PDESolver):
             u_sim = self.make_vector_field(requires_grad=True)
             self.solve_forward(K, u_sim, f_tilde, P, M, u0)
 
-            self.tape = wp.Tape()
-            with self.tape:
+            tape = wp.Tape()
+            with tape:
                 res = self.make_vector_field(requires_grad=True)
                 self.compute_residual(mu, lam, rho, u_sim, res)
 
-            self.tape.record_func(
+            tape.record_func(
                 backward=lambda: self.solve_adjoint(K, res, u_sim, P, M),
                 arrays=[res.dof_values, u_sim.dof_values]
             )
-            with self.tape:
+            with tape:
                 loss = self.compute_loss(mu, lam, u_sim, u_obs)
 
-        # track variables for backward pass
-        self.context = {
+        outputs = {
+            'u_sim': wp.to_torch(u_sim.dof_values),
+            'res':   wp.to_torch(res.dof_values),
+            'loss':  wp.to_torch(loss)
+        }
+        context = { # track variables for backward pass
             'mu':    mu,
             'lam':   lam,
             'rho':   rho,
@@ -156,29 +169,25 @@ class WarpFEMSolver(base.PDESolver):
             'u_obs': u_obs,
             'u_sim': u_sim,
             'res':   res,
-            'loss':  loss
+            'loss':  loss,
+            'tape':  tape
         }
-        return {
-            'u_sim': wp.to_torch(u_sim.dof_values),
-            'res':   wp.to_torch(res.dof_values),
-            'loss':  wp.to_torch(loss)
-        }
+        return outputs, context
 
-    def backward(self, loss_grad):
-        self.context['loss'].grad = _as_warp_array(loss_grad)
-        try:
-            with wp.ScopedDevice(self.device):
-                self.tape.backward()
-            return {
-                'mu': _cpu_torch_grad(self.context['mu'].dof_values),
-                'lam': _cpu_torch_grad(self.context['lam'].dof_values),
-                'rho': _cpu_torch_grad(self.context['rho'].dof_values),
-                'u_bc': _cpu_torch_grad(self.context['u_bc'].dof_values),
-                'u_obs': _cpu_torch_grad(self.context['u_obs'].dof_values)
-            }
-        finally:
-            del self.context
-            del self.tape
+    def backward(self, loss_grad, context):
+        input_grads = {}
+        with wp.ScopedDevice(self.device):
+            context['loss'].grad = _as_warp_array(loss_grad)
+            context['tape'].backward()
+            input_grads['mu'] = _torch_grad(context['mu'].dof_values)
+            input_grads['lam'] = _torch_grad(context['lam'].dof_values)
+            input_grads['rho'] = _torch_grad(context['rho'].dof_values)
+            input_grads['u_bc'] = _torch_grad(context['u_bc'].dof_values)
+            input_grads['u_obs'] = _torch_grad(context['u_obs'].dof_values)
+            for key in list(context.keys()): # try to explicitly free warp arrays
+                context[key] = None
+            context.clear()
+        return input_grads
 
     def zero_grad(self):
         if hasattr(self, 'tape'):

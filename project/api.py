@@ -154,6 +154,8 @@ def run_training(examples, config):
     optimizer = optimizer_cls(model.parameters(), **optimizer_kws)
 
     evaluator_kws = config.get('evaluator', {})
+    logger = evaluation.Logger()
+    plotter = evaluation.Plotter()
     evaluator = evaluation.Evaluator(**evaluator_kws)
 
     physics_adapter_kws = config.get('physics_adapter', {})
@@ -174,7 +176,7 @@ def run_training(examples, config):
         train_loader=train_loader,
         test_loader=test_loader,
         val_loader=val_loader,
-        evaluator=evaluator,
+        callbacks=[logger, plotter, evaluator],
         physics_adapter=physics_adapter,
         supervised=supervised
     )

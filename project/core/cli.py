@@ -52,7 +52,7 @@ def set_config_value(config, keys, val):
         curr = curr[k]
     try:
         curr[keys[-1]] = val
-    except Exception as e:
+    except Exception as exc:
         print(keys, val)
-        raise
+        raise exc
 

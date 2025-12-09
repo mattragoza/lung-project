@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 from dataclasses import dataclass
 import meshio
 import torch
@@ -23,12 +23,8 @@ class MeshField:
 
 class PhysicsContext:
 
-    def __init__(
-        self,
-        solver: solvers.base.PDESolver,
-        mesh:   meshio.Mesh,
-        unit_m: float
-    ):
+    def __init__(self, mesh: meshio.Mesh, unit_m: float):
+
         cells = mesh.cells_dict['tetra']
         verts = mesh.points * unit_m # world units -> meters
 
@@ -53,7 +49,7 @@ class PhysicsContext:
         imf_cells = (img_cells + transforms.node_to_cell_values(cells, img_nodes)) / 2
         imf_nodes = (img_nodes + transforms.cell_to_node_values(adjacency, img_cells)) / 2
 
-        # store CPU tensors- let solver manage device
+        # store CPU tensors- let adapter/solver manage device
         def _cpu(a, dtype=None):
             return torch.as_tensor(a, dtype=dtype or torch.float, device='cpu')
 
@@ -70,9 +66,6 @@ class PhysicsContext:
         self.image    = MeshField(_cpu(img_cells), _cpu(img_nodes))
         self.image_f  = MeshField(_cpu(imf_cells), _cpu(imf_nodes))
 
-        self.solver = solver
-        self.solver.bind_geometry(self.verts, self.cells)
-
         self.bc_cache = {}
 
 
@@ -87,7 +80,8 @@ class PhysicsAdapter:
         pde_solver_cls: str,
         pde_solver_kws=None,
         rho_bias: float=None,
-        device='cuda'
+        device='cuda',
+        cache=False
     ):
         self.nu_value  = float(nu_value)
         self.rho_known = bool(rho_known)
@@ -101,12 +95,13 @@ class PhysicsAdapter:
 
         self.pde_solver_cls = solvers.base.PDESolver.get_subclass(pde_solver_cls)
         self.pde_solver_kws = pde_solver_kws or {}
+        self.pde_solver = self.make_pde_solver()
 
-        self.ctx_cache = {}
+        self.ctx_cache = {} if cache else None
 
     # ----- context / solver helpers -----
 
-    def get_solver(self) -> solvers.base.PDESolver:
+    def make_pde_solver(self) -> solvers.base.PDESolver:
         return self.pde_solver_cls(
             scalar_degree=self.scalar_degree,
             vector_degree=self.vector_degree,
@@ -115,10 +110,11 @@ class PhysicsAdapter:
         )
 
     def get_context(self, mesh: meshio.Mesh, unit_m: float) -> PhysicsContext:
-        key = id(mesh), str(unit_m)
+        if self.ctx_cache is None:
+            return PhysicsContext(mesh, unit_m)
+        key = (str(mesh.path), round(unit_m, 4))
         if key not in self.ctx_cache:
-            solver = self.get_solver()
-            self.ctx_cache[key] = PhysicsContext(solver, mesh, unit_m)
+            self.ctx_cache[key] = PhysicsContext(mesh, unit_m)
         return self.ctx_cache[key]
 
     def clear_cache(self):
@@ -141,13 +137,14 @@ class PhysicsAdapter:
             rho = ctx.rho[self.scalar_degree]
             u_bc = self.get_boundary_condition(ctx, bc_spec)
             mu, lam = transforms.compute_lame_parameters(E, self.nu_value)
-            u_obs = ctx.solver.solve(mu, lam, rho, u_bc).detach().cpu()
-            ctx.bc_cache[bc_spec] = (u_bc, u_obs)
+            self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
+            u_obs = self.pde_solver.solve(mu, lam, rho, u_bc)
+            ctx.bc_cache[bc_spec] = (u_bc.cpu(), u_obs.detach().cpu())
         return ctx.bc_cache[bc_spec]
 
     # ----- public API methods -----
 
-    def init_param_field(self, mesh: meshio.Mseh, unit_m: float, init_value: float):
+    def init_param_field(self, mesh: meshio.Mesh, unit_m: float, init_value: float):
         ctx = self.get_context(mesh, unit_m)
         template = ctx.E[self.scalar_degree]
         return torch.full_like(template, init_value, requires_grad=True)
@@ -158,28 +155,45 @@ class PhysicsAdapter:
         rho = ctx.rho[self.scalar_degree]
         u_bc = self.get_boundary_condition(ctx, bc_spec)
         mu, lam = transforms.compute_lame_parameters(E, self.nu_value)
-        u_sim = ctx.solver.solve(mu, lam, rho, u_bc)
+        self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
+        u_sim = self.pde_solver.solve(mu, lam, rho, u_bc)
         return {
             'u_bc': u_bc.detach().cpu().numpy(),
             'u_sim': u_sim.detach().cpu().numpy()
         }
 
-    def simulation_loss(self, mesh, unit_m, E, bc_spec, ret_outputs=False):
+    def simulation_loss(
+        self,
+        mesh: meshio.Mesh,
+        unit_m: float,
+        E: torch.Tensor,
+        bc_spec: Any,
+        ret_outputs: bool=False
+    ):
         ctx = self.get_context(mesh, unit_m)
         rho = self.get_density(ctx)
         u_bc, u_obs = self.get_observations(ctx, bc_spec)
         mu, lam = transforms.compute_lame_parameters(E, self.nu_value)
-        loss, outputs = ctx.solver.loss(mu, lam, rho, u_bc, u_obs)
+        self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
+        loss, outputs = self.pde_solver.loss(mu, lam, rho, u_bc, u_obs)
         if ret_outputs:
             inputs = {'E': E, 'rho': rho, 'u_bc': u_bc, 'u_obs': u_obs}
             return loss, self._package(ctx, inputs, outputs)
         return loss
 
-    def voxel_simulation_loss(self, mesh, unit_m, affine, E_vox, bc_spec, ret_outputs=True):
+    def voxel_simulation_loss(
+        self,
+        mesh: meshio.Mesh,
+        unit_m: float,
+        affine: torch.Tensor,
+        E_vox: torch.Tensor,
+        bc_spec: Any,
+        ret_outputs: bool=True
+    ):
         ctx = self.get_context(mesh, unit_m)
-        points = ctx.points[self.scalar_degree].to(affine.device)
-        voxels = transforms.world_to_voxel_coords(points, affine)
-        E = interpolation.interpolate_image(E_vox, voxels)
+        points = ctx.points[self.scalar_degree].to(self.device)
+        voxels = transforms.world_to_voxel_coords(points, affine.to(self.device))
+        E = interpolation.interpolate_image(E_vox.to(self.device), voxels)[...,0]
         return self.simulation_loss(mesh, unit_m, E, bc_spec, ret_outputs)
 
     # ----- packaging for evaluation -----
@@ -191,21 +205,20 @@ class PhysicsAdapter:
             'rho_true': ctx.rho,
             'E_true':   ctx.E,
             'rho_pred': _as_mesh_field(ctx, inputs['rho'], self.scalar_degree),
-            'E_pred':   _as_mesh_field(ctx, inputs['E'], self.scalar_degree),
-            'u_true':   _as_mesh_field(ctx, inputs['u_obs'], self.vector_degree),
+            'E_pred':   _as_mesh_field(ctx, inputs['E'],   self.scalar_degree),
+            'u_true':   _as_mesh_field(ctx, inputs['u_obs'],  self.vector_degree),
             'u_pred':   _as_mesh_field(ctx, outputs['u_sim'], self.vector_degree),
-            'residual': _as_mesh_field(ctx, outputs['res'], self.vector_degree)
+            'residual': _as_mesh_field(ctx, outputs['res'],   self.vector_degree)
         }
 
 
 def _as_mesh_field(ctx, values, degree: int) -> MeshField:
-    values = values.detach().cpu()
     if degree == 0:
-        cell_vals = values
-        node_vals = transforms.cell_to_node_values(ctx.verts, ctx.cells, values, ctx.volume)
+        cell_vals = values.detach().cpu()
+        node_vals = transforms.cell_to_node_values(ctx.verts, ctx.cells, cell_vals, ctx.volume)
     elif degree == 1:
-        node_vals = values
-        cell_vals = transforms.node_to_cell_values(ctx.cells, values)
+        node_vals = values.detach().cpu()
+        cell_vals = transforms.node_to_cell_values(ctx.cells, node_vals)
     else:
         raise ValueError(f'Cannot convert degree {degree}')
     return MeshField(cell_vals, node_vals)

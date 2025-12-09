@@ -33,9 +33,11 @@ def load_binvox(path):
 
 
 def load_meshio(path):
-    import meshio
+    import meshio, os
     utils.log(f'Loading {path}')
-    return meshio.read(path)
+    mesh = meshio.read(path)
+    mesh.path = os.path.abspath(str(path))
+    return mesh
 
 
 def save_meshio(path, mesh):
