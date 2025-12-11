@@ -166,7 +166,9 @@ class UNet3D(torch.nn.Module):
         num_groups: int=DEFAULT_NUM_GROUPS,
         pooling_type: str=DEFAULT_POOL_TYPE,
         upsample_mode: str=DEFAULT_UPSAMPLE,
-        output_func: str='relu'
+        output_func: str='softplus',
+        output_bias: float=0.0,
+        output_scale: float=1.0
     ):
         super().__init__()
         assert n_enc_blocks > 0
@@ -210,6 +212,8 @@ class UNet3D(torch.nn.Module):
             next_channels = curr_channels // 2
         
         self.output_conv = torch.nn.Conv3d(curr_channels, out_channels, kernel_size=1)
+        self.output_bias = float(output_bias)
+        self.output_scale = float(output_scale)
         self.output_func = get_output_fn(output_func)
 
     def forward(self, x):
@@ -223,8 +227,8 @@ class UNet3D(torch.nn.Module):
         for i, dec_block in enumerate(self.decoder):
             x = dec_block(x, features[i+1])
 
-        theta = self.output_conv(x)
-        return self.output_func(theta)
+        x = self.output_conv(x) * self.output_scale + self.output_bias
+        return self.output_func(x)
 
 
 def get_output_fn(name):

@@ -47,7 +47,7 @@ class Trainer:
 
     # ----- training loop / phases -----
 
-    def train(self, num_epochs, val_every=1, save_every=5):
+    def train(self, num_epochs, val_every=1, save_every=10):
         self.start_train()
 
         for _ in range(num_epochs):
@@ -92,20 +92,20 @@ class Trainer:
         self.end_phase(phase='train')
 
     @torch.no_grad()
-    def run_test_phase(self, sync_cuda=False):
+    def run_test_phase(self):
         self.start_phase(phase='test')
 
         for i, batch in enumerate(self.test_loader):
-            self.batch_start(phase='test', batch=i, loader=self.test_loader)
+            self.start_batch(phase='test', batch=i, loader=self.test_loader)
 
             outputs = self.forward(batch, run_physics=True)
 
-            self.batch_end(phase='test', batch=i, outputs=outputs)
+            self.end_batch(phase='test', batch=i, outputs=outputs)
 
         self.end_phase(phase='test')
 
     @torch.no_grad()
-    def run_val_phase(self, sync_cuda=False):
+    def run_val_phase(self):
         self.start_phase(phase='val')
 
         for i, batch in enumerate(self.val_loader):
@@ -165,7 +165,7 @@ class Trainer:
         batch_size = image.shape[0]
 
         # predict elastic modulus from image
-        E_pred = self.model.forward(image)
+        E_pred = self.model.forward(image) * (mask > 0)
 
         outputs = {
             'example': batch['example'],

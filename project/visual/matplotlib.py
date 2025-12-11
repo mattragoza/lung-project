@@ -1,6 +1,186 @@
+import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import ipywidgets
+
+
+class SliceViewer:
+
+    def __init__(
+        self,
+        array=None,
+        index=None,
+        ax_height=2,
+        ax_width=2,
+        spacing=(0.5, 0.75),
+        padding=(0.75, 0.75, 0.5, 0.25),
+        cbar_width=0.25,
+        cbar_spacing=0.25,
+        line_color='rgb',
+        line_width=1.5,
+        **imshow_kws
+    ):
+        self._initialized = False
+    
+        self.subplot_kws = dict(
+            ax_height=ax_height,
+            ax_width=ax_width,
+            spacing=spacing,
+            padding=padding,
+            cbar_width=cbar_width,
+            cbar_spacing=cbar_spacing
+        )
+
+        # style helpers
+        self.imshow_kws = with_defaults(imshow_kws, interpolation='none')
+        color_dict = get_color_dict(brightness=0.5, saturation=1.0)
+        colors = as_iterable(line_color, length=3, string_ok=True)
+        colors = [color_dict.get(c, c) for c in colors]
+        self.i_line_kws = dict(color=colors[0], linewidth=line_width)
+        self.j_line_kws = dict(color=colors[1], linewidth=line_width)
+        self.k_line_kws = dict(color=colors[2], linewidth=line_width)
+    
+        self.init_figure()
+
+        if array is not None:
+            self.update_array(array, index)
+
+    def init_figure(self):
+        fig, axes, cbar_ax = subplot_grid(1, 3, **self.subplot_kws)
+
+        self.fig = fig
+        self.axes = axes
+        self.cbar_ax = cbar_ax
+
+        self.ax_i = axes[0,0]
+        self.ax_j = axes[0,1]
+        self.ax_k = axes[0,2]
+
+    def update_array(self, array, index=None):
+        array = np.asarray(array)
+    
+        if array.ndim == 4:
+            C, I, J, K = array.shape
+            if C != 3:
+                raise ValueError(array.shape)
+            self.rgb = True
+    
+        elif array.ndim == 3:
+            I, J, K = array.shape
+            self.rgb = False
+    
+        else:
+            raise ValueError(array.shape)
+
+        if index is None:
+            i, j, k = I//2, J//2, K//2
+        else:
+            i, j, k = map(int, index)
+
+        self.array = array
+        self.shape = (I, J, K)
+        self.index = (i, j, k)
+
+        self.update_images()
+
+    def init_images(self, interact=True):
+        assert not self._initialized
+        i, j, k = self.index
+
+        if self.rgb:
+            self.im_i = self.ax_i.imshow(self.array[:,i,:,:].T, origin='lower', **self.imshow_kws)
+            self.im_j = self.ax_j.imshow(self.array[:,:,j,:].T, origin='lower', **self.imshow_kws)
+            self.im_k = self.ax_k.imshow(self.array[:,:,:,k].T, origin='lower', **self.imshow_kws)
+        else:
+            self.im_i = self.ax_i.imshow(self.array[i,:,:].T, origin='lower', **self.imshow_kws)
+            self.im_j = self.ax_j.imshow(self.array[:,j,:].T, origin='lower', **self.imshow_kws)
+            self.im_k = self.ax_k.imshow(self.array[:,:,k].T, origin='lower', **self.imshow_kws)
+
+        plt.colorbar(self.im_k, cax=self.cbar_ax)
+
+        # crosshair lines
+        self.v_i_j = self.ax_i.axvline(j, **self.j_line_kws)
+        self.h_i_k = self.ax_i.axhline(k, **self.k_line_kws)
+        self.v_j_i = self.ax_j.axvline(i, **self.i_line_kws)
+        self.h_j_k = self.ax_j.axhline(k, **self.k_line_kws)
+        self.v_k_i = self.ax_k.axvline(i, **self.i_line_kws)
+        self.h_k_j = self.ax_k.axhline(j, **self.j_line_kws)
+
+        self.ax_i.set_title(f'i = {i}')
+        self.ax_j.set_title(f'j = {j}')
+        self.ax_k.set_title(f'k = {k}')
+
+        if interact:
+            self.cid_click = self.fig.canvas.mpl_connect('button_press_event', self.on_click)
+    
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
+
+        self._initialized = True
+
+    def update_images(self):
+        if not self._initialized:
+            return self.init_images()
+
+        i, j, k = self.index
+
+        if self.rgb:
+            self.im_i.set_data(self.array[:,i,:,:].T)
+            self.im_j.set_data(self.array[:,:,j,:].T)
+            self.im_k.set_data(self.array[:,:,:,k].T)
+        else:
+            self.im_i.set_data(self.array[i,:,:].T)
+            self.im_j.set_data(self.array[:,j,:].T)
+            self.im_k.set_data(self.array[:,:,k].T)
+
+        self.v_j_i.set_xdata([i, i])
+        self.v_k_i.set_xdata([i, i])
+        self.v_i_j.set_xdata([j, j])
+        self.h_k_j.set_ydata([j, j])
+        self.h_i_k.set_ydata([k, k])
+        self.h_j_k.set_ydata([k, k])
+
+        self.ax_i.set_title(f'i = {i}')
+        self.ax_j.set_title(f'j = {j}')
+        self.ax_k.set_title(f'k = {k}')
+
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
+
+    def update_i(self, new_i):
+        i, j, k = self.index
+        i = int(np.round(new_i))
+        self.index = (i, j, k)
+        self.update_images()
+
+    def update_j(self, new_j):
+        i, j, k = self.index
+        j = int(np.round(new_j))
+        self.index = (i, j, k)
+        self.update_images()
+
+    def update_k(self, new_k):
+        i, j, k = self.index
+        k = int(np.round(new_k))
+        self.index = (i, j, k)
+        self.update_images()
+
+    def on_click(self, event):
+        if event.inaxes is None or event.xdata is None or event.ydata is None:
+            return
+    
+        ax = event.inaxes
+        if ax == self.ax_i:
+            self.update_j(event.xdata)
+            self.update_k(event.ydata)
+    
+        elif ax == self.ax_j:
+            self.update_i(event.xdata)
+            self.update_k(event.ydata)
+    
+        elif ax == self.ax_k:
+            self.update_i(event.xdata)
+            self.update_j(event.ydata)
 
 
 def show_image_slices(

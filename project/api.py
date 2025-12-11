@@ -131,15 +131,23 @@ def run_training(examples, config):
     split_kws = config.get('split', {})
     train_ex, test_ex, val_ex = training.split_on_metadata(examples, **split_kws)
 
-    train_set  = datasets.torch.TorchDataset(train_ex)
-    test_set   = datasets.torch.TorchDataset(test_ex)
-    val_set    = datasets.torch.TorchDataset(val_ex)
+    train_set  = datasets.torch.TorchDataset(train_ex, cache=True)
+    test_set   = datasets.torch.TorchDataset(test_ex, cache=True)
+    val_set    = datasets.torch.TorchDataset(val_ex, cache=True)
     collate_fn = datasets.torch.collate_fn
 
     loader_kws = config.get('loader', {})
     train_loader = torch.utils.data.DataLoader(train_set, collate_fn=collate_fn, **loader_kws)
-    test_loader  = torch.utils.data.DataLoader(test_set, collate_fn=collate_fn, **loader_kws)
-    val_loader   = torch.utils.data.DataLoader(val_set, collate_fn=collate_fn, **loader_kws)
+
+    if len(test_set) > 0:
+        test_loader = torch.utils.data.DataLoader(test_set, collate_fn=collate_fn, **loader_kws)
+    else:
+        test_loader = None
+
+    if len(val_set) > 0:
+        val_loader = torch.utils.data.DataLoader(val_set, collate_fn=collate_fn, **loader_kws)
+    else:
+        val_loader = None
 
     model_kws = config.get('model', {}).copy()
     model_cls = getattr(models, model_kws.pop('_class'))
@@ -153,11 +161,6 @@ def run_training(examples, config):
     optimizer_cls = getattr(torch.optim, optimizer_kws.pop('_class'))
     optimizer = optimizer_cls(model.parameters(), **optimizer_kws)
 
-    evaluator_kws = config.get('evaluator', {})
-    logger = evaluation.Logger()
-    plotter = evaluation.Plotter()
-    evaluator = evaluation.Evaluator(**evaluator_kws)
-
     physics_adapter_kws = config.get('physics_adapter', {})
     pde_solver_kws = config.get('pde_solver', {}).copy()
     pde_solver_cls = pde_solver_kws.pop('_class')
@@ -165,8 +168,19 @@ def run_training(examples, config):
     physics_adapter = physics.PhysicsAdapter(
         pde_solver_cls=pde_solver_cls,
         pde_solver_kws=pde_solver_kws,
+        cache=True,
         **physics_adapter_kws
     )
+
+    evaluator_kws = config.get('evaluator', {})
+    callbacks = [
+        evaluation.Logger(),
+        evaluation.Plotter(),
+        evaluation.Viewer(key='image', cmap='Grays_r', clim=(0, 1)),
+        evaluation.Viewer(key='E_pred', cmap='jet', clim=(0, 1e4)),
+        evaluation.Viewer(key='E_true', cmap='jet', clim=(0, 1e4)),
+        evaluation.Evaluator(**evaluator_kws)
+    ]
 
     trainer_kws = config.get('trainer', {}).copy()
     supervised = trainer_kws.pop('supervised', False)
@@ -176,7 +190,7 @@ def run_training(examples, config):
         train_loader=train_loader,
         test_loader=test_loader,
         val_loader=val_loader,
-        callbacks=[logger, plotter, evaluator],
+        callbacks=callbacks,
         physics_adapter=physics_adapter,
         supervised=supervised
     )

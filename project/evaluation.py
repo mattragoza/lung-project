@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 from .core import utils, transforms
 from .core import metrics as mm
+from .visual import matplotlib as mpl_viz
 
 
 def _to_numpy(t):
@@ -80,52 +81,106 @@ class Logger(Callback):
 class Plotter(Callback):
 
     def __init__(self):
-        self.records = defaultdict(list) # (phase, step) -> List[loss]
+        self.loss_history = defaultdict(list) # (phase, step) -> List[loss]
+        self.norm_history = defaultdict(list) # (phase, step) -> List[norm]
+
         self.output_dir = Path('./outputs')
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
-        plt.ion()
-        self.fig, self.ax = plt.subplots()
+        self._init_plot()
 
     def on_batch_end(self, epoch, phase, batch, step, outputs):
+        phase = str(phase).lower()
+
         loss_val = float(outputs['loss'].item())
-        self.records[(phase, step)].append(loss_val)
-        self.update_plot()
+        norm_val = float(outputs['E_pred'].norm().item())
+
+        self.loss_history[(phase, step)].append(loss_val)
+        self.norm_history[(phase, step)].append(norm_val)
+
+        self._update_plot()
 
     def on_phase_end(self, epoch, phase):
-        self.save_plot()
+        self._save_plot()
 
-    def update_plot(self):
-        self.ax.clear()
+    def _init_plot(self):
+        plt.ion()
+        self.fig, self.axes = mpl_viz.subplot_grid(
+            1, 2, ax_height=3, ax_width=3,
+            spacing=(0.5, 1.5),
+            padding=(0.75, 0.75, 0.5, 0.25)
+        )
+        self.loss_ax = self.axes[0,0]
+        self.norm_ax = self.axes[0,1]
+
+    def _phase_data(self, data, phase):
+        items = [
+            (step, vals) for (p, step), vals in data.items()
+            if p == phase
+        ]
+        if not items:
+            return None, None
+        
+        items.sort(key=lambda x: x[0])
+
+        steps = [step for step, _ in items]
+        means = [float(np.mean(vals)) for _, vals in items]
+
+        return steps, means
+
+    def _update_plot(self):
+        for ax in self.axes.flatten():
+            ax.clear()
+
         for phase in ['train', 'val', 'test']:
-            phase_items = [
-                (step, vals) for (p, step), vals in self.records.items()
-                if p == phase
-            ]
-            if not phase_items:
-                continue
-            steps = []
-            means = []
-            for step, vals in sorted(phase_items, key=lambda x: x[0]):
-                steps.append(step)
-                means.append(float(np.mean(vals)))
-            self.ax.plot(steps, means, marker='o', linestyle='-', label=phase)
-        self.ax.set_xlabel('Optimizer step')
-        self.ax.set_ylabel('Loss')
-        self.ax.grid(True)
-        self.ax.legend()
+            steps, means = self._phase_data(self.loss_history, phase)
+            if steps is not None:
+                self.loss_ax.plot(steps, means, label=phase)
+
+            steps, means = self._phase_data(self.norm_history, phase)
+            if steps is not None:
+                self.norm_ax.plot(steps, means, label=phase)
+
+        self.loss_ax.set_ylabel('loss')
+        self.norm_ax.set_ylabel('norm')
+
+        for ax in self.axes.flatten():
+            ax.set_xlabel('step')
+            ax.set_yscale('log')
+            ax.grid(True)
+            ax.legend()
+
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
+        self.fig.tight_layout()
 
-    def save_plot(self):
+    def _save_plot(self):
         out = self.output_dir / 'training_plot.png'
         self.fig.savefig(out, bbox_inches='tight')
+
+
+class Viewer(Callback):
+
+    def __init__(self, key, **kwargs):
+        from .visual.matplotlib import SliceViewer
+        self.output_dir = Path('./outputs')
+        self.output_dir.mkdir(exist_ok=True, parents=True)
+        self.viewer = SliceViewer(**kwargs)
+        self.key = key
+
+    def on_batch_end(self, epoch, phase, batch, step, outputs):
+        self.viewer.update_array(outputs[self.key][0,0])
+
+    def on_phase_end(self, epoch, phase):
+        out = self.output_dir / f'{self.key}_viewer.png'
+        self.viewer.fig.savefig(out, bbox_inches='tight')
 
 
 class Evaluator(Callback):
 
     def __init__(self, eval_on_train: bool=False):
         self.eval_on_train = eval_on_train
+
         self.example_rows  = defaultdict(list)
         self.material_rows = defaultdict(list)
 
@@ -135,6 +190,10 @@ class Evaluator(Callback):
     def on_batch_end(self, epoch, phase, batch, step, outputs):
         if self.eval_on_train or phase.lower() != 'train':
             self.evaluate(epoch, phase, batch, step, outputs)
+
+    def on_phase_end(self, epoch, phase):
+        if self.eval_on_train or phase.lower() != 'train':
+            self.summarize(epoch, phase)
 
     @torch.no_grad()
     def evaluate(self, epoch, phase, batch, step, outputs):
@@ -239,7 +298,7 @@ class Evaluator(Callback):
 
         return ret
 
-    def on_phase_end(self, epoch, phase):
+    def summarize(self, epoch, phase):
         ex_path  = self.output_dir / 'example_metrics.csv'
         mat_path = self.output_dir / 'material_metrics.csv'
 

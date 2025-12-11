@@ -111,11 +111,11 @@ training:
     loader:
         batch_size: 1
         shuffle: true
-        num_workers: 4
+        num_workers: 0
         pin_memory: true
     model:
         _class: UNet3D
-        conv_channels: 16
+        conv_channels: 32
         n_enc_blocks: 3
         n_conv_units: 2
         n_init_units: 1
@@ -125,7 +125,7 @@ training:
         num_groups: 8
         pooling_type: "max"
         upsample_mode: "nearest"
-        output_func: "pow10"
+        output_func: "softplus"
     physics_adapter:
         nu_value: 0.4
         rho_bias: 1000
@@ -140,5 +140,5 @@ training:
         lr: 0.0001
     trainer:
         supervised: false
-        num_epochs: 100
+        num_epochs: 1000
 

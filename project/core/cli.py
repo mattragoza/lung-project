@@ -7,7 +7,7 @@ def get_config_from_argv(argv: List[str]):
     args = parse_args(argv)
     config = fileio.load_config(args.config)
     config = apply_overrides(config, args.set)
-    utils.pprint(config)
+    utils.pprint(config, 4, 20)
     return config
 
 
