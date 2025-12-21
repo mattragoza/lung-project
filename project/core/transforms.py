@@ -38,6 +38,8 @@ def get_affine_origin(affine):
 
 
 def get_affine_spacing(affine):
+    if isinstance(affine, torch.Tensor):
+        return torch.linalg.norm(affine[:3,:3], dim=0)
     return np.linalg.norm(affine[:3,:3], axis=0)
 
 
@@ -106,11 +108,14 @@ def normalize_voxel_coords(points, shape, align_corners=True, flip_order=False):
     return output
 
 
-def get_grid_bounds(origin, spacing, shape, align_corners=True):
-    
-    origin  = np.asarray(origin)
-    spacing = np.asarray(spacing)
-    shape   = np.asarray(shape)
+def get_grid_bounds(affine, shape, align_corners=True):
+    origin  = get_affine_origin(affine)
+    spacing = get_affine_spacing(affine)
+
+    if isinstance(affine, torch.Tensor):
+        shape = torch.as_tensor(shape)
+    else:
+        shape = np.asarray(shape)
 
     if align_corners:
         lo = origin

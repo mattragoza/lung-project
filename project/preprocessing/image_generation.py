@@ -55,7 +55,6 @@ def generate_volumetric_image(
 
         # get material info for region
         mat_info = mat_df.loc[label]
-        print(mat_info.keys())
         mat_name = mat_info.material_name
         tex_type = mat_info.texture_class
         img_bias = mat_info.intensity_bias

@@ -231,15 +231,25 @@ class UNet3D(torch.nn.Module):
         return self.output_func(x)
 
 
+def identity(x):
+    return x
+
+
+def pow10(x):
+    return torch.pow(10, x)
+
+
 def get_output_fn(name):
-    if name == 'relu':
+    if name == 'identity':
+        return identity
+    elif name == 'relu':
         return F.relu
     elif name == 'softplus':
         return F.softplus
     elif name == 'exp':
         return torch.exp
     elif name == 'pow10':
-        return lambda x: torch.pow(10, x)
+        return pow10
     else:
         raise ValueError(f'invalid name: {name}')
 
