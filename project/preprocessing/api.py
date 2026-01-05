@@ -80,6 +80,7 @@ def preprocess_shapenet(ex, config):
         stages.generate_volumetric_image,
         mask_path=ex.paths['material_mask'],
         output_path=ex.paths['input_image'],
+        sid=ex.subject,
         config=config.get('image_generation', {})
     )
     _ensure_output( # interp mesh

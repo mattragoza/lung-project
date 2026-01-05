@@ -171,7 +171,7 @@ def create_material_fields(regions_path, materials_path, mesh_path, output_path,
     fileio.save_meshio(output_path, mesh)
 
 
-def generate_volumetric_image(mask_path, output_path, config):
+def generate_volumetric_image(mask_path, output_path, sid, config):
     utils.check_keys(
         config,
         valid={'material_catalog', 'intensity_model', 'texture_source', 'noise_model'},
@@ -204,8 +204,9 @@ def generate_volumetric_image(mask_path, output_path, config):
 
     utils.log('Generating volumetric image')
     noise_kws = config.get('noise_model', {})
+    seed = f'{ex.subject}_{noise_kws.pop("seed", 0)}'
     image = image_generation.generate_volumetric_image(
-        mask, nifti.affine, mat_df, tex_cache, **noise_kws
+        mask, nifti.affine, mat_df, tex_cache, seed=seed, **noise_kws
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

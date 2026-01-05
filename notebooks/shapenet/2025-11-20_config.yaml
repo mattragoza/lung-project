@@ -10,7 +10,7 @@ dataset:
         default_unit: 0.01
     selectors:
         binary_mask: "pad37"
-        input_image: "solid"
+        input_image: "seed"
 
 preprocessing:
     binary_mask:
@@ -75,7 +75,7 @@ preprocessing:
             mul_noise_len: 128
             mul_noise_std: 0.25
             add_noise_len: 0.5
-            add_noise_std: 0.025
+            add_noise_std: 0.01
             psf_sigma: 0.5
             mat_sigma: 1.0
     image_interpolation:
