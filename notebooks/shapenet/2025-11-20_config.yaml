@@ -2,8 +2,8 @@ dataset:
     name: "ShapeNet"
     root: "/ocean/projects/asc170022p/mtragoza/lung-project/data/ShapeNetSem"
     examples:
-        subjects: "/ocean/projects/asc170022p/mtragoza/lung-project/notebooks/shapenet/2025-11-02_selected.csv"
-        variant: "2025-11-20"
+        subjects: "subjects.csv"
+        variant: "2025-01-05"
     metadata:
         parse_metadata: true
         unit_policy: "prefer_metadata"
@@ -140,5 +140,5 @@ training:
         lr: 0.0001
     trainer:
         supervised: false
-        num_epochs: 1000
+        num_epochs: 20
 

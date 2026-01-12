@@ -1,0 +1,120 @@
+dataset:
+    name: "ShapeNet"
+    root: "/ocean/projects/asc170022p/mtragoza/lung-project/data/ShapeNetSem"
+    examples:
+        variant: "2025-11-02"
+        subjects: "2025-11-05_optimized.csv"
+    metadata:
+        unit_policy: "prefer_metadata"
+        default_unit: 0.01
+    selectors:
+        volume_tag: "volume_vr"
+        mat_fields_tag: "mat_fields_vr"
+        sim_fields_tag: "sim_fields_vr"
+        img_fields_tag: "img_fields_vr"
+        material_tag: "material_vr"
+        image_tag: "solid_texture_vr"
+
+preprocess:
+    binary_mask:
+        pad_factor: 0.37
+    surface_mesh: {}
+    region_mask: {}
+    volume_mesh:
+        use_affine_spacing: false
+        pygalmesh:
+            max_facet_distance: 0.75
+            max_cell_circumradius: 5.0
+            lloyd: true
+            odt: true
+    material_mask:
+        sample_kws:
+            vote_rate: 0.0001
+    material_mesh: {}
+    simulated_displacement:
+        pde_adapter:
+            nu_value: 0.4
+            scalar_degree: 0
+            vector_degree: 1
+        pde_solver:
+            _class: WarpFEMSolver
+    generated_image:
+        annot_path: "/ocean/projects/asc170022p/mtragoza/lung-project/notebooks/shapenet/2025-11-05_annotations.csv"
+        imp_kws:
+            d_ref: 1000.0,
+            d_pow: 1.0,
+            e_ref: 1000.0,
+            e_pow: -1.0,
+            b_d: 1.0,
+            r_de: 1.0
+        gen_kws:
+            use_solid: true
+            iqr_mult: 4.0
+            seed: 0
+            tex_noise_len: 2.0,
+            tex_noise_std: 0.1,
+            mul_noise_len: 128,
+            mul_noise_std: 0.25,
+            add_noise_len: 0.5,
+            add_noise_std: 0.025,
+            psf_sigma: 0.5,
+            mat_sigma: 1.0
+    interpolate_image:
+        interp_kws:
+            order: 1
+            mode: nearest
+
+optimize:
+    pde_adapter:
+        nu_values: 0.4
+        rho_bias: 1000.
+        rho_known: false
+        scalar_degree: 1
+        vector_degree: 1
+    pde_solver:
+        _class: WarpFEMSolver
+        tv_reg_weight: 0.0001
+    global_phase:
+        max_iter: 100
+    local_phase:
+        max_iter: 100
+
+training:
+    split:
+        test_ratio: 0.2
+        val_ratio: 0.1
+        seed: 0
+    loader:
+        batch_size: 1
+        shuffle: true
+        num_workers: 4
+        pin_memory: true
+    model:
+        _class: UNet3D
+        conv_channels: 16
+        n_enc_blocks: 3
+        n_conv_units: 2
+        n_init_units: 1
+        kernel_size: 3
+        relu_leak: 0.01
+        norm_type: "group"
+        num_groups: 8
+        pooling_type: "max"
+        upsample_mode: "nearest"
+        output_func: "pow10"
+    optimizer:
+        _class: AdamW
+        lr: 0.0001
+    pde_adapter:
+        nu_value: 0.4
+        rho_bias: 1000.
+        rho_known: false
+        scalar_degree: 1
+        vector_degree: 1
+    pde_solver:
+        _class: WarpFEMSolver
+        tv_reg_weight: 0.0001
+    trainer:
+        supervised: false
+        num_epochs: 100
+
