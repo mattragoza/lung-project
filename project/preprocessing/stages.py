@@ -204,7 +204,13 @@ def generate_volumetric_image(mask_path, output_path, sid, config):
 
     utils.log('Generating volumetric image')
     noise_kws = config.get('noise_model', {})
-    seed = f'{ex.subject}_{noise_kws.pop("seed", 0)}'
+
+    def make_seed(sid, seed):
+        import hashlib
+        h = hashlib.sha256(f'{sid}|{seed}'.encode('utf-8')).digest()
+        return int.from_bytes(h[:8], byteorder='little', signed=False)
+
+    seed = make_seed(sid, noise_kws.pop('seed', 0))
     image = image_generation.generate_volumetric_image(
         mask, nifti.affine, mat_df, tex_cache, seed=seed, **noise_kws
     )

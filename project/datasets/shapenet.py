@@ -177,6 +177,9 @@ class ShapeNetDataset(base.Dataset):
         subject_iter = subjects or self.subjects()
         subject_list = base._resolve_subject_list(subject_iter)
 
+        if variant is not None:
+            variant = str(variant)
+
         self.ensure_metadata()
         md = self.metadata.set_index(self.ID_COLUMN)
         if parse_metadata is None:

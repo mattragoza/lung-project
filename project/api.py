@@ -131,9 +131,10 @@ def run_training(examples, config):
     split_kws = config.get('split', {})
     train_ex, test_ex, val_ex = training.split_on_metadata(examples, **split_kws)
 
-    train_set  = datasets.torch.TorchDataset(train_ex, cache=True)
-    test_set   = datasets.torch.TorchDataset(test_ex, cache=True)
-    val_set    = datasets.torch.TorchDataset(val_ex, cache=True)
+    cache_data = False
+    train_set  = datasets.torch.TorchDataset(train_ex, cache=cache_data)
+    test_set   = datasets.torch.TorchDataset(test_ex, cache=cache_data)
+    val_set    = datasets.torch.TorchDataset(val_ex, cache=cache_data)
     collate_fn = datasets.torch.collate_fn
 
     loader_kws = config.get('loader', {})
@@ -165,10 +166,11 @@ def run_training(examples, config):
     pde_solver_kws = config.get('pde_solver', {}).copy()
     pde_solver_cls = pde_solver_kws.pop('_class')
 
+    cache_context = True
     physics_adapter = physics.PhysicsAdapter(
         pde_solver_cls=pde_solver_cls,
         pde_solver_kws=pde_solver_kws,
-        cache=True,
+        cache=cache_context,
         **physics_adapter_kws
     )
 
