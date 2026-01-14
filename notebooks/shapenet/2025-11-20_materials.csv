@@ -1,0 +1,6 @@
+material_name,density_val,elastic_val,material_freq,texture_class
+VeryHard,500.0,9000.0,0.1,stone
+Hard,500.0,5000.0,0.2,marble
+Medium,500.0,3000.0,0.4,leather
+Soft,500.0,2000.0,0.2,fabric
+VerySoft,500.0,1000.0,0.1,paper
