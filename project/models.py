@@ -171,9 +171,14 @@ class UNet3D(torch.nn.Module):
         num_groups: int=DEFAULT_NUM_GROUPS,
         pooling_type: str=DEFAULT_POOL_TYPE,
         upsample_mode: str=DEFAULT_UPSAMPLE,
-        output_func: str='softplus',
-        output_bias: float=0.0,
-        output_scale: float=1.0
+        input_shift: float=0.0,
+        input_scale: float=1.0,
+        output_shift: float=0.0,
+        output_scale: float=1.0,
+        bounds_mode: str='none',
+        lower_bound: float=0.0,
+        upper_bound: float=1e6,
+        param_space: str='linear'
     ):
         super().__init__()
         assert n_enc_blocks > 0
@@ -217,11 +222,24 @@ class UNet3D(torch.nn.Module):
             next_channels = curr_channels // 2
         
         self.output_conv = torch.nn.Conv3d(curr_channels, out_channels, kernel_size=1)
-        self.output_bias = float(output_bias)
+
+        self.input_shift = float(input_shift)
+        self.input_scale = float(input_scale)
+
+        self.output_shift = float(output_shift)
         self.output_scale = float(output_scale)
-        self.output_func = get_output_fn(output_func)
+
+        assert bounds_mode in {'soft', 'hard', 'none'}
+        self.bounds_mode = str(bounds_mode)
+        self.lower_bound = float(lower_bound)
+        self.upper_bound = float(upper_bound)
+
+        assert param_space in {'log', 'linear'}
+        self.param_space = str(param_space)
 
     def forward(self, x):
+        x = (x - self.input_shift) / self.input_scale
+
         features = []
         for i, enc_block in enumerate(self.encoder):
             x = enc_block(x)
@@ -232,8 +250,56 @@ class UNet3D(torch.nn.Module):
         for i, dec_block in enumerate(self.decoder):
             x = dec_block(x, features[i+1])
 
-        x = self.output_conv(x) * self.output_scale + self.output_bias
-        return self.output_func(x)
+        x = self.output_conv(x)
+
+        # affine mapping from standard normal to param range
+        x = self.output_shift + self.output_scale * x
+
+        return self.param_map(x)
+
+
+class ParameterMap(nn.Module):
+    '''
+    Maps an unconstrained parameter-space variable to a physical quantity.
+
+    Args:
+        param_space: 'log' | 'linear'
+        bounds_mode: 'hard' | 'soft' | 'none'
+        lower_bound: float, in param_space
+        upper_bound: float, in param_space
+        beta: sharpness for soft clamping
+    '''
+    def __init__(
+        self,
+        param_space: str,
+        bounds_mode: str,
+        lower_bound: float,
+        upper_bound: float,
+        beta: float=10.0
+    ):
+        super().__init__()
+        assert param_space in {'log', 'linear'}
+        assert bounds_mode in {'soft', 'hard', 'none'}
+        self.param_space = str(param_space)
+        self.bounds_mode = str(bounds_mode)
+        self.lower_bound = float(lower_bound)
+        self.upper_bound = float(upper_bound)
+        self.beta = float(beta)
+
+    def forward(self, x):
+        if self.bounds_mode == 'hard':
+            x = torch.clamp(x, self.lower_bound, self.upper_bound)
+        elif self.bounds_mode == 'soft':
+            x = soft_clamp(x, self.lower_bound, self.upper_bound, beta=self.beta)
+
+        if self.param_space == 'log':
+            return torch.pow(10.0, x)
+        else:
+            return x
+
+
+def soft_clamp(x, lo, hi, beta=10.0):
+    return lo + F.softplus(x - lo, beta=beta) - F.softplus(x - hi, beta=beta)
 
 
 def identity(x):
@@ -241,7 +307,7 @@ def identity(x):
 
 
 def pow10(x):
-    return torch.pow(10, x)
+    return torch.pow(10., x)
 
 
 def get_output_fn(name):

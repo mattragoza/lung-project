@@ -25,18 +25,18 @@ def optimize_example(ex, config, output_path):
         pde_solver_kws=pde_solver_kws,
         **physics_adapter_kws
     )
-
     param_kws = config.get('parameters', {}).copy()
-    param_fn = models.get_output_fn(param_kws.pop('param_func'))
-    param = physics_adapter.init_param_field(mesh, unit_m, **param_kws)
+    init_value = param_kws.pop('init_value')
+    param_map = models.ParameterMap(**param_kws)
+    param = physics_adapter.init_param_field(mesh, unit_m, init_value)
 
-    def fn_local(theta):
-        E_pred = param_fn(theta)
+    def fn_local(x):
+        E_pred = param_map(x)
         loss = physics_adapter.simulation_loss(mesh, unit_m, E_pred, bc_spec=None, ret_outputs=False)
         return loss
 
-    def fn_global(theta):
-        return fn_local(theta.mean().expand(theta.shape))
+    def fn_global(x):
+        return fn_local(x.mean().expand(x.shape))
 
     optimizer_kws = config.get('optimizer', {}).copy()
     optimizer_cls = getattr(torch.optim, optimizer_kws.pop('_class'))

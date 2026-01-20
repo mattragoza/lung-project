@@ -144,10 +144,10 @@ class PhysicsAdapter:
 
     # ----- public API methods -----
 
-    def init_param_field(self, mesh: meshio.Mesh, unit_m: float, init_value: float):
+    def init_param_field(self, mesh: meshio.Mesh, unit_m: float, fill_value: float=0.0):
         ctx = self.get_context(mesh, unit_m)
         template = ctx.E[self.scalar_degree]
-        return torch.full_like(template, init_value, requires_grad=True)
+        return torch.full_like(template, fill_value, requires_grad=True)
 
     def simulate(self, mesh: meshio.Mesh, unit_m: float, bc_spec: Any):
         ctx = self.get_context(mesh, unit_m)
