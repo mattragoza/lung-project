@@ -176,12 +176,10 @@ def run_training(examples, config):
 
     evaluator_kws = config.get('evaluator', {})
     callbacks = [
-        evaluation.Logger(),
-        evaluation.Plotter(),
-        evaluation.Viewer(key='image', cmap='Grays_r', clim=(0, 1)),
-        evaluation.Viewer(key='E_pred', cmap='jet', clim=(0, 1e4)),
-        evaluation.Viewer(key='E_true', cmap='jet', clim=(0, 1e4)),
-        evaluation.Evaluator(**evaluator_kws)
+        evaluation.LoggerCallback(),
+        evaluation.PlotterCallback(),
+        evaluation.ViewerCallback(),
+        evaluation.EvaluatorCallback(**evaluator_kws)
     ]
 
     trainer_kws = config.get('trainer', {}).copy()

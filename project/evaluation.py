@@ -50,7 +50,7 @@ class Callback:
         return
 
 
-class Logger(Callback):
+class LoggerCallback(Callback):
 
     def __init__(self, sync_cuda: bool=False):
         self.sync_cuda = sync_cuda
@@ -78,7 +78,7 @@ class Logger(Callback):
         utils.log(f'loss = {loss:.4e} | time = {t_delta:.4f}s | memory = {memory} MiB')
 
 
-class Plotter(Callback):
+class PlotterCallback(Callback):
 
     def __init__(self):
         self.loss_history = defaultdict(list) # (phase, step) -> List[loss]
@@ -159,24 +159,46 @@ class Plotter(Callback):
         self.fig.savefig(out, bbox_inches='tight')
 
 
-class Viewer(Callback):
+class ViewerCallback(Callback):
 
-    def __init__(self, key, **kwargs):
+    def __init__(self, **kwargs):
         from .visual.matplotlib import SliceViewer
         self.output_dir = Path('./outputs')
         self.output_dir.mkdir(exist_ok=True, parents=True)
-        self.viewer = SliceViewer(**kwargs)
-        self.key = key
+
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import ListedColormap
+
+        n_labels = 10
+        cmap = plt.get_cmap('jet', n_labels)
+        cmap.set_under('black')
+
+        self.viewers = {
+            'image': SliceViewer(cmap='Grays_r', clim=(0, 1)),
+            'E_pred': SliceViewer(cmap='jet', clim=(0, 1e4)),
+            'E_true': SliceViewer(cmap='jet', clim=(0, 1e4)),
+            'mask': SliceViewer(cmap=cmap, clim=(1, n_labels)),
+            'mat_pred': SliceViewer(cmap=cmap, clim=(1, n_labels)),
+        }
 
     def on_batch_end(self, epoch, phase, batch, step, outputs):
-        self.viewer.update_array(outputs[self.key][0,0])
+        for key, viewer in self.viewers.items():
+            if key == 'mat_pred':
+                E_pred = _to_numpy(outputs['E_pred'][0,0])
+                E_true = _to_numpy(outputs['E_true'][0,0])
+                mat_mask = _to_numpy(outputs['mask'][0,0])
+                array = predict_material_map(E_pred, E_true, mat_mask)
+            else:
+                array = _to_numpy(outputs[key][0,0])
+            viewer.update_array(array)
 
     def on_phase_end(self, epoch, phase):
-        out = self.output_dir / f'{self.key}_viewer.png'
-        self.viewer.fig.savefig(out, bbox_inches='tight')
+        for key, viewer in self.viewers.items():
+            out = self.output_dir / f'{key}_viewer.png'
+            viewer.fig.savefig(out, bbox_inches='tight')
 
 
-class Evaluator(Callback):
+class EvaluatorCallback(Callback):
 
     def __init__(self, eval_on_train: bool=False):
         self.eval_on_train = eval_on_train
@@ -206,6 +228,17 @@ class Evaluator(Callback):
             'loss': float(outputs['loss'].item())
         }
         for k in range(batch_size):
+
+            # pre-compute predicted material maps
+            if 'mask' in outputs:
+                mat_mask = _to_numpy(outputs['mask'][k])
+                E_true   = _to_numpy(outputs['E_true'][k])
+                E_pred   = _to_numpy(outputs['E_pred'][k])
+                mat_pred = predict_material_map(E_pred, E_true, mat_mask)
+                if 'mat_pred' not in outputs:
+                    outputs['mat_pred'] = [None] * batch_size
+                outputs['mat_pred'][k] = mat_pred
+
             ex = outputs['example'][k]
             ex_base = {**base, 'subject': ex.subject}
             ex_metrics = self.compute_metrics(outputs, index=k)
@@ -254,6 +287,10 @@ class Evaluator(Callback):
 
         ret = {'num_voxels': num_voxels}
         ret |= _eval(E_pred[sel], E_true[sel], name='E_vox')
+
+        if label is not None:
+            mat_pred = _to_numpy(outputs['mat_pred'][index]).reshape(-1, 1)
+            ret |= _eval(mat_pred == label, mat_mask == label, name='mat_vox')
 
         return ret
 
@@ -324,4 +361,31 @@ class Evaluator(Callback):
         # current phase metrics
         m = pd.DataFrame(self.example_rows[phase])
         utils.log(f'{phase.capitalize()} metrics @ epoch {epoch}: \n{m}')
+
+
+def predict_material_map(E_pred, E_true, mat_mask, background=0, eps=1e-8):
+    assert E_pred.shape == E_true.shape == mat_mask.shape
+
+    mat_labels = np.unique(mat_mask)
+    mat_labels = mat_labels[mat_labels != background]
+    if mat_labels.size == 0:
+        raise RuntimeError('no foreground in material mask')
+
+    E_levels = np.zeros_like(mat_labels, dtype=np.float64)
+    for i, label in enumerate(mat_labels):
+        vals = E_true[mat_mask == label]
+        if vals.size > 0:
+            E_levels[i] = np.median(vals)
+
+    log_dist = np.abs(
+        np.log10(np.maximum(E_pred.reshape(-1, 1), eps)) - 
+        np.log10(np.maximum(E_levels.reshape(1, -1), eps))
+    )
+    nearest_inds = np.argmin(log_dist, axis=1)
+    mat_pred = mat_labels[nearest_inds].reshape(mat_mask.shape).astype(mat_mask.dtype)
+
+    # preserve background label
+    mat_pred = np.where(mat_mask == background, background, mat_pred)
+
+    return mat_pred
 
