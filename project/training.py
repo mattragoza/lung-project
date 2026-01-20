@@ -62,11 +62,14 @@ class Trainer:
             self.run_train_phase()
             self.end_epoch()
 
+        if self.output_dir:
+            self.save_state()
+
         if self.val_loader:
             self.run_val_phase()
 
-        if self.output_dir:
-            self.save_state()
+        if self.test_loader:
+            self.run_test_phase()
 
         self.end_train()
 
