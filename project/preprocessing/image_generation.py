@@ -41,15 +41,13 @@ def generate_volumetric_image(
     mul_noise = bandlimited_noise(mat_mask.shape, mul_noise_len, rng) * mul_noise_std
     add_noise = bandlimited_noise(mat_mask.shape, add_noise_len, rng) * add_noise_std
 
-    labels = np.unique(mat_mask)
-
     # compute material blend weights
     blend = compute_blend_weights(mat_mask, mat_sigma)
 
-    # for each unique value in material mask,
-    for i, label in enumerate(labels):
+    # for each unique label in material mask,
+    for i, label in enumerate(np.unique(mat_mask)):
 
-        # select region with mask value
+        # select region with material label
         sel_region = (mat_mask == label)
         sel_points = points[sel_region.reshape(-1)]
 

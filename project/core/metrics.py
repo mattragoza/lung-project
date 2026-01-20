@@ -14,11 +14,17 @@ class MetricRegistry:
         self._fns[name] = (fn, requires_target)
 
     def add_profile(self, name, metrics):
+        assert all(name in self._fns for name in metrics)
         self._profiles[name] = list(metrics)
 
     def eval(self, pred, target=None, weight=None, profile=None):
-        names = self._profiles[profile] or self._fns.keys()
-
+        '''
+        Args:
+            pred:   (N, C) float array
+            target: (N, C) float array
+            weight: (N,) float array
+            profile: str
+        '''
         pred = np.asarray(pred, dtype=float)
         if pred.ndim > 2:
             raise ValueError(f'Expected (N, C) array, got {pred.shape}')
@@ -39,19 +45,22 @@ class MetricRegistry:
             if weight.ndim != 1:
                 raise ValueError(f'Expected (N,) array, got {weight.shape}')
             if weight.shape[0] != pred.shape[0]:
-                raise ValueError(f'Shape mismatch: {weight.shape} vs {pred.shape}')
+                raise ValueError(f'Length mismatch: {weight.shape} vs {pred.shape}')
+
+        fn_names = self._profiles[profile] or self._fns.keys()
 
         outputs = {}
-        for n in names:
-            fn, requires_target = self._fns[n]
+        for name in fn_names:
+            fn, requires_target = self._fns[name]
             if requires_target and target is None:
-                if profile is not None: # user specified invalid metric
-                    raise ValueError(f'metric {n} requires a target')
+                if profile is not None:
+                    raise ValueError(f'metric {name} requires a target')
+                # with no profile specified, just skip invalid metrics
                 continue
             elif requires_target:
-                outputs[n] = fn(pred, target, weight)
+                outputs[name] = fn(pred, target, weight)
             else:
-                outputs[n] = fn(pred, weight)
+                outputs[name] = fn(pred, weight)
         return outputs
 
 

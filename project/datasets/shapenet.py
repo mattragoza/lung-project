@@ -174,8 +174,9 @@ class ShapeNetDataset(base.Dataset):
         default_unit: float=1e-2,
         selectors: Dict[str, str]=None
     ):
+        from .base import _resolve_subject_list
         subject_iter = subjects or self.subjects()
-        subject_list = base._resolve_subject_list(subject_iter)
+        subject_list = _resolve_subject_list(subject_iter)
 
         if variant is not None:
             variant = str(variant)

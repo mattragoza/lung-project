@@ -68,10 +68,10 @@ def compute_intensity_model(
     range_from_density: float=0.0,
     range_from_elastic: float=0.0,
     range_from_product: float=0.0,
-    eps=1e-6
+    eps=1e-8
 ):
-    def _compute_feature(val, ref, power):
-        return np.maximum(val.astype(float) / float(ref), eps) ** float(power)
+    def _compute_feature(val, scale, power):
+        return np.maximum(val.astype(float) / float(scale), eps) ** float(power)
 
     d = _compute_feature(density, density_scale, density_power)
     e = _compute_feature(elastic, elastic_scale, elastic_power)

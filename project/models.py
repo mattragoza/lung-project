@@ -9,11 +9,11 @@ from .core import utils
 
 DEFAULT_KERNEL_SIZE = 3
 DEFAULT_RELU_LEAK = 0.01
-DEFAULT_NORM_TYPE = 'batch'
+DEFAULT_NORM_TYPE = 'group'
+DEFAULT_NUM_GROUPS = 8
 DEFAULT_POOL_TYPE = 'max'
 DEFAULT_POOL_SIZE = 2
 DEFAULT_UPSAMPLE = 'nearest'
-DEFAULT_NUM_GROUPS = 8
 
 
 class ConvUnit3D(torch.nn.Module):
@@ -48,9 +48,14 @@ class ConvUnit3D(torch.nn.Module):
             raise ValueError(f'Invalid norm type: {norm_type}')
 
         self.act = torch.nn.LeakyReLU(negative_slope=relu_leak, inplace=True)
+        self.init_weights()
 
+    def init_weights(self):
         nn.init.kaiming_normal_(
-            self.conv.weight, a=relu_leak, mode='fan_in', nonlinearity='leaky_relu'
+            self.conv.weight,
+            a=self.act.negative_slope,
+            nonlinearity='leaky_relu',
+            mode='fan_in'
         )
         nn.init.ones_(self.norm.weight)
         nn.init.zeros_(self.norm.bias)
