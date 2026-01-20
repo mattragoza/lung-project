@@ -5,17 +5,21 @@ import torch
 from .core import utils, fileio
     
 
-def optimize_example(ex, config, output_path):
+def optimize_example(ex, config, output_path, raster_path):
     utils.check_keys(
         config,
         valid={'physics_adapter', 'pde_solver', 'parameters', 'optimizer', 'evaluator'},
         where='optimization'
     )
-    from . import physics, models, evaluation
+    from . import datasets, physics, models, evaluation
 
-    mesh_path = ex.paths['interp_mesh']
+    inputs = datasets.torch.TorchDataset([ex])[0]
+    image  = inputs['image']
+    mask   = inputs['mask']
+    E_true = inputs['elast']
+    affine = inputs['affine']
+    mesh   = inputs['mesh']
     unit_m = float(ex.metadata['unit'])
-    mesh = fileio.load_meshio(mesh_path)
 
     physics_adapter_kws = config.get('physics_adapter', {})
     pde_solver_kws = config.get('pde_solver', {}).copy()
@@ -47,22 +51,33 @@ def optimize_example(ex, config, output_path):
     optimizer = optimizer_cls([param], **optimizer_kws)
     optimize_fn(fn_local,  param, optimizer)
 
-    E_pred = param_fn(param)
+    E_pred = param_map(param)
     loss, pde_outputs = physics_adapter.simulation_loss(mesh, unit_m, E_pred, bc_spec=None, ret_outputs=True)
 
     utils.pprint(pde_outputs)
 
     evaluator_kws = config.get('evaluator', {})
-    evaluator = evaluation.Evaluator(**evaluator_kws)
+    evaluator = evaluation.EvaluatorCallback(**evaluator_kws)
 
-    outputs = {'example': [ex], 'pde': [pde_outputs], 'loss': loss}
-    evaluator.evaluate(outputs, epoch=0, phase='optimize', batch=0)
-    metrics = evaluator.phase_end(epoch=0, phase='optimize')
-    metrics['dataset'] = ex.dataset
-    metrics['variant'] = ex.variant
-    metrics['subject'] = ex.subject
-    metrics['method'] = 'optimize'
-    print(metrics.T)
+    # rasterize predicted elasticity field
+    utils.log('Rasterizing elasticity field')
+    shape = mask.shape[1:]
+    E_pred_vox = physics_adapter.rasterize_scalar_field(
+        mesh, unit_m, E_pred, shape, affine
+    )
+    assert E_pred_vox.norm().item() > 0
+
+    outputs = {
+        'example': [ex],
+        'image': [image.cpu()],
+        'mask': [mask.cpu()],
+        'E_true': [E_true.cpu()],
+        'E_pred': [E_pred_vox.cpu()],
+        'pde': [pde_outputs],
+        'loss': loss
+    }
+    evaluator.evaluate(epoch=0, phase='optimize', batch=0, step=0, outputs=outputs)
+    evaluator.on_phase_end(epoch=0, phase='optimize')
 
     def _assign_mesh_field(m, name):
         m.point_data[name] = pde_outputs[name].nodes.numpy()
@@ -81,7 +96,8 @@ def optimize_example(ex, config, output_path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_meshio(output_path, output_mesh)
 
-    return metrics
+    raster_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(raster_path, E_pred_vox[0].detach().cpu().numpy(), affine)
 
 
 def optimize_fn(fn, param, optimizer, max_iter=100):

@@ -18,6 +18,9 @@ class RunOutputs:
     def mesh_path(self, ex, name):
         return self.base_dir / ex.subject / 'meshes' / (name + '.xdmf')
 
+    def nifti_path(self, ex, name):
+        return self.base_dir / ex.subject / 'niftis' / (name + '.nii.gz')
+
 
 def get_examples(config):
     utils.check_keys(
@@ -99,7 +102,8 @@ def run_optimize(examples, config):
         utils.log(f'Optimizing subject: {ex.subject}')
         try:
             output_path = outputs.mesh_path(ex, name='optimized')
-            metrics = optimization.optimize_example(ex, config, output_path)
+            raster_path = outputs.nifti_path(ex, name='optimized')
+            metrics = optimization.optimize_example(ex, config, output_path, raster_path)
             if metrics is not None:
                 all_metrics.append(metrics)
         except Exception as e:

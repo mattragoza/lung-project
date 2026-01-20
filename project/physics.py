@@ -196,6 +196,19 @@ class PhysicsAdapter:
         E = interpolation.interpolate_image(E_vox.to(self.device), voxels)[...,0]
         return self.simulation_loss(mesh, unit_m, E, bc_spec, ret_outputs)
 
+    def rasterize_scalar_field(
+        self,
+        mesh: meshio.Mesh,
+        unit_m: float,
+        dofs: torch.Tensor,
+        shape,
+        affine
+    ):
+        ctx = self.get_context(mesh, unit_m)
+        self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
+        bounds = transforms.get_grid_bounds(shape, affine, unit_m)
+        return self.pde_solver.rasterize_scalar_field(dofs, shape, bounds).cpu()
+
     # ----- packaging for evaluation -----
 
     def _package(self, ctx, inputs, outputs):

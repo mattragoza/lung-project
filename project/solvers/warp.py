@@ -60,11 +60,22 @@ class WarpFEMSolver(base.PDESolver):
         self._initialized = False
 
     def bind_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
+
+        # IMPORTANT NOTE:
+        # - ScopedDevice doesn't affect wp.from_torch, only internal arrays
+        # - if the geometry is defined from cpu but other arrays are cuda,
+        #   rasterization fails silently- it produces all background values
+        # - therefore we explicitly move the geometry to the solver device
+
+        verts = verts.to(self.device)
+        cells = cells.to(self.device)
+
         with wp.ScopedDevice(self.device):
             verts = _as_warp_array(verts, dtype=self.vector_dtype)
             cells = _as_warp_array(cells, dtype=wp.int32)
 
             self.geometry = wp.fem.Tetmesh(cells, verts, build_bvh=True)
+
             self.interior = wp.fem.Cells(self.geometry)
             self.boundary = wp.fem.BoundarySides(self.geometry)
 
@@ -82,7 +93,7 @@ class WarpFEMSolver(base.PDESolver):
 
     def make_scalar_field(self, values=None, requires_grad=None):
         assert self._initialized, 'Geometry not initialized'
-        s = self.S.make_field()
+        s = self.S.make_field() # controlled by ScopedDevice
         if values is not None:
             array_vals = _as_warp_array(values, dtype=self.scalar_dtype)
             _copy_warp_array(src=array_vals, dst=s.dof_values)
@@ -94,7 +105,7 @@ class WarpFEMSolver(base.PDESolver):
 
     def make_vector_field(self, values=None, requires_grad=None):
         assert self._initialized, 'Geometry not initialized'
-        v = self.V.make_field()
+        v = self.V.make_field() # controlled by ScopedDevice
         if values is not None:
             array_vals = _as_warp_array(values, dtype=self.vector_dtype)
             _copy_warp_array(src=array_vals, dst=v.dof_values)
@@ -103,6 +114,14 @@ class WarpFEMSolver(base.PDESolver):
         elif values is not None:
             v.dof_values.requires_grad = values.requires_grad
         return v
+
+    def rasterize_scalar_field(self, values, shape, bounds):
+        field = self.make_scalar_field(values)
+        return rasterize_field(field, shape, bounds)
+
+    def rasterize_vector_field(self, values, shape, bounds):
+        field = self.make_vector_field(values)
+        return rasterize_field(field, shape, bounds)
 
     def solve(self, mu, lam, rho, u_bc):
 
@@ -401,10 +420,10 @@ def rasterize_field(src: wp.fem.Field, shape, bounds, background=0.0):
     '''
     Args:
         src: Warp FEM field to rasterize on voxel grid
-        shape: (I, J, K) voxel grid shape
-        bounds: Lower and upper grid bounds
+        shape: (I, J, K) voxel grid shape (spatial dims)
+        bounds: Lower and upper grid bounds (in world meters)
     Returns:
-        (I, J, K, C) rasterized field tensor
+        (C, I, J, K) rasterized field tensor
     '''
     I, J, K = shape
     C = wp.types.type_length(src.dtype)
@@ -416,11 +435,11 @@ def rasterize_field(src: wp.fem.Field, shape, bounds, background=0.0):
     )
     dst_domain = wp.fem.Cells(grid)
 
-    space = wp.fem.make_polynomial_space(grid, degree=0, dtype=src.dtype)
-    dst = space.make_field()
+    dst_space = wp.fem.make_polynomial_space(grid, degree=0, dtype=src.dtype)
+    dst = dst_space.make_field()
 
     src_nc = wp.fem.NonconformingField(dst_domain, src, background)
     wp.fem.interpolate(src_nc, dest=dst)
 
-    return wp.to_torch(dst.dof_values).reshape(I, J, K, C)
+    return wp.to_torch(dst.dof_values).reshape(I, J, K, C).permute(3,0,1,2)
 

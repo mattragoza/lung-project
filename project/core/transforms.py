@@ -108,7 +108,12 @@ def normalize_voxel_coords(points, shape, align_corners=True, flip_order=False):
     return output
 
 
-def get_grid_bounds(affine, shape, align_corners=True):
+def get_grid_bounds(shape, affine, unit_m, align_corners=True):
+    '''
+    Return the upper and lower bounding corners of a grid
+    in world coordinates (in meters, NOT world units) using
+    the provided world affine matrix, 3D shape, and world unit.
+    '''
     origin  = get_affine_origin(affine)
     spacing = get_affine_spacing(affine)
 
@@ -124,7 +129,7 @@ def get_grid_bounds(affine, shape, align_corners=True):
         lo = origin - 0.5 * spacing
         hi = origin + (shape - 0.5) * spacing
     
-    return lo, hi
+    return lo * unit_m, hi * unit_m
 
 
 def compute_cell_volume(verts, cells):
