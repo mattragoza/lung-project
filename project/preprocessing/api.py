@@ -31,9 +31,12 @@ def preprocess_shapenet(ex, config):
         config,
         {'binary_mask', 'surface_mesh', 'region_mask', 'volume_mesh'} |
         {'material_mask', 'material_mesh', 'displacement_simulation'} |
-        {'image_generation', 'image_interpolation'},
+        {'image_generation', 'image_interpolation', 'random_seed'},
         where='preprocessing[shapenet]'
     )
+    base_seed = config.pop('random_seed', 0)
+    subj_seed = utils.make_seed(base_seed, ex.subject)
+
     _ensure_output( # binary mask
         stages.preprocess_binary_mask,
         mask_path=ex.paths['source_mask'],
@@ -58,7 +61,8 @@ def preprocess_shapenet(ex, config):
         stages.create_volume_mesh_from_mask,
         mask_path=ex.paths['region_mask'],
         output_path=ex.paths['volume_mesh'],
-        config=config.get('volume_mesh', {})
+        config=config.get('volume_mesh', {}),
+        random_seed=subj_seed
     )
     _ensure_output( # material mask
         stages.create_material_mask,
@@ -66,7 +70,8 @@ def preprocess_shapenet(ex, config):
         output_path=ex.paths['material_mask'],
         density_path=ex.paths['density_field'],
         elastic_path=ex.paths['elastic_field'],
-        config=config.get('material_mask', {})
+        config=config.get('material_mask', {}),
+        random_seed=subj_seed
     )
     _ensure_output( # material mesh
         stages.create_material_fields,
@@ -80,8 +85,8 @@ def preprocess_shapenet(ex, config):
         stages.generate_volumetric_image,
         mask_path=ex.paths['material_mask'],
         output_path=ex.paths['input_image'],
-        sid=ex.subject,
-        config=config.get('image_generation', {})
+        config=config.get('image_generation', {}),
+        random_seed=subj_seed
     )
     _ensure_output( # interp mesh
         stages.interpolate_image_fields,
@@ -95,7 +100,8 @@ def preprocess_shapenet(ex, config):
         mesh_path=ex.paths['interp_mesh'],
         output_path=ex.paths['simulate_mesh'],
         unit_m=ex.metadata['unit'],
-        config=config.get('displacement_simulation', {})
+        config=config.get('displacement_simulation', {}),
+        random_seed=subj_seed
     )
 
 

@@ -1,6 +1,8 @@
 import numpy as np
 import scipy.stats
 
+from . import utils
+
 EPS = 1e-12
 
 
@@ -180,9 +182,15 @@ def normalized_rmse(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
 def standardized_rmse(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
     '''
     SRMSE = RMS(||pred - target||) / STD(||target||)
+
+    NOTE: Returns NaN when target is constant.
     '''
     err = np.linalg.norm(pred - target, axis=1)
     mag = np.linalg.norm(target, axis=1)
+
+    if len(np.unique(target)) < 2:
+        #utils.log('WARNING: standardized_rmse is undefined: target is constant')
+        pass
 
     num = _rms(err, weight)
     den = _std(mag, weight)
@@ -195,7 +203,12 @@ def pearson_corr(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
     Pearson's correlation coefficient (component-wise)
     '''
     pred, target = pred.flatten(), target.flatten()
+    if len(np.unique(pred)) < 2:
+        #utils.log('WARNING: pearson_corr is undefined: pred is constant')
+        return np.nan
+
     if len(np.unique(target)) < 2:
+        #utils.log('WARNING: pearson_corr is undefined: target is constant')
         return np.nan
 
     return float(scipy.stats.pearsonr(pred, target).statistic)
@@ -206,7 +219,12 @@ def spearman_corr(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
     Spearman's rank correlation coefficient (component-wise)
     '''
     pred, target = pred.flatten(), target.flatten()
+    if len(np.unique(pred)) < 2:
+        #utils.log('WARNING: spearman_corr is undefined: pred is constant')
+        return np.nan
+
     if len(np.unique(target)) < 2:
+        #utils.log('WARNING: spearman_corr is undefined: target is constant')
         return np.nan
 
     return float(scipy.stats.spearmanr(pred, target).statistic)

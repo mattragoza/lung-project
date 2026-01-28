@@ -73,11 +73,14 @@ def create_mesh_region_mask(mask_path, mesh_path, output_path, config):
     filter_kws = config.get('region_filter', {})
     regions = mask_cleanup.filter_region_mask(regions, **filter_kws)
 
+    region_labels = np.unique(regions[regions > 0])
+    assert len(region_labels) > 1, f'single region: {region_labels}'
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, regions.astype(np.int16), affine)
 
 
-def create_volume_mesh_from_mask(mask_path, output_path, config):
+def create_volume_mesh_from_mask(mask_path, output_path, config, random_seed=0):
     utils.check_keys(
         config,
         valid={'use_affine_spacing', 'meshing_parameters'},
@@ -92,6 +95,7 @@ def create_volume_mesh_from_mask(mask_path, output_path, config):
         affine=nifti.affine,
         use_affine_spacing=config.get('use_affine_spacing'),
         pygalmesh_kws=config.get('meshing_parameters', {}),
+        random_seed=random_seed,
         label_key='region'
     )
 
@@ -99,7 +103,9 @@ def create_volume_mesh_from_mask(mask_path, output_path, config):
     fileio.save_meshio(output_path, mesh)
 
 
-def create_material_mask(mask_path, output_path, density_path, elastic_path, config):
+def create_material_mask(
+    mask_path, output_path, density_path, elastic_path, config, random_seed=0
+):
     utils.check_keys(
         config,
         valid={'material_catalog', 'material_sampling'},
@@ -115,8 +121,15 @@ def create_material_mask(mask_path, output_path, density_path, elastic_path, con
     utils.log(mat_df)
 
     region_mats = materials.assign_materials_to_regions(
-        region_mask, mat_df, sampling_kws=config.get('material_sampling')
+        region_mask,
+        mat_df,
+        sampling_kws=config.get('material_sampling'),
+        random_seed=random_seed
     )
+
+    mat_labels = np.unique(region_mats[region_mats > 0])
+    assert len(mat_labels) > 1, f'single material: {mat_labels}'
+
     mat_mask = region_mats[region_mask]
 
     # NOTE we can always recover material properties from material label + catalog,
@@ -171,7 +184,7 @@ def create_material_fields(regions_path, materials_path, mesh_path, output_path,
     fileio.save_meshio(output_path, mesh)
 
 
-def generate_volumetric_image(mask_path, output_path, sid, config):
+def generate_volumetric_image(mask_path, output_path, config, random_seed=0):
     utils.check_keys(
         config,
         valid={'material_catalog', 'intensity_model', 'texture_source', 'noise_model'},
@@ -205,14 +218,8 @@ def generate_volumetric_image(mask_path, output_path, sid, config):
     utils.log('Generating volumetric image')
     noise_kws = config.get('noise_model', {})
 
-    def make_seed(sid, seed):
-        import hashlib
-        h = hashlib.sha256(f'{sid}|{seed}'.encode('utf-8')).digest()
-        return int.from_bytes(h[:8], byteorder='little', signed=False)
-
-    seed = make_seed(sid, noise_kws.pop('seed', 0))
     image = image_generation.generate_volumetric_image(
-        mask, nifti.affine, mat_df, tex_cache, seed=seed, **noise_kws
+        mask, nifti.affine, mat_df, tex_cache, **noise_kws, random_seed=random_seed
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,7 +253,9 @@ def interpolate_image_fields(image_path, mesh_path, output_path, config):
     fileio.save_meshio(output_path, mesh)
 
 
-def simulate_displacement_field(mesh_path, output_path, unit_m, config):
+def simulate_displacement_field(
+    mesh_path, output_path, unit_m, config, random_seed=0
+):
     utils.check_keys(
         config,
         valid={'physics_adapter', 'pde_solver'},
@@ -265,7 +274,8 @@ def simulate_displacement_field(mesh_path, output_path, unit_m, config):
         pde_solver_kws=pde_solver_kws,
         **physics_adapter_kws
     )
-    outputs = physics_adapter.simulate(mesh, unit_m, bc_spec=None)
+    bc_spec = None #physics_adapter.get_bc_spec(random_seed)
+    outputs = physics_adapter.simulate(mesh, unit_m, bc_spec)
 
     for k, v in outputs.items():
         utils.log((k, v.shape, v.dtype, v.mean()))

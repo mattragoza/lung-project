@@ -19,7 +19,7 @@ def generate_volumetric_image(
     add_noise_std: float=0.,
     mat_sigma: float=1.,
     psf_sigma: float=0.,
-    seed=0,
+    random_seed=0,
 ):
     '''
     Args:
@@ -31,7 +31,7 @@ def generate_volumetric_image(
         (I, J, K) volumetric image with intensity bias and
             texture derived from the material labels
     '''
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(random_seed)
 
     I, J, K = mat_mask.shape
     points = np.stack(np.mgrid[0:I,0:J,0:K], axis=-1).reshape(-1, 3)

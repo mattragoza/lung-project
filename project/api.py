@@ -82,7 +82,7 @@ def run_preprocess(examples, config):
                 rows.append(result)
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
-            continue
+            raise e
 
     if rows:
         import pandas as pd

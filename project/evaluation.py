@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
 
 from .core import utils, transforms
 from .core import metrics as mm
@@ -161,7 +162,7 @@ class PlotterCallback(Callback):
 
 class ViewerCallback(Callback):
 
-    def __init__(self, **kwargs):
+    def __init__(self, n_labels=5, **kwargs):
         from .visual.matplotlib import SliceViewer
         self.output_dir = Path('./outputs')
         self.output_dir.mkdir(exist_ok=True, parents=True)
@@ -169,12 +170,14 @@ class ViewerCallback(Callback):
         import matplotlib.pyplot as plt
         from matplotlib.colors import ListedColormap
 
-        n_labels = 10
-        cmap = plt.get_cmap('jet', n_labels)
-        cmap.set_under('black')
+        colors = plt.get_cmap('tab10').colors
+        cmap = ListedColormap(colors[:n_labels])
+        cmap.set_under('white')
+        cmap.set_over('black')
+        cmap.set_bad('black')
 
         self.viewers = {
-            'image': SliceViewer(cmap='Grays_r', clim=(0, 1)),
+            'image': SliceViewer(cmap='gray'),
             'E_pred': SliceViewer(cmap='jet', clim=(0, 1e4)),
             'E_true': SliceViewer(cmap='jet', clim=(0, 1e4)),
             'mask': SliceViewer(cmap=cmap, clim=(1, n_labels)),

@@ -229,13 +229,7 @@ class UNet3D(torch.nn.Module):
         self.output_shift = float(output_shift)
         self.output_scale = float(output_scale)
 
-        assert bounds_mode in {'soft', 'hard', 'none'}
-        self.bounds_mode = str(bounds_mode)
-        self.lower_bound = float(lower_bound)
-        self.upper_bound = float(upper_bound)
-
-        assert param_space in {'log', 'linear'}
-        self.param_space = str(param_space)
+        self.param_map = ParameterMap(param_space, bounds_mode, lower_bound, upper_bound)
 
     def forward(self, x):
         x = (x - self.input_shift) / self.input_scale
@@ -291,11 +285,9 @@ class ParameterMap(nn.Module):
             x = torch.clamp(x, self.lower_bound, self.upper_bound)
         elif self.bounds_mode == 'soft':
             x = soft_clamp(x, self.lower_bound, self.upper_bound, beta=self.beta)
-
         if self.param_space == 'log':
             return torch.pow(10.0, x)
-        else:
-            return x
+        return x
 
 
 def soft_clamp(x, lo, hi, beta=10.0):

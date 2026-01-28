@@ -94,7 +94,7 @@ def compute_intensity_model(
 
 
 def sample_region_materials(
-    region_mask, prior, sample_rate=0, min_samples=1, seed=0
+    region_mask, prior, sample_rate=0, min_samples=1, random_seed=0
 ):
     '''
     Assign materials to a multi-label region mask by sampling
@@ -111,13 +111,13 @@ def sample_region_materials(
         min_samples: minimum samples per region (default: 1)
         sample_rate: number of samples per voxel (default: 1e-3)
             Reduce this parameter to increase the variance.
-        seed: random seed
+        random_seed
     Returns:
         material_map: (N,) int array mapping region labels
             to material indices, with -1 for not assigned
     '''
     import skimage
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(random_seed)
 
     # compute region sizes
     regions, sizes = np.unique(region_mask, return_counts=True)
@@ -186,12 +186,14 @@ def sample_region_materials(
     return material_map
 
 
-def assign_materials_to_regions(region_mask, mat_df, sampling_kws=None):
+def assign_materials_to_regions(region_mask, mat_df, sampling_kws=None, random_seed=0):
     region_mask = region_mask.astype(int, copy=False)
 
     utils.log('Sampling materials per region')
     prior = mat_df.loc[1:, 'material_freq'].to_numpy() # exclude background
-    material_by_region = sample_region_materials(region_mask, prior, **(sampling_kws or {}))
+    material_by_region = sample_region_materials(
+        region_mask, prior, **(sampling_kws or {}), random_seed=random_seed
+    )
 
     utils.log(material_by_region)
     return material_by_region

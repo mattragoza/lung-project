@@ -20,6 +20,13 @@ def warn(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
+def make_seed(*parts):
+    import hashlib
+    s = ':'.join([str(p) for p in parts])
+    h = hashlib.sha256(s.encode('utf-8')).digest()
+    return int.from_bytes(h[:8], byteorder='little', signed=False)
+
+
 def pprint(
     obj,
     max_depth=2,
