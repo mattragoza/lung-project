@@ -64,6 +64,7 @@ def load_texture_annotations(path):
     return df
 
 
+@lru_cache
 def load_texture_2d(path, iqr_mult=DEFAULT_IQR_MULT, invert=False):
     a = fileio.load_imageio(path)
     a = skimage.util.img_as_float(a)
@@ -78,6 +79,7 @@ def load_texture_2d(path, iqr_mult=DEFAULT_IQR_MULT, invert=False):
     return 1. - a if invert else a
 
 
+@lru_cache
 def load_texture_3d(path, iqr_mult=DEFAULT_IQR_MULT, invert=False):
     a = fileio.load_nibabel(path).get_fdata()
     a = skimage.util.img_as_float(a)
