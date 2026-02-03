@@ -366,29 +366,109 @@ class EvaluatorCallback(Callback):
         utils.log(f'{phase.capitalize()} metrics @ epoch {epoch}: \n{m}')
 
 
-def predict_material_map(E_pred, E_true, mat_mask, background=0, eps=1e-8):
-    assert E_pred.shape == E_true.shape == mat_mask.shape
+def ensure_material_map(outputs):
+    if 'mat_pred' in outputs:
+        return outputs
 
-    mat_labels = np.unique(mat_mask)
-    mat_labels = mat_labels[mat_labels != background]
-    if mat_labels.size == 0:
-        raise RuntimeError('no foreground in material mask')
+    elif 'mat_logits' in outputs:
+        mat_logits = outputs['mat_logits']                # (B,C,I,J,K)
+        mat_pred = torch.argmax(mat_logits, dim=1)        # (B,I,J,K)
+        outputs['mat_pred'] = mat_pred.unsqueeze(1).cpu() # (B,1,I,J,K)
+        return outputs
 
-    E_levels = np.zeros_like(mat_labels, dtype=np.float64)
-    for i, label in enumerate(mat_labels):
-        vals = E_true[mat_mask == label]
-        if vals.size > 0:
-            E_levels[i] = np.median(vals)
+    batch_size = len(outputs['example'])
+    outputs['mat_pred'] = [None] * batch_size
+    outputs['mat_pred_a'] = [None] * batch_size
+    outputs['mat_pred_r'] = [None] * batch_size
+    outputs['mat_pred_o'] = [None] * batch_size
 
-    log_dist = np.abs(
-        np.log10(np.maximum(E_pred.reshape(-1, 1), eps)) - 
-        np.log10(np.maximum(E_levels.reshape(1, -1), eps))
-    )
-    nearest_inds = np.argmin(log_dist, axis=1)
-    mat_pred = mat_labels[nearest_inds].reshape(mat_mask.shape).astype(mat_mask.dtype)
+    for k in range(batch_size):
+        mat_true = _to_numpy(outputs['mat_true'][k]) # (B,1,I,J,K)
+        E_true   = _to_numpy(outputs['E_true'][k])   # (B,1,I,J,K)
+        E_pred   = _to_numpy(outputs['E_pred'][k])   # (B,1,I,J,K)
+        mat_pred_a = predict_material_map(E_pred, E_true, mat_true, mode='absolute')
+        mat_pred_r = predict_material_map(E_pred, E_true, mat_true, mode='relative')
+        mat_pred_o = predict_material_map(E_pred, E_true, mat_true, mode='ordinal')
+        outputs['mat_pred_a'][k] = torch.from_numpy(mat_pred_a)
+        outputs['mat_pred_r'][k] = torch.from_numpy(mat_pred_r)
+        outputs['mat_pred_o'][k] = torch.from_numpy(mat_pred_o)
+        outputs['mat_pred'][k] = torch.from_numpy(mat_pred_a)
 
-    # preserve background label
-    mat_pred = np.where(mat_mask == background, background, mat_pred)
+    return outputs
 
-    return mat_pred
+
+def predict_material_map(
+    E_pred,
+    E_true,
+    mat_true,
+    mode='absolute',
+    use_prior=False,
+    background=0,
+    labels=(1, 2, 3, 4, 5),
+    levels=(1e3, 2e3, 3e3, 5e3, 9e3),
+    prior=(0.2, 0.2, 0.2, 0.2, 0.2),
+    eps=1e-12
+):
+    E_pred = np.asarray(E_pred) # (I, J, K)
+    E_true = np.asarray(E_true)
+    mat_true = np.asarray(mat_true)
+
+    assert E_pred.shape == E_true.shape == mat_true.shape
+
+    assert mode in {'absolute', 'relative', 'ordinal'}
+    mat_pred = np.full(mat_true.shape, background, dtype=np.int32)
+
+    mask = (mat_true != background)
+    assert mask.any()
+
+    labels = np.asarray(labels, dtype=int)
+    levels = np.asarray(levels, dtype=np.float32)
+    prior = np.asarray(prior, dtype=np.float32)
+    assert len(labels) == len(levels) == len(prior)
+
+    p_sum = np.sum(prior)
+    assert np.isfinite(p_sum) and abs(p_sum - 1.0) < 1e-5
+
+    logE_pred = np.log10(np.maximum(E_pred, eps))
+    logE_true = np.log10(np.maximum(E_true, eps))
+    log_levels = np.log10(np.maximum(levels, eps))
+
+    def bin_with_edges(x, edges):
+        inds = np.digitize(x, edges, right=False)
+        return labels[inds]
+
+    fixed_edges = (log_levels[:-1] + log_levels[1:]) * 0.5
+    assert len(fixed_edges) == len(levels) - 1
+
+    if mode == 'absolute':
+        mat_pred[mask] = bin_with_edges(logE_pred[mask], fixed_edges)
+
+    elif mode == 'relative':
+        pred_mean = logE_pred[mask].mean()
+        pred_std  = logE_pred[mask].std()
+
+        if use_prior:
+            true_mean = np.sum(prior * log_levels)
+            true_std  = np.sqrt(np.sum(prior * (log_levels - true_mean)**2))
+        else:
+            true_mean = logE_true[mask].mean()
+            true_std  = logE_true[mask].std()
+
+        standardized = (fixed_edges - true_mean) / np.maximum(true_std, eps)
+        adjusted_edges = pred_mean + np.maximum(pred_std, eps) * standardized
+        mat_pred[mask] = bin_with_edges(logE_pred[mask], adjusted_edges)
+
+    elif mode == 'ordinal':
+        if use_prior:
+            probabilities = np.cumsum(prior)[:-1]
+        else:
+            counts = np.bincount(mat_true[mask], minlength=labels.max() + 1)[1:]
+            posterior = counts / counts.sum()
+            probabilities = np.cumsum(posterior)[:-1]
+
+        probabilities = np.clip(probabilities, eps, 1.0 - eps)
+        quantile_edges = np.quantile(logE_pred[mask], q=probabilities)
+        mat_pred[mask] = bin_with_edges(logE_pred[mask], quantile_edges)
+
+    return np.where(mask, mat_pred, background)
 
