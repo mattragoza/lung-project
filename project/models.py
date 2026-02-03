@@ -16,16 +16,20 @@ DEFAULT_POOL_SIZE = 2
 DEFAULT_UPSAMPLE = 'nearest'
 
 
-def build_model(config):
+def build_model(task, config):
     utils.check_keys(config, {'backbone', 'head'})
 
     backbone_kws = config.get('backbone', {}).copy()
     backbone_cls = globals()[backbone_kws.pop('_class')]
-    backbone = backbone_cls(in_channels=1, **backbone_kws)
+    backbone = backbone_cls(in_channels=task.in_channels, **backbone_kws)
 
-    head_kws = config.get('head', {}).copy()
-    head_cls = globals()[head_kws.pop('_class')]
-    head = head_cls(in_channels=backbone.out_channels, **head_kws)
+    head_kws = config.get('head', {})
+    if task.target == 'material':
+        head = SegmentationHead(backbone.out_channels, **head_kws)
+    elif task.target in {'E', 'logE'}:
+        head = ElasticityHead(backbone.out_channels, **head_kws)
+    else:
+        head = RegressionHead(backbone.out_channels, task.out_channels, **head_kws)
 
     return GenericModel(backbone, head)
 
@@ -252,7 +256,8 @@ class ElasticityHead(nn.Module):
         logE_mean=0.0,
         logE_std=1.0,
         logE_min=None,
-        logE_max=None
+        logE_max=None,
+        **kwargs
     ):
         super().__init__()
         self.conv = nn.Conv3d(in_channels, 1, kernel_size=1)
@@ -269,20 +274,29 @@ class ElasticityHead(nn.Module):
             max=self.logE_max
         )
         E = torch.pow(10.0, logE)
-        return {'E': E, 'logE': logE}
+        return {'E_pred': E, 'logE_pred': logE}
+
+
+class RegressionHead(nn.Module):
+
+    def __init__(self, in_channels, out_channels, **kwargs):
+        super().__init__()
+        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        return {'img_pred': self.conv(x)}
 
 
 class SegmentationHead(nn.Module):
 
-    def __init__(self, in_channels, n_labels: int):
+    def __init__(self, in_channels, n_labels=5, **kwargs):
         super().__init__()
         self.conv = nn.Conv3d(in_channels, n_labels, kernel_size=1)
         self.n_labels = n_labels
 
     def forward(self, x):
         logits = self.conv(x)
-        labels = torch.argmax(logits, dim=1)
-        return {'labels': labels, 'logits': logits}
+        return {'mat_logits': logits}
 
 
 class GenericModel(nn.Module):

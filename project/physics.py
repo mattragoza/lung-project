@@ -80,8 +80,8 @@ class PhysicsAdapter:
         pde_solver_cls: str,
         pde_solver_kws=None,
         rho_bias: float=None,
-        device='cuda',
-        cache=False
+        use_cache: bool=True,
+        device='cuda'
     ):
         self.nu_value  = float(nu_value)
         self.rho_known = bool(rho_known)

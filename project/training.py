@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import List
 from pathlib import Path
 import numpy as np
 import torch
@@ -13,10 +14,78 @@ def _to_numpy(x):
     return x.detach().cpu().numpy() if torch.is_tensor(x) else np.asarray(x)
 
 
+class TaskSpec:
+    image_channels  = 1
+    material_labels = 5
+
+    def __init__(self, input: str, target: str, loss: str):
+        assert input in {'image', 'material'}
+        assert target in {'image', 'material', 'E', 'logE'}
+        assert loss.lower() in {'ce', 'mse', 'msre', 'sim'}
+        self.input  = input
+        self.target = target
+        self.loss   = loss.lower()
+
+    @property
+    def in_channels(self) -> int:
+        if self.input == 'image':
+            return self.image_channels
+        elif self.input == 'material':
+            return self.material_labels + 1
+
+    @property
+    def out_channels(self) -> int:
+        if self.target == 'image':
+            return self.image_channels
+        elif self.target == 'material':
+            return self.material_labels + 1
+        return 1 # elasticity field
+
+    @property
+    def input_key(self) -> str:
+        if self.input == 'image':
+            return 'img_true'
+        elif self.input == 'material':
+            return 'mat_onehot'
+
+    @property
+    def output_key(self) -> str:
+        if self.target == 'E':
+            return 'E_pred'
+        elif self.target == 'logE':
+            return 'logE_pred'
+        elif self.target == 'image':
+            return 'img_pred'
+        elif self.target == 'material':
+            return 'mat_logits'
+
+    @property
+    def target_key(self) -> str:
+        if self.target == 'E':
+            return 'E_true'
+        elif self.target == 'logE':
+            return 'logE_true'
+        elif self.target == 'image':
+            return 'img_true'
+        elif self.target == 'material':
+            return 'mat_true'
+
+    @property
+    def plotter_keys(self) -> List[str]:
+        return ['loss', self.output_key, self.target_key]
+
+    @property
+    def viewer_keys(self) -> List[str]:
+        input_key  = 'mat_true' if self.input == 'material' else self.input_key
+        output_key = 'mat_pred' if self.target == 'material' else self.output_key
+        return [input_key, output_key, self.target_key]
+
+
 class Trainer:
 
     def __init__(
         self,
+        task: TaskSpec,
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         physics_adapter: project.physics.PhysicsAdapter,
@@ -24,21 +93,20 @@ class Trainer:
         test_loader: torch.utils.data.DataLoader=None,
         val_loader: torch.utils.data.DataLoader=None,
         callbacks: torch.utils.data.DataLoader=None,
-        train_mode: str='u_sim',
+        eval_physics=True,
         output_dir='checkpoints',
         device='cuda'
     ):
+        self.task = task
         self.model = model.to(device)
         self.optimizer = optimizer
         self.physics_adapter = physics_adapter
+        self.eval_physics = eval_physics
 
         self.train_loader = train_loader
         self.test_loader = test_loader
         self.val_loader = val_loader
         self.callbacks = callbacks or []
-
-        assert train_mode in {'u_sim', 'E_reg', 'logE_reg', 'mat_seg'}
-        self.train_mode = train_mode
 
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True, parents=True)
@@ -168,25 +236,22 @@ class Trainer:
         device = self.device
         batch_size = len(batch['example'])
 
-        image = batch['image'].to(device, dtype=torch.float)
-        mask  = batch['mask'].to(device, dtype=torch.bool)
-
-        preds = self.model.forward(image)
+        mask   = batch['mask'].to(device, dtype=torch.bool)
+        input_ = batch[self.task.input_key].to(device, dtype=torch.float)
+        preds  = self.model.forward(input_)
 
         outputs = {
             'example':  batch['example'],
-            'image':    batch['image'].cpu(),
             'mask':     batch['mask'].cpu(),
-            'mat_true': batch['material'].cpu()
+            'mat_true': batch['mat_true'].cpu()
         }
-
-        need_physics_loss = (self.train_mode == 'u_sim')
-        need_physics_eval = (self.train_mode != 'mat_seg') and eval_mode
+        need_physics_loss = (self.task.loss == 'sim')
+        need_physics_eval = (self.eval_physics and eval_mode)
         run_physics = need_physics_loss or need_physics_eval
 
         sim_loss = None
         if run_physics: # compute displacement error via physics simulation
-            sim_loss = torch.zeros(batch_size, device=self.device, dtype=image.dtype)
+            sim_loss = torch.zeros(batch_size, device=self.device, dtype=torch.float)
             pde_outputs = [None] * batch_size
 
             for k in range(batch_size):
@@ -194,39 +259,30 @@ class Trainer:
                     mesh=batch['mesh'][k],
                     unit_m=batch['example'][k].metadata['unit'],
                     affine=batch['affine'][k],
-                    E_vox=preds['E'][k],
+                    E_vox=preds['E_pred'][k],
                     bc_spec=None
                 )
 
             outputs['sim_loss'] = sim_loss.mean().detach().cpu()
             outputs['pde'] = pde_outputs
 
-        # mode determines loss function + eval outputs
-        if self.train_mode == 'u_sim':
-            outputs['loss'] = sim_loss.mean()
-            outputs['E_pred'] = preds['E'].detach().cpu()
-            if 'E' in batch:
-                outputs['E_true'] = batch['E'].detach().cpu()
+        x_pred = preds[self.task.output_key].to(device)
+        x_true = batch[self.task.target_key].to(device)
 
-        elif self.train_mode == 'E_reg':
-            E_pred = preds['E'].to(device)
-            E_true = batch['E'].to(device)
-            outputs['loss'] = normalized_rmse(E_pred, E_true, mask)
-            outputs['E_pred'] = E_pred.detach().cpu()
-            outputs['E_true'] = E_true.detach().cpu()
+        if self.task.loss == 'sim':
+            loss = sim_loss.mean()
+        elif self.task.loss == 'mse':
+            loss = mean_squared_error(x_pred, x_true, mask)
+        elif self.task.loss == 'msre':
+            loss = mean_squared_relative_error(x_pred, x_true, mask)
+        elif self.task.loss == 'ce':
+            loss = masked_cross_entropy(x_pred, x_true, mask)
 
-        elif self.train_mode == 'logE_reg':
-            logE_pred = preds['logE'].to(device)
-            logE_true = batch['logE'].to(device)
-            outputs['loss'] = normalized_rmse(logE_pred, logE_true, mask)
-            outputs['E_pred'] = preds['E'].detach().cpu()
-            outputs['E_true'] = batch['E'].detach().cpu()
-
-        elif self.train_mode == 'mat_seg':
-            mat_logits = preds['logits'].to(device)
-            mat_true = batch['material'].to(device)
-            outputs['loss'] = masked_cross_entropy(mat_logits, mat_true, mask)
-            outputs['mat_logits'] = mat_logits.detach().cpu()
+        outputs['loss'] = loss
+        outputs[self.task.input_key]  = batch[self.task.input_key].cpu()
+        outputs[self.task.target_key] = batch[self.task.target_key].cpu()
+        for key in preds:
+            outputs[key] = preds[key].cpu()
 
         return outputs
 
@@ -253,6 +309,40 @@ class Trainer:
 
 
 # ----- basic loss functions -----
+
+
+def mean_squared_error(pred, target, mask):
+    '''
+    Mean squared error.
+
+    Args:
+        pred:   (B, C, I, J, K) prediction tensor
+        target: (B, C, I, J, K) target tensor
+        mask:   (B, 1, I, J, K) weight tensor
+    '''
+    if mask.dim() == 5:
+        mask = mask[:,0]
+    err = torch.linalg.norm(pred - target, dim=1)
+    return torch.mean(err[mask]**2)
+
+
+def mean_squared_relative_error(pred, target, mask, eps=1e-12):
+    '''
+    Mean squared relative error.
+
+    Args:
+        pred:   (B, C, I, J, K) prediction tensor
+        target: (B, C, I, J, K) target tensor
+        mask:   (B, 1, I, J, K) weight tensor
+    '''
+    if mask.dim() == 5:
+        mask = mask[:,0]
+
+    err = torch.linalg.norm(pred - target, dim=1)
+    mag = torch.linalg.norm(target, dim=1)
+    rel_err = err / mag.clamp_min(eps)
+
+    return torch.mean(rel_err[mask]**2)
 
 
 def rmse(pred, target, mask):
@@ -292,35 +382,26 @@ def normalized_rmse(pred, target, mask, eps=1e-12):
     return num / den.clamp_min(eps)
 
 
-def masked_cross_entropy(pred, target, mask, ignore_index=-1):
+def masked_cross_entropy(pred, target, mask):
     '''
     Args:
-        pred: (B, C, I, J, K) foreground material logits.
-            Channel i corresponds to label (i+1) in the target.
-
+        pred: (B, C, I, J, K) predicted material logits.
         target: (B, 1, I, J, K) integer material labels.
-            Value 0 indicates background, 1..C are material IDs.
-
         mask: (B, 1, I, J, K) boolean foreground mask.
-            True for voxels inside the domain (i.e. target > 0).
     '''
     assert target.min() >= 0
-    assert target.max() <= pred.shape[1]
+    assert target.max() < pred.shape[1]
+
+    if target.dim() == 5:
+        target = target.squeeze(1)
+    target = target.long()
 
     if mask.dim() == 5:
         mask = mask.squeeze(1)
     mask = mask.bool()
 
-    if target.dim() == 5:
-        target = target.squeeze(1)
-
-    shifted = (target - 1).long()
-    shifted[~mask] = ignore_index
-
-    loss_vox = F.cross_entropy(
-        pred, shifted, reduction='none', ignore_index=ignore_index
-    )
-    return loss_vox[mask].mean()
+    ce = F.cross_entropy(pred, target, reduction='none')
+    return torch.mean(ce[mask])
 
 
 # ----- cross-validation -----

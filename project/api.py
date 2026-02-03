@@ -127,16 +127,20 @@ def run_training(examples, config):
     from . import datasets, models, training, evaluation, physics
     import torch
 
-    config = config.copy()
-    outputs = RunOutputs(stage='training', **config.pop('outputs', {}))
-
     utils.log('Running training')
+    config = config.copy()
+
+    outputs_kws = config.pop('outputs', {})
+    outputs = RunOutputs(stage='training', **outputs_kws)
+
+    task_kws = config.pop('task', {})
+    task = training.TaskSpec(**task_kws)
 
     split_kws = config.get('split', {})
     train_ex, test_ex, val_ex = training.split_on_metadata(examples, **split_kws)
 
     transform_kws = config.get('transform', {})
-    train_set  = datasets.torch.TorchDataset(train_ex **transform_kws)
+    train_set  = datasets.torch.TorchDataset(train_ex, **transform_kws)
     test_set   = datasets.torch.TorchDataset(test_ex, **transform_kws)
     val_set    = datasets.torch.TorchDataset(val_ex, **transform_kws)
     collate_fn = datasets.torch.collate_fn
@@ -156,7 +160,7 @@ def run_training(examples, config):
 
     # instantiate model architecture
     model_kws = config.get('model', {})
-    model = models.build_model(model_kws)
+    model = models.build_model(task, model_kws)
 
     #n_params = models.count_params(model)
     #n_activs = models.count_activations(model, train_set[0]['image'].unsqueeze(0))
@@ -179,21 +183,21 @@ def run_training(examples, config):
     evaluator_kws = config.get('evaluator', {})
     callbacks = [
         evaluation.LoggerCallback(),
-        evaluation.PlotterCallback(keys=['loss', 'E_pred', 'E_true']),
-        evaluation.ViewerCallback(keys=['image', 'E_pred', 'E_true']),
+        evaluation.PlotterCallback(keys=task.plotter_keys),
+        evaluation.ViewerCallback(keys=task.viewer_keys),
         evaluation.EvaluatorCallback(**evaluator_kws)
     ]
 
     trainer_kws = config.get('trainer', {}).copy()
     trainer = training.Trainer(
+        task=task,
         model=model,
         optimizer=optimizer,
         physics_adapter=physics_adapter,
         train_loader=train_loader,
         test_loader=test_loader,
         val_loader=val_loader,
-        callbacks=callbacks,
-        train_mode=trainer_kws.pop('mode')
+        callbacks=callbacks
     )
     trainer.train(**trainer_kws)
 

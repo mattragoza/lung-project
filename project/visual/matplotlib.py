@@ -18,6 +18,7 @@ class SliceViewer:
         cbar_spacing=0.25,
         line_color='rgb',
         line_width=1.5,
+        title=None,
         **imshow_kws
     ):
         self._initialized = False
@@ -40,12 +41,12 @@ class SliceViewer:
         self.j_line_kws = dict(color=colors[1], linewidth=line_width)
         self.k_line_kws = dict(color=colors[2], linewidth=line_width)
     
-        self.init_figure()
+        self.init_figure(title)
 
         if array is not None:
             self.update_array(array, index)
 
-    def init_figure(self):
+    def init_figure(self, title=None):
         fig, axes, cbar_ax = subplot_grid(1, 3, **self.subplot_kws)
 
         self.fig = fig
@@ -55,6 +56,8 @@ class SliceViewer:
         self.ax_i = axes[0,0]
         self.ax_j = axes[0,1]
         self.ax_k = axes[0,2]
+
+        self.fig.suptitle(title)
 
     def update_array(self, array, index=None):
         array = np.asarray(array)

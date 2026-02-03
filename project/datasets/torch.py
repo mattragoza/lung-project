@@ -1,6 +1,7 @@
 from typing import List, Dict, Any
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from .base import Example
 from ..core import utils, fileio
@@ -56,7 +57,11 @@ class TorchDataset(torch.utils.data.Dataset):
         affine_t   = _as_cpu_tensor(image.affine, dtype=torch.float) # (4, 4)
         image_t    = _as_cpu_tensor(image.get_fdata(), dtype=torch.float).unsqueeze(0)   # (1, I, J, K)
         material_t = _as_cpu_tensor(material.get_fdata(), dtype=torch.long).unsqueeze(0) # (1, I, J, K)
-        mask_t     = (material_t > 0) # (1, I, J, K)
+
+        mask_t = (material_t > 0)
+
+        # (1, I, J, K) -> (I, J, K) -> (I, J, K, C) -> (C, I, J, K)
+        mat_onehot_t = F.one_hot(material_t.squeeze(0), num_classes=6).permute(3,0,1,2)
 
         if self.normalize:
             image_t = (image_t - self.image_mean) / self.image_std
@@ -65,20 +70,21 @@ class TorchDataset(torch.utils.data.Dataset):
             image_t = image_t * mask_t
 
         output = {
-            'example':  ex,
-            'affine':   affine_t,
-            'image':    image_t, 
-            'material': material_t,
-            'mask':     mask_t,
-            'mesh':     mesh
+            'example':    ex,
+            'affine':     affine_t,
+            'img_true':   image_t, 
+            'mat_true':   material_t,
+            'mat_onehot': mat_onehot_t,
+            'mask':       mask_t,
+            'mesh':       mesh
         }
 
         if 'elastic_field' in ex.paths:
             elast = fileio.load_nibabel(ex.paths['elastic_field'])
-            elast_t = _as_cpu_tensor(elast.get_fdata(), dtype=torch.int).unsqueeze(0) # (1, I, J, K)
+            elast_t = _as_cpu_tensor(elast.get_fdata(), dtype=torch.float).unsqueeze(0) # (1, I, J, K)
             log_e_t = torch.log10(elast_t.clamp_min(1e-12))
-            output['E']    = elast_t
-            output['logE'] = log_e_t
+            output['E_true']    = elast_t
+            output['logE_true'] = log_e_t
 
         return output
 

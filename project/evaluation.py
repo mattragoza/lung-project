@@ -81,8 +81,7 @@ class LoggerCallback(Callback):
 
 class PlotterCallback(Callback):
 
-    def __init__(self, keys=None):
-        keys = keys or ['loss']
+    def __init__(self, keys):
 
         # history[key][phase][step] = [values]
         self.history = {
@@ -96,9 +95,10 @@ class PlotterCallback(Callback):
 
     def on_batch_end(self, epoch, phase, batch, step, outputs):
         phase = str(phase).lower()
-        outputs = ensure_material_map(outputs)
 
         for key in self.history:
+            if key == 'mat_pred':
+                outputs = ensure_material_map(outputs)
             val = float(outputs[key].float().norm().item())
             self.history[key][phase][step].append(val)
 
@@ -150,9 +150,8 @@ class PlotterCallback(Callback):
 
 class ViewerCallback(Callback):
 
-    def __init__(self, keys=None, n_labels=5, apply_mask=True, **kwargs):
+    def __init__(self, keys, n_labels=5, apply_mask=True, **kwargs):
         from .visual.matplotlib import SliceViewer
-        keys = keys or ['image']
 
         self.output_dir = Path('./outputs')
         self.output_dir.mkdir(exist_ok=True, parents=True)
@@ -168,21 +167,24 @@ class ViewerCallback(Callback):
 
         self.viewers = {}
         for k in keys:
-            if k == 'image':
-                self.viewers[k] = SliceViewer(cmap='gray', clim=(-1, 1))
-            elif k in {'E_pred', 'E_true'}:
-                self.viewers[k] = SliceViewer(cmap='jet', clim=(0, 1e4), line_color='cmy')
-            elif k in {'mat_pred', 'mat_true'} or k.startswith('mat_pred'):
-                self.viewers[k] = SliceViewer(cmap=cmap, clim=(1, n_labels))
+            if k in {'image', 'img_true', 'img_pred'}:
+                self.viewers[k] = SliceViewer(cmap='gray', clim=(-1, 1), title=k)
+            elif k in {'E', 'E_pred', 'E_true'}:
+                self.viewers[k] = SliceViewer(cmap='jet', clim=(0, 1e4), line_color='cmy', title=k)
+            elif k in {'logE', 'logE_pred', 'logE_true'}:
+                self.viewers[k] = SliceViewer(cmap='jet', clim=(2, 6), line_color='cmy', title=k)
+            elif k in {'material', 'mat_pred', 'mat_true'} or k.startswith('mat_pred'):
+                self.viewers[k] = SliceViewer(cmap=cmap, clim=(1, n_labels), title=k)
             else:
-                self.viewers[k] = SliceViewer(cmap='seismic', clim=(-2, 2))
+                self.viewers[k] = SliceViewer(cmap='seismic', clim=(-3, 3), title=k)
 
         self.apply_mask = apply_mask
 
     def on_batch_end(self, epoch, phase, batch, step, outputs):
-        outputs = ensure_material_map(outputs)
 
         for key, viewer in self.viewers.items():
+            if key.startswith('mat_pred'):
+                outputs = ensure_material_map(outputs)
             array = _to_numpy(outputs[key])
             assert array.ndim == 5, array.shape
             array = array[0][0] # (B,C,I,J,K) -> (I,J,K)
@@ -227,8 +229,6 @@ class EvaluatorCallback(Callback):
             'step': int(step),
             'loss': float(outputs['loss'].item())
         }
-        outputs = ensure_material_map(outputs)
-
         for k in range(batch_size):
             ex = outputs['example'][k]
             ex_base = {**base, 'subject': ex.subject}
@@ -253,7 +253,7 @@ class EvaluatorCallback(Callback):
 
     def compute_metrics(self, outputs, index, label=None):
         ret = {}
-        if 'mat_true' in outputs:
+        if 'mask' in outputs:
             ret |= self.compute_voxel_metrics(outputs, index, label)
         if 'pde' in outputs:
             ret |= self.compute_mesh_metrics(outputs, index, label)
@@ -269,7 +269,7 @@ class EvaluatorCallback(Callback):
         if label is None:
             sel = mask.astype(bool)
         else:
-            sel = mat_true == label
+            sel = mask.astype(bool) & (mat_true == label)
 
         num_voxels = int(np.count_nonzero(sel))
         if num_voxels == 0:
@@ -283,8 +283,17 @@ class EvaluatorCallback(Callback):
             E_pred = _to_numpy(outputs['E_pred'][index]).reshape(-1, 1) # Pa
             ret |= _eval(E_pred[sel], E_true[sel], name='E_vox')
 
+        elif 'E_pred' in outputs:
+            E_pred = _to_numpy(outputs['E_pred'][index]).reshape(-1, 1) # Pa
+            ret |= _eval(E_pred[sel], name='E_vox')
+
         if label is not None:
             ret |= _eval(mat_pred == label, mat_true == label, name='mat_vox')
+
+            for key in ['mat_pred_a', 'mat_pred_r', 'mat_pred_o']:
+                if key in outputs:
+                    mat_pred_ = _to_numpy(outputs[key][index]).reshape(-1, 1)
+                    ret |= _eval(mat_pred_ == label, mat_true == label, name=key)
 
         return ret
 
