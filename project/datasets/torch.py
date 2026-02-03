@@ -8,41 +8,77 @@ from ..core import utils, fileio
 
 class TorchDataset(torch.utils.data.Dataset):
 
-    def __init__(self, examples: List[Example], dtype=torch.float32, cache=False):
+    def __init__(
+        self,
+        examples: List[Example],
+        normalize=False,
+        image_mean=0.0,
+        image_std=1.0,
+        apply_mask=False,
+        use_cache=False
+    ):
         self.examples = examples
-        self.dtype = dtype
-        self.cache = {} if cache else None
+
+        # transform parameters
+        self.normalize  = normalize
+        self.image_mean = image_mean
+        self.image_std  = image_std
+        self.apply_mask = apply_mask
+
+        self.use_cache = use_cache
+        self._cache = {}
 
     def __len__(self):
         return len(self.examples)
 
     def __getitem__(self, idx):
         ex = self.examples[idx]
-        if self.cache is None:
-            return self.load_example(ex)
-        key = id(ex)
-        if key not in self.cache:
-            self.cache[key] = self.load_example(ex)
-        return self.cache[key]
+
+        if self.use_cache:
+            key = id(ex)
+            if key not in self._cache:
+                self._cache[key] = self.load_example(ex)
+            return self._cache[key]
+
+        return self.load_example(ex)
+
+    def clear_cache(self):
+        self._cache.clear()
 
     def load_example(self, ex):
-        image = fileio.load_nibabel(ex.paths['input_image'])
-        mask  = fileio.load_nibabel(ex.paths['material_mask'])
-        mesh  = fileio.load_meshio(ex.paths['interp_mesh'])
+        image    = fileio.load_nibabel(ex.paths['input_image'])
+        material = fileio.load_nibabel(ex.paths['material_mask'])
+        mesh     = fileio.load_meshio(ex.paths['interp_mesh'])
 
-        def _as_cpu_tensor(a, dtype=None):
-            return torch.as_tensor(a, dtype=dtype or self.dtype, device='cpu')
+        def _as_cpu_tensor(a, dtype):
+            return torch.as_tensor(a, dtype=dtype, device='cpu')
+
+        affine_t   = _as_cpu_tensor(image.affine, dtype=torch.float) # (4, 4)
+        image_t    = _as_cpu_tensor(image.get_fdata(), dtype=torch.float).unsqueeze(0)   # (1, I, J, K)
+        material_t = _as_cpu_tensor(material.get_fdata(), dtype=torch.long).unsqueeze(0) # (1, I, J, K)
+        mask_t     = (material_t > 0) # (1, I, J, K)
+
+        if self.normalize:
+            image_t = (image_t - self.image_mean) / self.image_std
+
+        if self.apply_mask:
+            image_t = image_t * mask_t
 
         output = {
-            'example': ex,
-            'affine': _as_cpu_tensor(image.affine), # (4, 4)
-            'image':  _as_cpu_tensor(image.get_fdata()).unsqueeze(0), # (1, I, J, K)
-            'mask':   _as_cpu_tensor(mask.get_fdata(), dtype=torch.int).unsqueeze(0),
-            'mesh':   mesh,
+            'example':  ex,
+            'affine':   affine_t,
+            'image':    image_t, 
+            'material': material_t,
+            'mask':     mask_t,
+            'mesh':     mesh
         }
+
         if 'elastic_field' in ex.paths:
             elast = fileio.load_nibabel(ex.paths['elastic_field'])
-            output['elast'] = _as_cpu_tensor(elast.get_fdata()).unsqueeze(0)
+            elast_t = _as_cpu_tensor(elast.get_fdata(), dtype=torch.int).unsqueeze(0) # (1, I, J, K)
+            log_e_t = torch.log10(elast_t.clamp_min(1e-12))
+            output['E']    = elast_t
+            output['logE'] = log_e_t
 
         return output
 

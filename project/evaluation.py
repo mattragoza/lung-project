@@ -81,10 +81,14 @@ class LoggerCallback(Callback):
 
 class PlotterCallback(Callback):
 
-    def __init__(self):
-        self.loss_history = defaultdict(list) # (phase, step) -> List[loss]
-        self.norm_history = defaultdict(list) # (phase, step) -> List[norm]
+    def __init__(self, keys=None):
+        keys = keys or ['loss']
 
+        # history[key][phase][step] = [values]
+        self.history = {
+            key: {ph: defaultdict(list) for ph in ['train', 'test', 'val']}
+                for key in keys
+        }
         self.output_dir = Path('./outputs')
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
@@ -92,12 +96,11 @@ class PlotterCallback(Callback):
 
     def on_batch_end(self, epoch, phase, batch, step, outputs):
         phase = str(phase).lower()
+        outputs = ensure_material_map(outputs)
 
-        loss_val = float(outputs['loss'].item())
-        norm_val = float(outputs['E_pred'].norm().item())
-
-        self.loss_history[(phase, step)].append(loss_val)
-        self.norm_history[(phase, step)].append(norm_val)
+        for key in self.history:
+            val = float(outputs[key].float().norm().item())
+            self.history[key][phase][step].append(val)
 
         self._update_plot()
 
@@ -106,44 +109,29 @@ class PlotterCallback(Callback):
 
     def _init_plot(self):
         plt.ion()
+        n_axes = len(self.history.keys())
         self.fig, self.axes = mpl_viz.subplot_grid(
-            1, 2, ax_height=3, ax_width=3,
+            1, n_axes, ax_height=3, ax_width=3,
             spacing=(0.5, 1.5),
             padding=(0.75, 0.75, 0.5, 0.25)
         )
-        self.loss_ax = self.axes[0,0]
-        self.norm_ax = self.axes[0,1]
-
-    def _phase_data(self, data, phase):
-        items = [
-            (step, vals) for (p, step), vals in data.items()
-            if p == phase
-        ]
-        if not items:
-            return None, None
-        
-        items.sort(key=lambda x: x[0])
-
-        steps = [step for step, _ in items]
-        means = [float(np.mean(vals)) for _, vals in items]
-
-        return steps, means
 
     def _update_plot(self):
         for ax in self.axes.flatten():
             ax.clear()
 
-        for phase in ['train', 'val', 'test']:
-            steps, means = self._phase_data(self.loss_history, phase)
-            if steps is not None:
-                self.loss_ax.plot(steps, means, label=phase)
-
-            steps, means = self._phase_data(self.norm_history, phase)
-            if steps is not None:
-                self.norm_ax.plot(steps, means, label=phase)
-
-        self.loss_ax.set_ylabel('loss')
-        self.norm_ax.set_ylabel('norm')
+        for i, key in enumerate(self.history):
+            ax = self.axes[0,i]
+            for phase in ['train', 'val', 'test']:
+                data = self.history[key][phase]
+                if not data:
+                    continue
+                items = list(data.items()) # [(step, [values])]
+                items.sort(key=lambda x: x[0])
+                steps = [s for s, _ in items]
+                means = [float(np.mean(v)) for _, v in items]
+                ax.plot(steps, means, label=phase)
+            ax.set_ylabel(key)
 
         for ax in self.axes.flatten():
             ax.set_xlabel('step')
@@ -162,8 +150,10 @@ class PlotterCallback(Callback):
 
 class ViewerCallback(Callback):
 
-    def __init__(self, n_labels=5, **kwargs):
+    def __init__(self, keys=None, n_labels=5, apply_mask=True, **kwargs):
         from .visual.matplotlib import SliceViewer
+        keys = keys or ['image']
+
         self.output_dir = Path('./outputs')
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
@@ -176,23 +166,29 @@ class ViewerCallback(Callback):
         cmap.set_over('black')
         cmap.set_bad('black')
 
-        self.viewers = {
-            'image': SliceViewer(cmap='gray'),
-            'E_pred': SliceViewer(cmap='jet', clim=(0, 1e4)),
-            'E_true': SliceViewer(cmap='jet', clim=(0, 1e4)),
-            'mask': SliceViewer(cmap=cmap, clim=(1, n_labels)),
-            'mat_pred': SliceViewer(cmap=cmap, clim=(1, n_labels)),
-        }
+        self.viewers = {}
+        for k in keys:
+            if k == 'image':
+                self.viewers[k] = SliceViewer(cmap='gray', clim=(-1, 1))
+            elif k in {'E_pred', 'E_true'}:
+                self.viewers[k] = SliceViewer(cmap='jet', clim=(0, 1e4), line_color='cmy')
+            elif k in {'mat_pred', 'mat_true'} or k.startswith('mat_pred'):
+                self.viewers[k] = SliceViewer(cmap=cmap, clim=(1, n_labels))
+            else:
+                self.viewers[k] = SliceViewer(cmap='seismic', clim=(-2, 2))
+
+        self.apply_mask = apply_mask
 
     def on_batch_end(self, epoch, phase, batch, step, outputs):
+        outputs = ensure_material_map(outputs)
+
         for key, viewer in self.viewers.items():
-            if key == 'mat_pred':
-                E_pred = _to_numpy(outputs['E_pred'][0,0])
-                E_true = _to_numpy(outputs['E_true'][0,0])
-                mat_mask = _to_numpy(outputs['mask'][0,0])
-                array = predict_material_map(E_pred, E_true, mat_mask)
-            else:
-                array = _to_numpy(outputs[key][0,0])
+            array = _to_numpy(outputs[key])
+            assert array.ndim == 5, array.shape
+            array = array[0][0] # (B,C,I,J,K) -> (I,J,K)
+            if self.apply_mask:
+                mask = _to_numpy(outputs['mask'][0][0])
+                array = array * mask
             viewer.update_array(array)
 
     def on_phase_end(self, epoch, phase):
@@ -203,8 +199,9 @@ class ViewerCallback(Callback):
 
 class EvaluatorCallback(Callback):
 
-    def __init__(self, eval_on_train: bool=False):
+    def __init__(self, eval_on_train: bool=False, n_labels: int=5):
         self.eval_on_train = eval_on_train
+        self.n_labels = n_labels
 
         self.example_rows  = defaultdict(list)
         self.material_rows = defaultdict(list)
@@ -230,18 +227,9 @@ class EvaluatorCallback(Callback):
             'step': int(step),
             'loss': float(outputs['loss'].item())
         }
+        outputs = ensure_material_map(outputs)
+
         for k in range(batch_size):
-
-            # pre-compute predicted material maps
-            if 'mask' in outputs:
-                mat_mask = _to_numpy(outputs['mask'][k])
-                E_true   = _to_numpy(outputs['E_true'][k])
-                E_pred   = _to_numpy(outputs['E_pred'][k])
-                mat_pred = predict_material_map(E_pred, E_true, mat_mask)
-                if 'mat_pred' not in outputs:
-                    outputs['mat_pred'] = [None] * batch_size
-                outputs['mat_pred'][k] = mat_pred
-
             ex = outputs['example'][k]
             ex_base = {**base, 'subject': ex.subject}
             ex_metrics = self.compute_metrics(outputs, index=k)
@@ -254,8 +242,8 @@ class EvaluatorCallback(Callback):
 
     def get_material_labels(self, outputs, index):
         labels = set()
-        if 'mask' in outputs:
-            mat_mask = _to_numpy(outputs['mask'][index]).reshape(-1, 1)
+        if 'mat_true' in outputs:
+            mat_mask = _to_numpy(outputs['mat_true'][index]).reshape(-1, 1)
             labels |= set(np.unique(mat_mask[mat_mask > 0]))
         if 'pde' in outputs:
             pde_output = outputs['pde'][index]
@@ -265,7 +253,7 @@ class EvaluatorCallback(Callback):
 
     def compute_metrics(self, outputs, index, label=None):
         ret = {}
-        if 'mask' in outputs:
+        if 'mat_true' in outputs:
             ret |= self.compute_voxel_metrics(outputs, index, label)
         if 'pde' in outputs:
             ret |= self.compute_mesh_metrics(outputs, index, label)
@@ -274,14 +262,14 @@ class EvaluatorCallback(Callback):
     def compute_voxel_metrics(self, outputs, index, label=None):
         ex = outputs['example'][index]
 
-        mat_mask = _to_numpy(outputs['mask'][index]).reshape(-1, 1)
-        E_true = _to_numpy(outputs['E_true'][index]).reshape(-1, 1) # Pa
-        E_pred = _to_numpy(outputs['E_pred'][index]).reshape(-1, 1) # Pa
+        mask = _to_numpy(outputs['mask'][index]).reshape(-1, 1)
+        mat_true = _to_numpy(outputs['mat_true'][index]).reshape(-1, 1)
+        mat_pred = _to_numpy(outputs['mat_pred'][index]).reshape(-1, 1)
 
         if label is None:
-            sel = (mat_mask != 0)
+            sel = mask.astype(bool)
         else:
-            sel = (mat_mask == label)
+            sel = mat_true == label
 
         num_voxels = int(np.count_nonzero(sel))
         if num_voxels == 0:
@@ -289,11 +277,14 @@ class EvaluatorCallback(Callback):
             return {'num_voxels': num_voxels}
 
         ret = {'num_voxels': num_voxels}
-        ret |= _eval(E_pred[sel], E_true[sel], name='E_vox')
+    
+        if 'E_true' in outputs and 'E_pred' in outputs:
+            E_true = _to_numpy(outputs['E_true'][index]).reshape(-1, 1) # Pa
+            E_pred = _to_numpy(outputs['E_pred'][index]).reshape(-1, 1) # Pa
+            ret |= _eval(E_pred[sel], E_true[sel], name='E_vox')
 
         if label is not None:
-            mat_pred = _to_numpy(outputs['mat_pred'][index]).reshape(-1, 1)
-            ret |= _eval(mat_pred == label, mat_mask == label, name='mat_vox')
+            ret |= _eval(mat_pred == label, mat_true == label, name='mat_vox')
 
         return ret
 

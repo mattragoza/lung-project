@@ -16,6 +16,20 @@ DEFAULT_POOL_SIZE = 2
 DEFAULT_UPSAMPLE = 'nearest'
 
 
+def build_model(config):
+    utils.check_keys(config, {'backbone', 'head'})
+
+    backbone_kws = config.get('backbone', {}).copy()
+    backbone_cls = globals()[backbone_kws.pop('_class')]
+    backbone = backbone_cls(in_channels=1, **backbone_kws)
+
+    head_kws = config.get('head', {}).copy()
+    head_cls = globals()[head_kws.pop('_class')]
+    head = head_cls(in_channels=backbone.out_channels, **head_kws)
+
+    return GenericModel(backbone, head)
+
+
 class ConvUnit3D(torch.nn.Module):
     
     def __init__(
@@ -160,7 +174,6 @@ class UNet3D(torch.nn.Module):
     def __init__(
         self,
         in_channels: int,
-        out_channels: int,
         conv_channels: int,
         n_enc_blocks: int,
         n_conv_units: int,
@@ -170,15 +183,7 @@ class UNet3D(torch.nn.Module):
         norm_type: str=DEFAULT_NORM_TYPE,
         num_groups: int=DEFAULT_NUM_GROUPS,
         pooling_type: str=DEFAULT_POOL_TYPE,
-        upsample_mode: str=DEFAULT_UPSAMPLE,
-        input_shift: float=0.0,
-        input_scale: float=1.0,
-        output_shift: float=0.0,
-        output_scale: float=1.0,
-        bounds_mode: str='none',
-        lower_bound: float=0.0,
-        upper_bound: float=1e6,
-        param_space: str='linear'
+        upsample_mode: str=DEFAULT_UPSAMPLE
     ):
         super().__init__()
         assert n_enc_blocks > 0
@@ -221,18 +226,10 @@ class UNet3D(torch.nn.Module):
             curr_channels = next_channels
             next_channels = curr_channels // 2
         
-        self.output_conv = torch.nn.Conv3d(curr_channels, out_channels, kernel_size=1)
-
-        self.input_shift = float(input_shift)
-        self.input_scale = float(input_scale)
-
-        self.output_shift = float(output_shift)
-        self.output_scale = float(output_scale)
-
-        self.param_map = ParameterMap(param_space, bounds_mode, lower_bound, upper_bound)
+        self.in_channels = in_channels
+        self.out_channels = curr_channels
 
     def forward(self, x):
-        x = (x - self.input_shift) / self.input_scale
 
         features = []
         for i, enc_block in enumerate(self.encoder):
@@ -244,20 +241,70 @@ class UNet3D(torch.nn.Module):
         for i, dec_block in enumerate(self.decoder):
             x = dec_block(x, features[i+1])
 
-        x = self.output_conv(x)
+        return x
 
-        # affine mapping from standard normal to param range
-        x = self.output_shift + self.output_scale * x
 
-        return self.param_map(x)
+class ElasticityHead(nn.Module):
+
+    def __init__(
+        self,
+        in_channels,
+        logE_mean=0.0,
+        logE_std=1.0,
+        logE_min=None,
+        logE_max=None
+    ):
+        super().__init__()
+        self.conv = nn.Conv3d(in_channels, 1, kernel_size=1)
+        self.logE_mean = logE_mean
+        self.logE_std  = logE_std
+        self.logE_min  = logE_min
+        self.logE_max  = logE_max
+
+    def forward(self, x):
+        z = self.conv(x)
+        logE = torch.clamp(
+            z * self.logE_std + self.logE_mean,
+            min=self.logE_min,
+            max=self.logE_max
+        )
+        E = torch.pow(10.0, logE)
+        return {'E': E, 'logE': logE}
+
+
+class SegmentationHead(nn.Module):
+
+    def __init__(self, in_channels, n_labels: int):
+        super().__init__()
+        self.conv = nn.Conv3d(in_channels, n_labels, kernel_size=1)
+        self.n_labels = n_labels
+
+    def forward(self, x):
+        logits = self.conv(x)
+        labels = torch.argmax(logits, dim=1)
+        return {'labels': labels, 'logits': logits}
+
+
+class GenericModel(nn.Module):
+
+    def __init__(self, backbone, head):
+        super().__init__()
+        self.backbone = backbone
+        self.head = head
+
+    def forward(self, x):
+        x = self.backbone(x)
+        return self.head(x)
+
+
+# consider deprecating past this point
 
 
 class ParameterMap(nn.Module):
     '''
-    Maps an unconstrained parameter-space variable to a physical quantity.
+    Maps an unconstrained log-space parameter to Young's modulus (Pa).
 
     Args:
-        param_space: 'log' | 'linear'
         bounds_mode: 'hard' | 'soft' | 'none'
         lower_bound: float, in param_space
         upper_bound: float, in param_space
@@ -272,7 +319,6 @@ class ParameterMap(nn.Module):
         beta: float=10.0
     ):
         super().__init__()
-        assert param_space in {'log', 'linear'}
         assert bounds_mode in {'soft', 'hard', 'none'}
         self.param_space = str(param_space)
         self.bounds_mode = str(bounds_mode)
@@ -285,9 +331,8 @@ class ParameterMap(nn.Module):
             x = torch.clamp(x, self.lower_bound, self.upper_bound)
         elif self.bounds_mode == 'soft':
             x = soft_clamp(x, self.lower_bound, self.upper_bound, beta=self.beta)
-        if self.param_space == 'log':
-            return torch.pow(10.0, x)
-        return x
+        return torch.pow(10.0, x)
+
 
 
 def soft_clamp(x, lo, hi, beta=10.0):
