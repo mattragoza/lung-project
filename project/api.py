@@ -121,7 +121,7 @@ def run_training(examples, config):
     utils.check_keys(
         config,
         {'split', 'transform', 'loader', 'model', 'optimizer', 'evaluator'} |
-        {'physics_adapter', 'pde_solver', 'trainer'},
+        {'physics_adapter', 'pde_solver', 'trainer', 'task'},
         where='training'
     )
     from . import datasets, models, training, evaluation, physics

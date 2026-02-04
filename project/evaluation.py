@@ -229,6 +229,7 @@ class EvaluatorCallback(Callback):
             'step': int(step),
             'loss': float(outputs['loss'].item())
         }
+        outputs = ensure_material_map(outputs)
         for k in range(batch_size):
             ex = outputs['example'][k]
             ex_base = {**base, 'subject': ex.subject}

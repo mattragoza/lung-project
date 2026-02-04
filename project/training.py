@@ -32,6 +32,9 @@ class TaskSpec:
         self._validate()
 
     def _validate(self):
+        print(self.inputs)
+        print(self.targets)
+        print(self.losses)
         for input_ in self.inputs:
             assert input_ in {'image', 'material'}, input_
         for target in self.targets:
@@ -290,7 +293,7 @@ class Trainer:
             outputs[k] = batch[k].cpu()
 
         need_physics_loss = ('sim' in self.task.losses)
-        need_physics_eval = (self.eval_physics and eval_mode)
+        need_physics_eval = (self.eval_physics and eval_mode and 'E_pred' in preds)
         run_physics = need_physics_loss or need_physics_eval
 
         sim_loss = None
@@ -346,8 +349,14 @@ class Trainer:
             if loss_name != 'u_sim':
                 total_base = total_base + loss_weight * base
 
-            outputs[output_key] = preds[output_key].cpu()
-            outputs[target_key] = batch[target_key].cpu()
+            if t in {'E', 'logE'}:
+                outputs['E_true'] = batch['E_true'].cpu()
+                outputs['E_pred'] = preds['E_pred'].cpu()
+                outputs['logE_true'] = batch['logE_true'].cpu()
+                outputs['logE_pred'] = preds['logE_pred'].cpu()
+            else:
+                outputs[output_key] = preds[output_key].cpu()
+                outputs[target_key] = batch[target_key].cpu()
 
         outputs['loss'] = total_loss
         outputs['loss_base'] = total_base.detach().cpu()
