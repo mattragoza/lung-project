@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List
+from typing import List, Dict, Iterable
 from pathlib import Path
 import numpy as np
 import torch
@@ -15,70 +15,107 @@ def _to_numpy(x):
 
 
 class TaskSpec:
-    image_channels  = 1
+    image_channels = 1
     material_labels = 5
 
-    def __init__(self, input: str, target: str, loss: str):
-        assert input in {'image', 'material'}
-        assert target in {'image', 'material', 'E', 'logE'}
-        assert loss.lower() in {'ce', 'mse', 'msre', 'sim'}
-        self.input  = input
-        self.target = target
-        self.loss   = loss.lower()
+    def __init__(
+        self,
+        inputs: List[str],
+        targets: List[str],
+        losses: Dict[str, str],
+        weights: Dict[str, float]=None
+    ):
+        self.inputs  = inputs
+        self.targets = targets
+        self.losses  = losses
+        self.weights = weights or {}
+        self._validate()
+
+    def _validate(self):
+        for input_ in self.inputs:
+            assert input_ in {'image', 'material'}, input_
+        for target in self.targets:
+            assert target in {'image', 'material', 'E', 'logE'}, target
+        for target, loss in self.losses.items():
+            assert target in self.targets, (target, loss)
+            assert loss.lower() in {'ce', 'mse', 'msre', 'sim'}, (target, loss)
+        for target, weight in self.weights.items():
+            assert target in self.targets, (target, weight)
+            assert weight >= 0.0, (target, weight)
 
     @property
     def in_channels(self) -> int:
-        if self.input == 'image':
-            return self.image_channels
-        elif self.input == 'material':
-            return self.material_labels + 1
+        total = 0
+        for input_ in self.inputs:
+            if input_ == 'image':
+                total += self.image_channels
+            elif input_ == 'material':
+                total += self.material_labels + 1
+            else:
+                raise ValueError(input_)
+        return total
 
-    @property
-    def out_channels(self) -> int:
-        if self.target == 'image':
+    def out_channels(self, target: str) -> int:
+        if target == 'image':
             return self.image_channels
-        elif self.target == 'material':
+        elif target == 'material':
             return self.material_labels + 1
-        return 1 # elasticity field
+        elif target in {'E', 'logE'}:
+            return 1
+        raise ValueError(target)
 
-    @property
-    def input_key(self) -> str:
-        if self.input == 'image':
+    def input_key(self, input_: str, visual: bool=False) -> str:
+        if input_ == 'image':
             return 'img_true'
-        elif self.input == 'material':
-            return 'mat_onehot'
+        elif input_ == 'material':
+            return 'mat_true' if visual else 'mat_onehot'
+        raise ValueError(input_)
 
-    @property
-    def output_key(self) -> str:
-        if self.target == 'E':
+    def input_keys(self, *args, **kwargs) -> List[str]:
+        return [self.input_key(x, *args, **kwargs) for x in self.inputs]
+
+    def output_key(self, target: str, visual: bool=False) -> str:
+        if target == 'E':
             return 'E_pred'
-        elif self.target == 'logE':
+        elif target == 'logE':
             return 'logE_pred'
-        elif self.target == 'image':
+        elif target == 'image':
             return 'img_pred'
-        elif self.target == 'material':
-            return 'mat_logits'
+        elif target == 'material':
+            return 'mat_pred' if visual else 'mat_logits'
+        raise ValueError(target)
 
-    @property
-    def target_key(self) -> str:
-        if self.target == 'E':
+    def target_key(self, target: str, visual: bool=False) -> str:
+        assert target in self.targets, target
+        if target == 'E':
             return 'E_true'
-        elif self.target == 'logE':
+        elif target == 'logE':
             return 'logE_true'
-        elif self.target == 'image':
+        elif target == 'image':
             return 'img_true'
-        elif self.target == 'material':
+        elif target == 'material':
             return 'mat_true'
+        raise ValueError(target)
+
+    def base_value(self, target: str) -> float:
+        if target == 'E':
+            return 10**3.4863
+        elif target == 'logE':
+            return 3.4863
+        return 0.0
 
     @property
     def plotter_keys(self) -> List[str]:
-        return ['loss', self.output_key, self.target_key]
+        return ['loss', 'loss_ratio']
 
     @property
     def viewer_keys(self) -> List[str]:
-        input_key  = 'mat_true' if self.input == 'material' else self.input_key
-        output_key = 'mat_pred' if self.target == 'material' else self.output_key
-        return [input_key, output_key, self.target_key]
+        keys = self.input_keys(visual=True)
+        for t in self.targets:
+            output_key = self.output_key(t, visual=True)
+            target_key = self.target_key(t, visual=True)
+            keys.extend([output_key, target_key])
+        return keys
 
 
 class Trainer:
@@ -236,16 +273,23 @@ class Trainer:
         device = self.device
         batch_size = len(batch['example'])
 
-        mask   = batch['mask'].to(device, dtype=torch.bool)
-        input_ = batch[self.task.input_key].to(device, dtype=torch.float)
-        preds  = self.model.forward(input_)
+        mask = batch['mask'].to(device, dtype=torch.bool)
+
+        input_keys = self.task.input_keys()
+        input_vals = [batch[k].to(device, dtype=torch.float) for k in input_keys]
+        inputs_cat = torch.cat(input_vals, dim=1)
+
+        preds = self.model.forward(inputs_cat)
 
         outputs = {
             'example':  batch['example'],
             'mask':     batch['mask'].cpu(),
             'mat_true': batch['mat_true'].cpu()
         }
-        need_physics_loss = (self.task.loss == 'sim')
+        for k in input_keys:
+            outputs[k] = batch[k].cpu()
+
+        need_physics_loss = ('sim' in self.task.losses)
         need_physics_eval = (self.eval_physics and eval_mode)
         run_physics = need_physics_loss or need_physics_eval
 
@@ -266,24 +310,48 @@ class Trainer:
             outputs['sim_loss'] = sim_loss.mean().detach().cpu()
             outputs['pde'] = pde_outputs
 
-        x_pred = preds[self.task.output_key].to(device)
-        x_true = batch[self.task.target_key].to(device)
+        total_loss = torch.zeros((), device=device)
+        total_base = torch.zeros((), device=device)
 
-        if self.task.loss == 'sim':
-            loss = sim_loss.mean()
-        elif self.task.loss == 'mse':
-            loss = mean_squared_error(x_pred, x_true, mask)
-        elif self.task.loss == 'msre':
-            loss = mean_squared_relative_error(x_pred, x_true, mask)
-        elif self.task.loss == 'ce':
-            loss = masked_cross_entropy(x_pred, x_true, mask)
+        for t in self.task.targets:
+            output_key  = self.task.output_key(t)
+            target_key  = self.task.target_key(t)
 
-        outputs['loss'] = loss
-        outputs[self.task.input_key]  = batch[self.task.input_key].cpu()
-        outputs[self.task.target_key] = batch[self.task.target_key].cpu()
-        for key in preds:
-            outputs[key] = preds[key].cpu()
+            x_pred = preds[output_key].to(device)
+            x_true = batch[target_key].to(device)
+            x_base = torch.full_like(x_pred, self.task.base_value(t), dtype=torch.float)
 
+            loss_name   = self.task.losses[t].lower()
+            loss_weight = self.task.weights.get(t, 1.0)
+
+            if loss_name == 'ce':
+                loss = masked_cross_entropy(x_pred, x_true, mask)
+                base = masked_cross_entropy(x_base, x_true, mask)
+
+            elif loss_name == 'mse':
+                loss = mean_squared_error(x_pred, x_true, mask)
+                base = mean_squared_error(x_base, x_true, mask)
+
+            elif loss_name == 'msre':
+                loss = mean_squared_relative_error(x_pred, x_true, mask)
+                base = mean_squared_relative_error(x_base, x_true, mask)
+
+            elif loss_name == 'sim':
+                loss = sim_loss.mean()
+                base = 0.0
+            else:
+                raise ValueError(loss_name)
+
+            total_loss = total_loss + loss_weight * loss
+            if loss_name != 'u_sim':
+                total_base = total_base + loss_weight * base
+
+            outputs[output_key] = preds[output_key].cpu()
+            outputs[target_key] = batch[target_key].cpu()
+
+        outputs['loss'] = total_loss
+        outputs['loss_base'] = total_base.detach().cpu()
+        outputs['loss_ratio'] = (total_loss / total_base.clamp_min(1e-12)).detach().cpu()
         return outputs
 
     # ----- saving / loading state -----

@@ -133,9 +133,6 @@ def run_training(examples, config):
     outputs_kws = config.pop('outputs', {})
     outputs = RunOutputs(stage='training', **outputs_kws)
 
-    task_kws = config.pop('task', {})
-    task = training.TaskSpec(**task_kws)
-
     split_kws = config.get('split', {})
     train_ex, test_ex, val_ex = training.split_on_metadata(examples, **split_kws)
 
@@ -158,11 +155,15 @@ def run_training(examples, config):
     else:
         val_loader = None
 
+    task_kws = config.pop('task', {})
+    task = training.TaskSpec(**task_kws)
+
     # instantiate model architecture
     model_kws = config.get('model', {})
     model = models.build_model(task, model_kws)
 
-    #n_params = models.count_params(model)
+    n_params = models.count_params(model)
+    utils.pprint(n_params)
     #n_activs = models.count_activations(model, train_set[0]['image'].unsqueeze(0))
     #n_bytes  = (n_params + n_activs) * 2 * 4
 

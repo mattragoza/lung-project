@@ -17,21 +17,98 @@ DEFAULT_UPSAMPLE = 'nearest'
 
 
 def build_model(task, config):
-    utils.check_keys(config, {'backbone', 'head'})
+    utils.check_keys(config, {'backbone', 'heads'})
 
     backbone_kws = config.get('backbone', {}).copy()
     backbone_cls = globals()[backbone_kws.pop('_class')]
     backbone = backbone_cls(in_channels=task.in_channels, **backbone_kws)
 
-    head_kws = config.get('head', {})
-    if task.target == 'material':
-        head = SegmentationHead(backbone.out_channels, **head_kws)
-    elif task.target in {'E', 'logE'}:
-        head = ElasticityHead(backbone.out_channels, **head_kws)
-    else:
-        head = RegressionHead(backbone.out_channels, task.out_channels, **head_kws)
+    heads_cfg = config.get('heads', {})
+    heads = {}
+    for t in task.targets:
+        if t in {'E', 'logE'}:
+            head_kws = heads_cfg.get('elasticity', {})
+            head = ElasticityHead(backbone.out_channels, task.out_channels(t), **head_kws)
+        elif t == 'material':
+            head_kws = heads_cfg.get(t, {})
+            head = SegmentationHead(backbone.out_channels, task.out_channels(t), **head_kws)
+        else:
+            head_kws = heads_cfg.get(t, {})
+            head = RegressionHead(backbone.out_channels, task.out_channels(t), **head_kws)
+        heads[t] = head
 
-    return GenericModel(backbone, head)
+    return MultiTaskModel(backbone, heads)
+
+
+class MultiTaskModel(nn.Module):
+
+    def __init__(self, backbone, heads):
+        super().__init__()
+        self.backbone = backbone
+        self.heads = nn.ModuleDict(heads)
+
+    def forward(self, x):
+        feats = self.backbone(x)
+
+        outputs = {}
+        for name, head in self.heads.items():
+            out = head(feats)
+            outputs.update(out)
+
+        return outputs
+
+
+class ElasticityHead(nn.Module):
+
+    def __init__(
+        self,
+        in_channels,
+        out_channels=1,
+        logE_mean=0.0,
+        logE_std=1.0,
+        logE_min=None,
+        logE_max=None
+    ):
+        super().__init__()
+        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
+        self.logE_mean = logE_mean
+        self.logE_std  = logE_std
+        self.logE_min  = logE_min
+        self.logE_max  = logE_max
+
+    def forward(self, x):
+        z = self.conv(x)
+        logE = torch.clamp(
+            z * self.logE_std + self.logE_mean,
+            min=self.logE_min,
+            max=self.logE_max
+        )
+        E = torch.pow(10.0, logE)
+        return {'E_pred': E, 'logE_pred': logE, 'z': z}
+
+
+class SegmentationHead(nn.Module):
+
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        return {'mat_logits': self.conv(x)}
+
+
+class RegressionHead(nn.Module):
+
+    def __init__(self, in_channels, out_channels, out_key='img_pred'):
+        super().__init__()
+        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
+        self.out_key = out_key
+
+    def forward(self, x):
+        return {self.out_key: self.conv(x)}
+
+
+# ----- architecture components -----
 
 
 class ConvUnit3D(torch.nn.Module):
@@ -57,9 +134,12 @@ class ConvUnit3D(torch.nn.Module):
         if norm_type == 'batch':
             self.norm = torch.nn.BatchNorm3d(out_channels, affine=True)
         elif norm_type == 'layer':
-            self.norm = torch.nn.LayerNorm(out_channels, elementwise_affine=True)
+            self.norm = torch.nn.GroupNorm(1, out_channels, affine=True)
         elif norm_type == 'group':
-            self.norm = torch.nn.GroupNorm(num_groups, out_channels, affine=True)
+            if out_channels >= num_groups:
+                self.norm = torch.nn.GroupNorm(num_groups, out_channels, affine=True)
+            else:
+                self.norm = torch.nn.Identity()
         elif norm_type == 'instance':
             self.norm = torch.nn.InstanceNorm3d(out_channels, affine=True)
         else:
@@ -75,8 +155,9 @@ class ConvUnit3D(torch.nn.Module):
             nonlinearity='leaky_relu',
             mode='fan_in'
         )
-        nn.init.ones_(self.norm.weight)
-        nn.init.zeros_(self.norm.bias)
+        if hasattr(self.norm, 'weight'):
+            nn.init.ones_(self.norm.weight)
+            nn.init.zeros_(self.norm.bias)
 
     def forward(self, x):
         x = self.conv(x)
@@ -96,9 +177,9 @@ class ConvBlock3D(torch.nn.Sequential):
         **conv_unit_kws
     ):
         super().__init__()
-        
-        if not hid_channels:
-            hid_channels = out_channels
+
+        if hid_channels is None:
+            hid_channels = max(in_channels, out_channels)
         elif n_conv_units < 2:
             raise ValueError('hid_channels argument requires n_conv_units >= 2')
 
@@ -109,6 +190,70 @@ class ConvBlock3D(torch.nn.Sequential):
                 **conv_unit_kws
             )
             self.add_module(f'unit{i}', layer)
+
+
+class UNet3Dv2(torch.nn.Module):
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        conv_channels: int,
+        n_conv_units: int,
+        n_sub_levels: int,
+        pooling_type: str=DEFAULT_POOL_TYPE,
+        upsample_mode: str=DEFAULT_UPSAMPLE,
+        **kwargs
+    ):
+        assert n_sub_levels >= 0
+        super().__init__()
+
+        self.enc = ConvBlock3D(
+            in_channels=in_channels,
+            hid_channels=conv_channels,
+            out_channels=conv_channels,
+            n_conv_units=n_conv_units,
+            **kwargs
+        )
+        curr_channels = conv_channels
+
+        if n_sub_levels > 0:
+            downsample = {'max': nn.MaxPool3d, 'avg': nn.AvgPool3d}[pooling_type]
+            self.down = downsample(kernel_size=2)
+            self.sub = type(self)(
+                in_channels=conv_channels,
+                out_channels=conv_channels,
+                conv_channels=conv_channels * 2,
+                n_conv_units=n_conv_units,
+                n_sub_levels=n_sub_levels - 1,
+                pooling_type=pooling_type,
+                upsample_mode=upsample_mode,
+                **kwargs
+            )
+            self.up = nn.Upsample(scale_factor=2, mode=upsample_mode)
+            curr_channels += conv_channels
+
+        self.dec = ConvBlock3D(
+            in_channels=curr_channels,
+            hid_channels=conv_channels,
+            out_channels=out_channels,
+            n_conv_units=n_conv_units,
+            **kwargs
+        )
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
+    def forward(self, x):
+        z = self.enc(x)
+        if hasattr(self, 'sub'):
+            y = self.down(z)
+            y = self.sub(y)
+            y = self.up(y)
+            z = torch.cat([z, y], dim=1)
+        return self.dec(z)
+
+
+# ----- UNetv1 components -----
             
 
 class EncoderBlock(torch.nn.Module):
@@ -246,69 +391,6 @@ class UNet3D(torch.nn.Module):
             x = dec_block(x, features[i+1])
 
         return x
-
-
-class ElasticityHead(nn.Module):
-
-    def __init__(
-        self,
-        in_channels,
-        logE_mean=0.0,
-        logE_std=1.0,
-        logE_min=None,
-        logE_max=None,
-        **kwargs
-    ):
-        super().__init__()
-        self.conv = nn.Conv3d(in_channels, 1, kernel_size=1)
-        self.logE_mean = logE_mean
-        self.logE_std  = logE_std
-        self.logE_min  = logE_min
-        self.logE_max  = logE_max
-
-    def forward(self, x):
-        z = self.conv(x)
-        logE = torch.clamp(
-            z * self.logE_std + self.logE_mean,
-            min=self.logE_min,
-            max=self.logE_max
-        )
-        E = torch.pow(10.0, logE)
-        return {'E_pred': E, 'logE_pred': logE}
-
-
-class RegressionHead(nn.Module):
-
-    def __init__(self, in_channels, out_channels, **kwargs):
-        super().__init__()
-        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
-
-    def forward(self, x):
-        return {'img_pred': self.conv(x)}
-
-
-class SegmentationHead(nn.Module):
-
-    def __init__(self, in_channels, n_labels=5, **kwargs):
-        super().__init__()
-        self.conv = nn.Conv3d(in_channels, n_labels, kernel_size=1)
-        self.n_labels = n_labels
-
-    def forward(self, x):
-        logits = self.conv(x)
-        return {'mat_logits': logits}
-
-
-class GenericModel(nn.Module):
-
-    def __init__(self, backbone, head):
-        super().__init__()
-        self.backbone = backbone
-        self.head = head
-
-    def forward(self, x):
-        x = self.backbone(x)
-        return self.head(x)
 
 
 # consider deprecating past this point
