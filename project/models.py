@@ -210,7 +210,6 @@ class UNet3Dv2(torch.nn.Module):
 
         self.enc = ConvBlock3D(
             in_channels=in_channels,
-            hid_channels=conv_channels,
             out_channels=conv_channels,
             n_conv_units=n_conv_units,
             **kwargs
@@ -235,7 +234,7 @@ class UNet3Dv2(torch.nn.Module):
 
         self.dec = ConvBlock3D(
             in_channels=curr_channels,
-            hid_channels=conv_channels,
+            hid_channels=conv_channels if n_conv_units > 1 else None,
             out_channels=out_channels,
             n_conv_units=n_conv_units,
             **kwargs
@@ -476,11 +475,18 @@ def count_activations(model, input_, ret_output=False):
         return tuple(t.shape), t.dtype, t.mean().item(), t.std().item()
 
     def record_output_description(name):
-        def hook(m, in_, out):
-            key = id(out)
-            if key not in seen:
-                recorded.append((name, describe(out)))
-                seen.add(key)
+        def hook(mod, inp, out):
+            if isinstance(out, dict):
+                for k, v in out.items():
+                    key = id(v)
+                    if key not in seen:
+                        recorded.append((name + '.' + k, describe(v)))
+                        seen.add(key)
+            else:
+                key = id(out)
+                if key not in seen:
+                    recorded.append((name, describe(out)))
+                    seen.add(key)
         return hook
 
     for name, m in model.named_modules():

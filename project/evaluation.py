@@ -26,6 +26,10 @@ def _eval(pred, target, weight=None, name=None, profile=None):
 
 class Callback:
 
+    @property
+    def name(self):
+        return self.__class__.__name__[:-8].lower() or None
+
     def on_train_start(self, **kwargs):
         return
 
@@ -50,88 +54,140 @@ class Callback:
     def on_batch_end(self, epoch, phase, batch, step, **kwargs):
         return
 
+    def on_forward_start(self, *args, **kwargs):
+        return
+
+    def on_forward_end(self, *args, **kwargs):
+        return
+
+    def on_backward_start(self, *args, **kwargs):
+        return
+
+    def on_backward_end(self, *args, **kwargs):
+        return
+
+
+class TimerCallback(Callback):
+
+    def __init__(self):
+        self.timer = utils.Timer()
+
+    def on_phase_start(self, *args, **kwargs):
+        self.timer.tick(sync=False)
+
+    def on_batch_start(self, *args, **kwargs):
+        stats = self.timer.tick(sync=False)
+        utils.log(f'load_data: {stats}')
+
+    def on_forward_start(self, *args, **kwargs):
+        self.timer.tick(sync=False)
+
+    def on_forward_end(self, *args, **kwargs):
+        stats = self.timer.tick(sync=True)
+        utils.log(f'forward:   {stats}')
+
+    def on_backward_start(self, *args, **kwargs):
+        self.timer.tick(sync=False)
+
+    def on_backward_end(self, *args, **kwargs):
+        stats = self.timer.tick(sync=True)
+        utils.log(f'backward:  {stats}')
+
+    def on_batch_end(self, *args, **kwargs):
+        self.timer.tick(sync=False)
+
 
 class LoggerCallback(Callback):
 
-    def __init__(self, sync_cuda: bool=False):
-        self.sync_cuda = sync_cuda
+    def __init__(self, keys):
+        self.keys = keys
 
-    def on_train_start(self):
-        utils.log(f'Start training loop')
+    def on_train_start(self, *args, **kwargs):
+        utils.log('Start training')
 
-    def on_epoch_start(self, epoch):
-        utils.log(f'===== Epoch {epoch} =====')
+    def on_epoch_start(self, epoch, *args, **kwargs):
+        utils.log(f'Start epoch {epoch}')
 
-    def on_batch_start(self, epoch, phase, batch, step, loader):
-        self.t_start = time.time()
-        torch.cuda.reset_peak_memory_stats()
-        utils.log(f'[Epoch {epoch} | {phase.capitalize()} batch {batch}/{len(loader)}]', end=' ')
+    def on_phase_start(self, epoch, phase, *args, **kwargs):
+        utils.log(f'Start epoch {epoch} {phase} phase')
 
-    def on_batch_end(self, epoch, phase, batch, step, outputs, unit_b=2**20):
-        loss = outputs['loss'].item()
-        if self.sync_cuda:
-            torch.cuda.synchronize()
-        curr = torch.cuda.memory_allocated()     / unit_b
-        peak = torch.cuda.max_memory_allocated() / unit_b
-        res  = torch.cuda.memory_reserved()      / unit_b
-        memory = f'{curr:.0f} / {peak:.0f} / {res:.0f}'
-        t_delta = time.time() - self.t_start
-        utils.log(f'loss = {loss:.4e} | time = {t_delta:.4f}s | memory = {memory} MiB')
+    def on_batch_start(self, epoch, phase, batch, *args, **kwargs):
+        utils.log(f'[Epoch {epoch} | {phase.capitalize()} batch {batch}] start')
+
+    def on_batch_end(self, epoch, phase, batch, step, outputs):
+        metrics = {k: round(outputs[k].item(), 4) for k in self.keys}
+        utils.log(f'[Epoch {epoch} | {phase.capitalize()} batch {batch}] {metrics}')
+
+    def on_phase_end(self, epoch, phase, *args, **kwargs):
+        utils.log(f'End epoch {epoch} {phase} phase')
+
+    def on_epoch_end(self, epoch, *args, **kwargs):
+        utils.log(f'End epoch {epoch}')
+
+    def on_train_end(self, *args, **kwargs):
+        utils.log('Training complete')
 
 
 class PlotterCallback(Callback):
 
-    def __init__(self, keys):
+    def __init__(self, keys, update_interval=1):
+        self.update_interval = update_interval
 
         # history[key][phase][step] = [values]
         self.history = {
-            key: {ph: defaultdict(list) for ph in ['train', 'test', 'val']}
+            key: {p: defaultdict(list) for p in ['train', 'test', 'val']}
                 for key in keys
         }
         self.output_dir = Path('./outputs')
         self.output_dir.mkdir(exist_ok=True, parents=True)
-
         self._init_plot()
 
     def on_batch_end(self, epoch, phase, batch, step, outputs):
         phase = str(phase).lower()
-
         for key in self.history:
             if key == 'mat_pred':
                 outputs = ensure_material_map(outputs)
             val = float(outputs[key].float().norm().item())
             self.history[key][phase][step].append(val)
-
-        self._update_plot()
+        if batch % self.update_interval == 0:
+            self._update_plot()
 
     def on_phase_end(self, epoch, phase):
         self._save_plot()
 
-    def _init_plot(self):
-        plt.ion()
+    def _init_plot(self, n_cols=3):
+        import math
         n_axes = len(self.history.keys())
+        n_rows = int(math.ceil(n_axes / n_cols))
         self.fig, self.axes = mpl_viz.subplot_grid(
-            1, n_axes, ax_height=3, ax_width=3,
-            spacing=(0.5, 1.5),
-            padding=(0.75, 0.75, 0.5, 0.25)
+            n_rows, n_cols, ax_height=2.5, ax_width=2,
+            spacing=(1.0, 1.0),
+            padding=(1.0, 0.5, 0.5, 0.5) # lrbt
         )
+        axes_flat = self.axes.flatten()
+        for i, key in enumerate(self.history.keys()):
+            ax = axes_flat[i]
+            ax.set_xlabel('step')
+            ax.set_title(key)
+
+        self.fig.canvas.draw()
 
     def _update_plot(self):
         for ax in self.axes.flatten():
             ax.clear()
 
+        axes_flat = self.axes.flatten()
         for i, key in enumerate(self.history):
-            ax = self.axes[0,i]
+            ax = axes_flat[i]
             for phase in ['train', 'val', 'test']:
                 data = self.history[key][phase]
                 if not data:
                     continue
-                items = list(data.items()) # [(step, [values])]
-                items.sort(key=lambda x: x[0])
+                items = sorted(data.items(), key=lambda x: x[0])
                 steps = [s for s, _ in items]
                 means = [float(np.mean(v)) for _, v in items]
                 ax.plot(steps, means, label=phase)
-            ax.set_ylabel(key)
+            ax.set_title(key)
 
         for ax in self.axes.flatten():
             ax.set_xlabel('step')
@@ -141,7 +197,6 @@ class PlotterCallback(Callback):
 
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
-        self.fig.tight_layout()
 
     def _save_plot(self):
         out = self.output_dir / 'training_plot.png'
@@ -150,8 +205,9 @@ class PlotterCallback(Callback):
 
 class ViewerCallback(Callback):
 
-    def __init__(self, keys, n_labels=5, apply_mask=True, **kwargs):
+    def __init__(self, keys, update_interval=10, n_labels=5, apply_mask=True, **kwargs):
         from .visual.matplotlib import SliceViewer
+        self.update_interval = update_interval
 
         self.output_dir = Path('./outputs')
         self.output_dir.mkdir(exist_ok=True, parents=True)
@@ -181,6 +237,8 @@ class ViewerCallback(Callback):
         self.apply_mask = apply_mask
 
     def on_batch_end(self, epoch, phase, batch, step, outputs):
+        if batch % self.update_interval != 0:
+            return
 
         for key, viewer in self.viewers.items():
             if key.startswith('mat_pred'):
@@ -227,7 +285,9 @@ class EvaluatorCallback(Callback):
             'phase': str(phase),
             'batch': int(batch),
             'step': int(step),
-            'loss': float(outputs['loss'].item())
+            'loss': float(outputs['loss'].item()),
+            'loss_base': float(outputs['loss_base'].item()),
+            'loss_ratio': float(outputs['loss_ratio'].item())
         }
         outputs = ensure_material_map(outputs)
         for k in range(batch_size):

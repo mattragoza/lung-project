@@ -125,7 +125,10 @@ def run_training(examples, config):
         where='training'
     )
     from . import datasets, models, training, evaluation, physics
+
     import torch
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.benchmark = True
 
     utils.log('Running training')
     config = config.copy()
@@ -163,9 +166,14 @@ def run_training(examples, config):
     model = models.build_model(task, model_kws)
 
     n_params = models.count_params(model)
-    utils.pprint(n_params)
-    #n_activs = models.count_activations(model, train_set[0]['image'].unsqueeze(0))
+    utils.log(n_params)
+
+    #I, J, K = train_set[0]['mask'].shape[-3:]
+    #rand_input = torch.randn(1, task.in_channels, I, J, K)
+    #n_activs = models.count_activations(model, rand_input)
+    #utils.log(n_activs)
     #n_bytes  = (n_params + n_activs) * 2 * 4
+    #utils.log(n_bytes // 2**30, 'GiB')
 
     optimizer_kws = config.get('optimizer', {}).copy()
     optimizer_cls = getattr(torch.optim, optimizer_kws.pop('_class'))
@@ -183,10 +191,11 @@ def run_training(examples, config):
 
     evaluator_kws = config.get('evaluator', {})
     callbacks = [
-        evaluation.LoggerCallback(),
-        evaluation.PlotterCallback(keys=task.plotter_keys),
+        evaluation.LoggerCallback(keys=task.metric_keys),
+        evaluation.PlotterCallback(keys=task.metric_keys),
         evaluation.ViewerCallback(keys=task.viewer_keys),
-        evaluation.EvaluatorCallback(**evaluator_kws)
+        evaluation.EvaluatorCallback(**evaluator_kws),
+        evaluation.TimerCallback(),
     ]
 
     trainer_kws = config.get('trainer', {}).copy()

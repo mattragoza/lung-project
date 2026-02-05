@@ -5,9 +5,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-torch.backends.cudnn.enabled = True
-torch.backends.cudnn.benchmark = True
-
 from .core import utils, transforms
 
 def _to_numpy(x):
@@ -20,10 +17,10 @@ class TaskSpec:
 
     def __init__(
         self,
-        inputs: List[str],
+        inputs:  List[str],
         targets: List[str],
-        losses: Dict[str, str],
-        weights: Dict[str, float]=None
+        losses:  Dict[str, str],
+        weights: Dict[str, float] = None
     ):
         self.inputs  = inputs
         self.targets = targets
@@ -32,19 +29,32 @@ class TaskSpec:
         self._validate()
 
     def _validate(self):
-        print(self.inputs)
-        print(self.targets)
-        print(self.losses)
+        utils.log(f'Inputs:  {self.inputs}')
         for input_ in self.inputs:
             assert input_ in {'image', 'material'}, input_
+
+        utils.log(f'Targets: {self.targets}')
         for target in self.targets:
             assert target in {'image', 'material', 'E', 'logE'}, target
+            assert target in self.losses, target
+
+        utils.log(f'Losses:  {self.losses}')
         for target, loss in self.losses.items():
             assert target in self.targets, (target, loss)
             assert loss.lower() in {'ce', 'mse', 'msre', 'sim'}, (target, loss)
+            if loss.lower() == 'sim':
+                assert target in {'E', 'logE'}, (target, loss)
+
         for target, weight in self.weights.items():
             assert target in self.targets, (target, weight)
             assert weight >= 0.0, (target, weight)
+
+    @property
+    def has_physics_loss(self):
+        for target, loss in self.losses.items():
+            if loss.lower() == 'sim':
+                return True
+        return False
 
     @property
     def in_channels(self) -> int:
@@ -73,9 +83,6 @@ class TaskSpec:
         elif input_ == 'material':
             return 'mat_true' if visual else 'mat_onehot'
         raise ValueError(input_)
-
-    def input_keys(self, *args, **kwargs) -> List[str]:
-        return [self.input_key(x, *args, **kwargs) for x in self.inputs]
 
     def output_key(self, target: str, visual: bool=False) -> str:
         if target == 'E':
@@ -108,15 +115,26 @@ class TaskSpec:
         return 0.0
 
     @property
-    def plotter_keys(self) -> List[str]:
-        return ['loss', 'loss_ratio']
+    def metric_keys(self) -> List[str]:
+        keys = ['loss', 'loss_base', 'loss_ratio', 'grad_norm']
+        for tgt in self.targets:
+            output_key = self.output_key(tgt)
+            target_key = self.target_key(tgt)
+            keys.append(output_key + '.mean')
+            keys.append(output_key + '.std')
+            keys.append(target_key + '.mean')
+            keys.append(target_key + '.std')
+        return keys 
 
     @property
     def viewer_keys(self) -> List[str]:
-        keys = self.input_keys(visual=True)
-        for t in self.targets:
-            output_key = self.output_key(t, visual=True)
-            target_key = self.target_key(t, visual=True)
+        keys = []
+        for inp in self.inputs:
+            input_key = self.input_key(inp, visual=True)
+            keys.append(input_key)
+        for tgt in self.targets:
+            output_key = self.output_key(tgt, visual=True)
+            target_key = self.target_key(tgt, visual=True)
             keys.extend([output_key, target_key])
         return keys
 
@@ -133,7 +151,6 @@ class Trainer:
         test_loader: torch.utils.data.DataLoader=None,
         val_loader: torch.utils.data.DataLoader=None,
         callbacks: torch.utils.data.DataLoader=None,
-        eval_physics=True,
         output_dir='checkpoints',
         device='cuda'
     ):
@@ -141,7 +158,6 @@ class Trainer:
         self.model = model.to(device)
         self.optimizer = optimizer
         self.physics_adapter = physics_adapter
-        self.eval_physics = eval_physics
 
         self.train_loader = train_loader
         self.test_loader = test_loader
@@ -155,6 +171,8 @@ class Trainer:
 
         self.epoch = 0 # number of complete epochs
         self.step  = 0 # number of optimizer steps
+
+        self.timer = utils.Timer()
 
     # ----- training loop / phases -----
 
@@ -188,19 +206,28 @@ class Trainer:
         self.start_phase(phase='train')
 
         for i, batch in enumerate(self.train_loader):
-            self.start_batch(phase='train', batch=i, loader=self.train_loader)
+            self.start_batch(phase='train', batch=i)
 
-            self.optimizer.zero_grad()
-            outputs = self.forward(batch)
+            self.start_forward()
+            outputs = self.forward(batch, eval_mode=False)
+            self.end_forward()
 
             loss = outputs['loss']
             if not torch.isfinite(loss):
                 raise RuntimeError(f'Invalid loss: {loss.item()}')
 
+            self.start_backward()
             loss.backward()
-            self.optimizer.step()
-            self.step += 1
+            self.end_backward()
 
+            grad_norm = param_grad_norm(self.model)
+            if not torch.isfinite(grad_norm):
+                raise RuntimeError(f'Invalid grad_norm: {grad_norm.item()}')
+            outputs['grad_norm'] = grad_norm
+
+            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
+            self.step += 1
             self.end_batch(phase='train', batch=i, outputs=outputs)
 
         self.end_phase(phase='train')
@@ -210,9 +237,13 @@ class Trainer:
         self.start_phase(phase='test')
 
         for i, batch in enumerate(self.test_loader):
-            self.start_batch(phase='test', batch=i, loader=self.test_loader)
+            self.start_batch(phase='test', batch=i)
 
+            self.start_forward()
             outputs = self.forward(batch, eval_mode=True)
+            self.end_forward()
+
+            outputs['grad_norm'] = param_grad_norm(self.model)
 
             self.end_batch(phase='test', batch=i, outputs=outputs)
 
@@ -223,13 +254,142 @@ class Trainer:
         self.start_phase(phase='val')
 
         for i, batch in enumerate(self.val_loader):
-            self.start_batch(phase='val', batch=i, loader=self.val_loader)
+            self.start_batch(phase='val', batch=i)
 
+            self.start_forward()
             outputs = self.forward(batch, eval_mode=True)
+            self.end_forward()
+
+            outputs['grad_norm'] = param_grad_norm(self.model)
 
             self.end_batch(phase='val', batch=i, outputs=outputs)
 
         self.end_phase(phase='val')
+
+    # ----- forward pass -----
+
+    def forward(self, batch, eval_mode=False):
+        batch_size = len(batch['example'])
+
+        device = self.device
+        mask = batch['mask'].to(device, dtype=torch.bool)
+
+        input_keys = [self.task.input_key(inp) for inp in self.task.inputs]
+        input_vals = [batch[k].to(device, dtype=torch.float) for k in input_keys]
+        inputs_cat = torch.cat(input_vals, dim=1)
+
+        preds = self.model.forward(inputs_cat)
+
+        outputs = {
+            'example':  batch['example'],
+            'mask':     batch['mask'].cpu(),
+            'mat_true': batch['mat_true'].cpu()
+        }
+        for k in input_keys:
+            if k not in outputs:
+                outputs[k] = batch[k].cpu()
+
+        # decide whether to run physics simulation
+        need_physics_loss = self.task.has_physics_loss
+        need_physics_eval = eval_mode and 'E_pred' in preds
+        run_physics = need_physics_loss or need_physics_eval
+
+        sim_loss = None
+        if run_physics: # compute displacement error via physics simulation
+            sim_loss = torch.zeros(batch_size, device=self.device, dtype=torch.float)
+            pde_outputs = [None] * batch_size
+
+            for k in range(batch_size):
+                sim_loss[k], pde_outputs[k] = self.physics_adapter.voxel_simulation_loss(
+                    mesh=batch['mesh'][k],
+                    unit_m=batch['example'][k].metadata['unit'],
+                    affine=batch['affine'][k],
+                    E_vox=preds['E_pred'][k],
+                    bc_spec=None
+                )
+
+            outputs['sim_loss'] = sim_loss.mean().detach().cpu()
+            outputs['pde'] = pde_outputs
+
+        # compute multi-task loss
+        total_loss = torch.zeros((), device=device)
+        total_base = torch.zeros((), device=device)
+
+        for tgt in self.task.targets:
+            output_key = self.task.output_key(tgt)
+            target_key = self.task.target_key(tgt)
+
+            y_pred = preds[output_key].to(device)
+            y_true = batch[target_key].to(device)
+            y_base = torch.full_like(y_pred, self.task.base_value(tgt), dtype=torch.float)
+
+            loss_name = self.task.losses[tgt].lower()
+            loss_weight = self.task.weights.get(tgt, 1.0)
+
+            if loss_name == 'ce':
+                loss = masked_cross_entropy(y_pred, y_true, mask)
+                base = masked_cross_entropy(y_base, y_true, mask)
+
+            elif loss_name == 'mse':
+                loss = mean_squared_error(y_pred, y_true, mask)
+                base = mean_squared_error(y_base, y_true, mask)
+
+            elif loss_name == 'msre':
+                loss = mean_squared_relative_error(y_pred, y_true, mask)
+                base = mean_squared_relative_error(y_base, y_true, mask)
+
+            elif loss_name == 'sim':
+                loss = sim_loss.mean()
+                base = 0.0
+            else:
+                raise ValueError(loss_name)
+
+            total_loss = total_loss + loss_weight * loss
+            if loss_name != 'u_sim':
+                total_base = total_base + loss_weight * base
+
+            if tgt in {'E', 'logE'}:
+                outputs['E_true'] = batch['E_true'].cpu()
+                outputs['E_pred'] = preds['E_pred'].cpu()
+                outputs['logE_true'] = batch['logE_true'].cpu()
+                outputs['logE_pred'] = preds['logE_pred'].cpu()
+            else:
+                outputs[output_key] = preds[output_key].cpu()
+                outputs[target_key] = batch[target_key].cpu()
+
+            m = mask.expand(-1, y_pred.shape[1], -1, -1, -1)
+            outputs[output_key + '.mean'] = torch.mean(y_pred[m].float()).detach().cpu()
+            outputs[output_key + '.std']  = torch.std(y_pred[m].float()).detach().cpu()
+
+            m = mask.expand(-1, y_true.shape[1], -1, -1, -1)
+            outputs[target_key + '.mean'] = torch.mean(y_true[m].float()).detach().cpu()
+            outputs[target_key + '.std']  = torch.std(y_true[m].float()).detach().cpu()
+
+        outputs['loss'] = total_loss
+        outputs['loss_base'] = total_base.detach().cpu()
+        outputs['loss_ratio'] = (total_loss / total_base.clamp_min(1e-12)).detach().cpu()
+        return outputs
+
+    # ----- saving / loading state -----
+
+    def save_state(self, path=None):
+        if path is None:
+            path = self.output_dir / f'checkpoint{self.epoch:05d}.pt'
+        utils.log(f'Saving {path}')
+        torch.save({
+            'epoch': self.epoch,
+            'model': self.model.state_dict(),
+            'optim': self.optimizer.state_dict()
+        }, path)
+
+    def load_state(self, path=None, epoch=None):
+        if path is None:
+            path = self.output_dir / f'checkpoint{epoch:05d}.pt'
+        utils.log(f'Loading {path}')
+        state = torch.load(path)
+        self.epoch = state['epoch']
+        self.model.load_state_dict(state['model'])
+        self.optimizer.load_state_dict(state['optim'])
 
     # ----- callback hooks -----
 
@@ -262,127 +422,41 @@ class Trainer:
         for cb in self.callbacks:
             cb.on_phase_end(self.epoch, phase)
 
-    def start_batch(self, phase: str, batch: int, loader):
+    def start_batch(self, phase: str, batch: int):
         for cb in self.callbacks:
-            cb.on_batch_start(self.epoch, phase, batch, self.step, loader=loader)
+            cb.on_batch_start(self.epoch, phase, batch, self.step)
 
     def end_batch(self, phase: str, batch: int, outputs):
         for cb in self.callbacks:
+            self.timer.tick(sync=False)
             cb.on_batch_end(self.epoch, phase, batch, self.step, outputs=outputs)
+            stats = self.timer.tick(sync=False)
+            utils.log(f'{cb.name}: {stats}')
 
-    # ----- forward pass -----
+    def start_forward(self):
+        for cb in self.callbacks:
+            cb.on_forward_start()
 
-    def forward(self, batch, eval_mode=False):
-        device = self.device
-        batch_size = len(batch['example'])
+    def end_forward(self):
+        for cb in self.callbacks:
+            cb.on_forward_end()
 
-        mask = batch['mask'].to(device, dtype=torch.bool)
+    def start_backward(self):
+        for cb in self.callbacks:
+            cb.on_backward_start()
 
-        input_keys = self.task.input_keys()
-        input_vals = [batch[k].to(device, dtype=torch.float) for k in input_keys]
-        inputs_cat = torch.cat(input_vals, dim=1)
+    def end_backward(self):
+        for cb in self.callbacks:
+            cb.on_backward_end()
 
-        preds = self.model.forward(inputs_cat)
 
-        outputs = {
-            'example':  batch['example'],
-            'mask':     batch['mask'].cpu(),
-            'mat_true': batch['mat_true'].cpu()
-        }
-        for k in input_keys:
-            outputs[k] = batch[k].cpu()
-
-        need_physics_loss = ('sim' in self.task.losses)
-        need_physics_eval = (self.eval_physics and eval_mode and 'E_pred' in preds)
-        run_physics = need_physics_loss or need_physics_eval
-
-        sim_loss = None
-        if run_physics: # compute displacement error via physics simulation
-            sim_loss = torch.zeros(batch_size, device=self.device, dtype=torch.float)
-            pde_outputs = [None] * batch_size
-
-            for k in range(batch_size):
-                sim_loss[k], pde_outputs[k] = self.physics_adapter.voxel_simulation_loss(
-                    mesh=batch['mesh'][k],
-                    unit_m=batch['example'][k].metadata['unit'],
-                    affine=batch['affine'][k],
-                    E_vox=preds['E_pred'][k],
-                    bc_spec=None
-                )
-
-            outputs['sim_loss'] = sim_loss.mean().detach().cpu()
-            outputs['pde'] = pde_outputs
-
-        total_loss = torch.zeros((), device=device)
-        total_base = torch.zeros((), device=device)
-
-        for t in self.task.targets:
-            output_key  = self.task.output_key(t)
-            target_key  = self.task.target_key(t)
-
-            x_pred = preds[output_key].to(device)
-            x_true = batch[target_key].to(device)
-            x_base = torch.full_like(x_pred, self.task.base_value(t), dtype=torch.float)
-
-            loss_name   = self.task.losses[t].lower()
-            loss_weight = self.task.weights.get(t, 1.0)
-
-            if loss_name == 'ce':
-                loss = masked_cross_entropy(x_pred, x_true, mask)
-                base = masked_cross_entropy(x_base, x_true, mask)
-
-            elif loss_name == 'mse':
-                loss = mean_squared_error(x_pred, x_true, mask)
-                base = mean_squared_error(x_base, x_true, mask)
-
-            elif loss_name == 'msre':
-                loss = mean_squared_relative_error(x_pred, x_true, mask)
-                base = mean_squared_relative_error(x_base, x_true, mask)
-
-            elif loss_name == 'sim':
-                loss = sim_loss.mean()
-                base = 0.0
-            else:
-                raise ValueError(loss_name)
-
-            total_loss = total_loss + loss_weight * loss
-            if loss_name != 'u_sim':
-                total_base = total_base + loss_weight * base
-
-            if t in {'E', 'logE'}:
-                outputs['E_true'] = batch['E_true'].cpu()
-                outputs['E_pred'] = preds['E_pred'].cpu()
-                outputs['logE_true'] = batch['logE_true'].cpu()
-                outputs['logE_pred'] = preds['logE_pred'].cpu()
-            else:
-                outputs[output_key] = preds[output_key].cpu()
-                outputs[target_key] = batch[target_key].cpu()
-
-        outputs['loss'] = total_loss
-        outputs['loss_base'] = total_base.detach().cpu()
-        outputs['loss_ratio'] = (total_loss / total_base.clamp_min(1e-12)).detach().cpu()
-        return outputs
-
-    # ----- saving / loading state -----
-
-    def save_state(self, path=None):
-        if path is None:
-            path = self.output_dir / f'checkpoint{self.epoch:05d}.pt'
-        utils.log(f'Saving {path}')
-        torch.save({
-            'epoch': self.epoch,
-            'model': self.model.state_dict(),
-            'optim': self.optimizer.state_dict()
-        }, path)
-
-    def load_state(self, path=None, epoch=None):
-        if path is None:
-            path = self.output_dir / f'checkpoint{epoch:05d}.pt'
-        utils.log(f'Loading {path}')
-        state = torch.load(path)
-        self.epoch = state['epoch']
-        self.model.load_state_dict(state['model'])
-        self.optimizer.load_state_dict(state['optim'])
+@torch.no_grad()
+def param_grad_norm(model):
+    norm2 = torch.zeros((), device='cpu')
+    for p in model.parameters():
+        if p.grad is not None:
+            norm2 += p.grad.pow(2).sum().cpu()
+    return norm2.pow(0.5)
 
 
 # ----- basic loss functions -----
