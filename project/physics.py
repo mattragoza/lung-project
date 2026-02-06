@@ -97,7 +97,8 @@ class PhysicsAdapter:
         self.pde_solver_kws = pde_solver_kws or {}
         self.pde_solver = self.make_pde_solver()
 
-        self.ctx_cache = {} if cache else None
+        self.use_cache = use_cache
+        self._cache = {}
 
     # ----- context / solver helpers -----
 
@@ -110,15 +111,16 @@ class PhysicsAdapter:
         )
 
     def get_context(self, mesh: meshio.Mesh, unit_m: float) -> PhysicsContext:
-        if self.ctx_cache is None:
-            return PhysicsContext(mesh, unit_m)
-        key = (str(mesh.path), round(unit_m, 4))
-        if key not in self.ctx_cache:
-            self.ctx_cache[key] = PhysicsContext(mesh, unit_m)
-        return self.ctx_cache[key]
+        if self.use_cache:
+            key = (str(mesh.path), round(unit_m, 4))
+            if key not in self._cache:
+                self._cache[key] = PhysicsContext(mesh, unit_m)
+            return self._cache[key]
+
+        return PhysicsContext(mesh, unit_m)
 
     def clear_cache(self):
-        self.ctx_cache.clear()
+        self._cache.clear()
 
     # ----- material / BCs / observations -----
 
@@ -173,9 +175,15 @@ class PhysicsAdapter:
         ctx = self.get_context(mesh, unit_m)
         rho = self.get_density(ctx)
         u_bc, u_obs = self.get_observations(ctx, bc_spec)
+        
+        if False:
+            mask = (torch.rand(rho.shape[0]) < p_obs).float()
+        else:
+            mask = torch.ones(rho.shape[0], dtype=torch.float)
+
         mu, lam = transforms.compute_lame_parameters(E, self.nu_value)
         self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
-        loss, outputs = self.pde_solver.loss(mu, lam, rho, u_bc, u_obs)
+        loss, outputs = self.pde_solver.loss(mu, lam, rho, u_bc, u_obs, mask)
         if ret_outputs:
             inputs = {'E': E, 'rho': rho, 'u_bc': u_bc, 'u_obs': u_obs}
             return loss, self._package(ctx, inputs, outputs)

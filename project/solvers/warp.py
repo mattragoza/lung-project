@@ -143,7 +143,7 @@ class WarpFEMSolver(base.PDESolver):
 
         return wp.to_torch(u_sim.dof_values)
 
-    def forward(self, mu, lam, rho, u_bc, u_obs):
+    def forward(self, mu, lam, rho, u_bc, u_obs, mask):
 
         with wp.ScopedDevice(self.device):
             mu = self.make_scalar_field(mu)
@@ -151,6 +151,7 @@ class WarpFEMSolver(base.PDESolver):
             rho = self.make_scalar_field(rho)
             u_bc = self.make_vector_field(u_bc)
             u_obs = self.make_vector_field(u_obs)
+            mask = self.make_scalar_field(mask)
 
             K = self.assemble_stiffness(mu, lam)
             f = self.assemble_forcing(rho)
@@ -173,7 +174,7 @@ class WarpFEMSolver(base.PDESolver):
                 arrays=[res.dof_values, u_sim.dof_values]
             )
             with tape:
-                loss = self.compute_loss(mu, lam, u_sim, u_obs)
+                loss = self.compute_loss(mu, lam, u_sim, u_obs, mask)
 
         outputs = {
             'u_sim': wp.to_torch(u_sim.dof_values),
@@ -300,25 +301,30 @@ class WarpFEMSolver(base.PDESolver):
             output=res.dof_values
         )
 
-    def compute_loss(self, mu, lam, u_sim, u_obs):
+    def compute_loss(self, mu, lam, u_sim, u_obs, mask):
         num = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
         den = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
 
         wp.fem.integrate(
             error_form,
-            fields={'u': u_sim, 'v': u_obs},
+            fields={'u': u_sim, 'v': u_obs, 'w': mask},
             domain=self.interior,
             output=num
         )
         if self.relative_loss:
             wp.fem.integrate(
                 norm2_form,
-                fields={'u': u_obs},
+                fields={'u': u_obs, 'w': mask},
                 domain=self.interior,
                 output=den
             )
         else:
-            wp.fem.integrate(volume_form, domain=self.interior, output=den)
+            wp.fem.integrate(
+                volume_form,
+                fields={'w': mask},
+                domain=self.interior,
+                output=den
+            )
 
         err = num / (den + self.eps_div)
         reg = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
@@ -383,20 +389,20 @@ def inner_form(s: wp.fem.Sample, u: wp.fem.Field, v: wp.fem.Field):
 
 
 @wp.fem.integrand
-def error_form(s: wp.fem.Sample, u: wp.fem.Field, v: wp.fem.Field):
-    e_s = u(s) - v(s)
-    return wp.dot(e_s, e_s)
+def error_form(s: wp.fem.Sample, u: wp.fem.Field, v: wp.fem.Field, w: wp.fem.Field):
+    r_s = u(s) - v(s)
+    return w(s) * wp.dot(r_s, r_s)
 
 
 @wp.fem.integrand
-def norm2_form(s: wp.fem.Sample, u: wp.fem.Field):
+def norm2_form(s: wp.fem.Sample, u: wp.fem.Field, w: wp.fem.Field):
     u_s = u(s)
-    return wp.dot(u_s, u_s)
+    return w(s) * wp.dot(u_s, u_s)
 
 
 @wp.fem.integrand
-def volume_form(s: wp.fem.Sample):
-    return 1.0
+def volume_form(s: wp.fem.Sample, w: wp.fem.Field):
+    return w(s)
 
 
 @wp.fem.integrand

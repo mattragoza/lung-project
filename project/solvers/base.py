@@ -43,8 +43,8 @@ class PDESolver:
     def zero_grad(self):
         raise NotImplementedError
 
-    def loss(self, mu, lam, rho, u_bc, u_obs):
-        loss, res, u_sim = PDELossFn.apply(self, mu, lam, rho, u_bc, u_obs)
+    def loss(self, mu, lam, rho, u_bc, u_obs, mask):
+        loss, res, u_sim = PDELossFn.apply(self, mu, lam, rho, u_bc, u_obs, mask)
         return loss, {'res': res, 'u_sim': u_sim}
 
 
@@ -58,12 +58,13 @@ class PDELossFn(torch.autograd.Function):
         lam: torch.Tensor,
         rho: torch.Tensor,
         u_bc: torch.Tensor,
-        u_obs: torch.Tensor
+        u_obs: torch.Tensor,
+        mask: torch.Tensor
     ):
         ctx.solver = solver
         ctx.tensors = (mu, lam, rho, u_bc, u_obs)
         solver.zero_grad()
-        outputs, ctx.context = solver.forward(mu, lam, rho, u_bc, u_obs)
+        outputs, ctx.context = solver.forward(mu, lam, rho, u_bc, u_obs, mask)
         return (
             outputs['loss'],
             outputs['res'].detach(),
@@ -85,7 +86,8 @@ class PDELossFn(torch.autograd.Function):
             _on_device(input_grads.get('lam'), lam.device),
             _on_device(input_grads.get('rho'), rho.device),
             _on_device(input_grads.get('u_bc'), u_bc.device),
-            _on_device(input_grads.get('u_obs'), u_obs.device)
+            _on_device(input_grads.get('u_obs'), u_obs.device),
+            None
         )
 
 
