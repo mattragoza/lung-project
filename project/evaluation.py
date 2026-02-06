@@ -259,8 +259,7 @@ class ViewerCallback(Callback):
 
 class EvaluatorCallback(Callback):
 
-    def __init__(self, eval_on_train: bool=False, n_labels: int=5):
-        self.eval_on_train = eval_on_train
+    def __init__(self, n_labels: int=5):
         self.n_labels = n_labels
 
         self.example_rows  = defaultdict(list)
@@ -270,12 +269,10 @@ class EvaluatorCallback(Callback):
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
     def on_batch_end(self, epoch, phase, batch, step, outputs):
-        if self.eval_on_train or phase.lower() != 'train':
-            self.evaluate(epoch, phase, batch, step, outputs)
+        self.evaluate(epoch, phase, batch, step, outputs)
 
     def on_phase_end(self, epoch, phase):
-        if self.eval_on_train or phase.lower() != 'train':
-            self.summarize(epoch, phase)
+        self.summarize(epoch, phase)
 
     @torch.no_grad()
     def evaluate(self, epoch, phase, batch, step, outputs):

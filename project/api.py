@@ -164,16 +164,8 @@ def run_training(examples, config):
     # instantiate model architecture
     model_kws = config.get('model', {})
     model = models.build_model(task, model_kws)
-
     n_params = models.count_params(model)
     utils.log(n_params)
-
-    #I, J, K = train_set[0]['mask'].shape[-3:]
-    #rand_input = torch.randn(1, task.in_channels, I, J, K)
-    #n_activs = models.count_activations(model, rand_input)
-    #utils.log(n_activs)
-    #n_bytes  = (n_params + n_activs) * 2 * 4
-    #utils.log(n_bytes // 2**30, 'GiB')
 
     optimizer_kws = config.get('optimizer', {}).copy()
     optimizer_cls = getattr(torch.optim, optimizer_kws.pop('_class'))
@@ -195,7 +187,7 @@ def run_training(examples, config):
         evaluation.PlotterCallback(keys=task.metric_keys),
         evaluation.ViewerCallback(keys=task.viewer_keys),
         evaluation.EvaluatorCallback(**evaluator_kws),
-        evaluation.TimerCallback(),
+        evaluation.TimerCallback()
     ]
 
     trainer_kws = config.get('trainer', {}).copy()

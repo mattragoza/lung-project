@@ -31,12 +31,11 @@ class TaskSpec:
     def _validate(self):
         utils.log(f'Inputs:  {self.inputs}')
         for input_ in self.inputs:
-            assert input_ in {'image', 'material'}, input_
+            assert input_ in {'image', 'material', 'mask'}, input_
 
         utils.log(f'Targets: {self.targets}')
         for target in self.targets:
             assert target in {'image', 'material', 'E', 'logE'}, target
-            assert target in self.losses, target
 
         utils.log(f'Losses:  {self.losses}')
         for target, loss in self.losses.items():
@@ -64,6 +63,8 @@ class TaskSpec:
                 total += self.image_channels
             elif input_ == 'material':
                 total += self.material_labels + 1
+            elif input_ == 'mask':
+                total += 1
             else:
                 raise ValueError(input_)
         return total
@@ -82,6 +83,8 @@ class TaskSpec:
             return 'img_true'
         elif input_ == 'material':
             return 'mat_true' if visual else 'mat_onehot'
+        elif input_ == 'mask':
+            return 'mask'
         raise ValueError(input_)
 
     def output_key(self, target: str, visual: bool=False) -> str:
