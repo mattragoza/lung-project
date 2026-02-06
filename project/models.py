@@ -25,10 +25,18 @@ def build_model(task, config):
 
     heads_cfg = config.get('heads', {})
     heads = {}
+
     for t in task.targets:
         if t in {'E', 'logE'}:
             head_kws = heads_cfg.get('elasticity', {})
-            head = ElasticityHead(backbone.out_channels, task.out_channels(t), **head_kws)
+            if head_kws.get('use_probs'):
+                in_channels = task.out_channels('material')
+            else:
+                in_channels = backbone.out_channels
+
+            head = ElasticityHead(in_channels, task.out_channels(t), **head_kws)
+            t = "elasticity"
+
         elif t == 'material':
             head_kws = heads_cfg.get(t, {})
             head = SegmentationHead(backbone.out_channels, task.out_channels(t), **head_kws)
@@ -51,9 +59,15 @@ class MultiTaskModel(nn.Module):
         feats = self.backbone(x)
 
         outputs = {}
+        if "material" in self.heads:
+            outputs.update(self.heads["material"](feats))
+
+        if "elasticity" in self.heads:
+            outputs.update(self.heads["elasticity"](feats, ctx=outputs))
+
         for name, head in self.heads.items():
-            out = head(feats)
-            outputs.update(out)
+            if name not in {"material", "elasticity"}:
+                outputs.update(head(feats))
 
         return outputs
 
@@ -67,17 +81,26 @@ class ElasticityHead(nn.Module):
         logE_mean=0.0,
         logE_std=1.0,
         logE_min=None,
-        logE_max=None
+        logE_max=None,
+        use_bias=True,
+        use_probs=False
     ):
         super().__init__()
-        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
+        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1, bias=use_bias)
         self.logE_mean = logE_mean
         self.logE_std  = logE_std
         self.logE_min  = logE_min
         self.logE_max  = logE_max
+        self.use_probs = use_probs
 
-    def forward(self, x):
-        z = self.conv(x)
+    def forward(self, x, ctx=None):
+        ctx = ctx or {}
+
+        if self.use_probs:
+            z = self.conv(ctx['mat_probs'])
+        else:
+            z = self.conv(x)
+
         logE = torch.clamp(
             z * self.logE_std + self.logE_mean,
             min=self.logE_min,
@@ -94,7 +117,9 @@ class SegmentationHead(nn.Module):
         self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
 
     def forward(self, x):
-        return {'mat_logits': self.conv(x)}
+        logits = self.conv(x)
+        probs = F.softmax(logits, dim=1)
+        return {'mat_logits': logits, 'mat_probs': probs}
 
 
 class RegressionHead(nn.Module):
