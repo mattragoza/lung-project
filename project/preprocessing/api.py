@@ -11,6 +11,7 @@ def _ensure_output(func, *args, force=False, **kwargs):
     if output_path is not None:
         output_exists = output_path.is_file()
     if force or not output_exists:
+        utils.log(f'INFO: {output_path} missing; Running stage {func.__name__}')
         return func(*args, **kwargs)
     utils.log(f'INFO: {output_path} exists; Skipping stage {func.__name__}')
 

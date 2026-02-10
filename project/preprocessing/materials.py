@@ -34,7 +34,7 @@ def build_material_catalog(add_background=True):
     mats['poisson_ratio'] = POISSON_RATIO # constant for now
 
     if add_background:
-        mats.loc[-1, :] = 0.
+        mats.loc[-1, :] = pd.NA
         mats.loc[-1, 'material_key'] = 'Background'
         mats.index += 1 # shift so background index is 0
 
@@ -47,7 +47,7 @@ def load_material_catalog(csv_path, add_background=True):
     mat_df = pd.read_csv(csv_path)
     assert set(mat_df.columns) >= set(req_cols)
     if add_background:
-        mat_df.loc[-1, :] = 0.
+        mat_df.loc[-1, :] = pd.NA
         mat_df.loc[-1, 'material_name'] = 'Background'
         mat_df.index += 1 # shift so background index is 0
     return mat_df.sort_index()

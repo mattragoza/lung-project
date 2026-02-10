@@ -187,7 +187,7 @@ def create_material_fields(regions_path, materials_path, mesh_path, output_path,
 def generate_volumetric_image(mask_path, output_path, config, random_seed=0):
     utils.check_keys(
         config,
-        valid={'material_catalog', 'intensity_model', 'texture_source', 'noise_model'},
+        valid={'material_catalog', 'texture_source', 'intensity_model', 'noise_model', 'use_simple'},
         where='image_generation'
     )
     from . import materials, textures, image_generation
@@ -195,32 +195,43 @@ def generate_volumetric_image(mask_path, output_path, config, random_seed=0):
     nifti = fileio.load_nibabel(mask_path)
     mask = nifti.get_fdata().astype(int)
 
-    utils.log('Loading material catalog')
     mat_df = materials.load_material_catalog(config['material_catalog'])
 
+    tex_path = config['texture_source']['annotations']
+    tex_df = textures.load_texture_annotations(tex_path)
+
+    use_solid = config['texture_source']['use_solid']
+    tex_cache = textures.TextureCache(tex_df)
+
+    proc_kws = config['texture_source']['preprocessing']
+    proc_spec = textures.PreprocessSpec(**proc_kws)
+
+    def texture_map(label: int):
+        tid = mat_df.loc[label].texture_id
+        return tex_cache.get(tid, use_solid, proc_spec)
+
     utils.log('Computing intensity model')
-    density = mat_df['density_val']
-    elastic = mat_df['elastic_val']    
-
     intensity_kws = config.get('intensity_model', {})
-    outputs = materials.compute_intensity_model(density, elastic, **intensity_kws)
-
+    outputs = materials.compute_intensity_model(
+        mat_df['density_val'], mat_df['elastic_val'], **intensity_kws
+    )
     mat_df['density_feat'] = outputs['density_feat']
     mat_df['elastic_feat'] = outputs['elastic_feat']
     mat_df['intensity_bias'] = outputs['intensity_bias']
     mat_df['intensity_range'] = outputs['intensity_range']
     utils.log(mat_df)
 
-    utils.log('Initializing texture cache')
-    tex_kws = config.get('texture_source', {})
-    tex_cache = textures.TextureCache(**tex_kws)
-
     utils.log('Generating volumetric image')
-    noise_kws = config.get('noise_model', {})
-
-    image = image_generation.generate_volumetric_image(
-        mask, nifti.affine, mat_df, tex_cache, **noise_kws, random_seed=random_seed
-    )
+    if config.get('use_simple', False):
+        rgb = not proc_spec.grayscale
+        image = image_generation.generate_simple_image(
+            mask, texture_map, seed=random_seed, rgb=rgb
+        )
+    else:
+        noise_kws = config.get('noise_model', {})
+        image = image_generation.generate_volumetric_image(
+            mask, nifti.affine, mat_df, tex_cache, **noise_kws, random_seed=random_seed
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, image, nifti.affine)
@@ -229,6 +240,7 @@ def generate_volumetric_image(mask_path, output_path, config, random_seed=0):
 def interpolate_image_fields(image_path, mesh_path, output_path, config):
     utils.check_keys(config, valid={'order', 'mode'}, where='image_interpolation')
     from ..core import transforms
+    from . import image_generation
     import scipy.ndimage
 
     nifti = fileio.load_nibabel(image_path)
@@ -240,13 +252,13 @@ def interpolate_image_fields(image_path, mesh_path, output_path, config):
     utils.log('Interpolating image at mesh vertices')
     pts_world = mesh.points
     pts_voxel = transforms.world_to_voxel_coords(pts_world, affine)
-    values = scipy.ndimage.map_coordinates(image, pts_voxel.T, **config)
+    values = image_generation.interpolate_volume(image, pts_voxel, **config)
     mesh.point_data['image'] = values.astype(np.float32)
 
     utils.log('Interpolating image at tetra cell centroids')
     pts_world = mesh.points[mesh.cells_dict['tetra']].mean(axis=1)
     pts_voxel = transforms.world_to_voxel_coords(pts_world, affine)
-    values = scipy.ndimage.map_coordinates(image, pts_voxel.T, **config)
+    values = image_generation.interpolate_volume(image, pts_voxel, **config)
     mesh.cell_data['image'] = [values.astype(np.float32)]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

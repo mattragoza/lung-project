@@ -1,8 +1,109 @@
 from __future__ import annotations
+from typing import Dict
 import numpy as np
 import scipy.ndimage
 
 from ..core import utils
+
+
+def generate_simple_image(
+    mat_mask: np.ndarray,
+    texture_map: Dict[int, np.ndarray],
+    texel_scale: float = 1.0,
+    trans_sigma: float = 8.0,
+    interp_order: int = 1,
+    interp_mode: str = 'wrap',
+    seed: int = 0,
+    rgb = True
+):
+    mat_mask = np.asarray(mat_mask, dtype=int)
+    assert mat_mask.ndim == 3
+
+    I, J, K = mat_mask.shape
+    points = grid_coords((I, J, K)).astype(np.float32)
+
+    if rgb:
+        image = np.zeros((I, J, K, 3), dtype=np.float32)
+    else:
+        image = np.zeros((I, J, K), dtype=np.float32)
+
+    img_ctr = (np.array([I, J, K], dtype=np.float32) - 1) / 2
+
+    rng = np.random.default_rng(seed)
+
+    for label in sorted(np.unique(mat_mask)):
+        loc = (mat_mask == label)
+        try:
+            tex = texture_map(label)
+        except KeyError:
+            continue
+
+        img_pts = points[loc]
+        tex_ctr = (np.array(tex.shape[:3]) - 1) / 2
+        tex_pts = (img_pts - img_ctr) * texel_scale + tex_ctr
+
+        interp_pts = random_transform(tex_pts, trans_sigma, rng)
+        image[loc] = interpolate_volume(tex, interp_pts, interp_order, interp_mode)
+
+    return image
+
+
+def grid_coords(shape, axis=-1):
+    xs = (np.arange(n) for n in shape)
+    xs = np.meshgrid(*xs, indexing='ij')
+    return np.stack(xs, axis=axis)
+
+
+def random_transform(points, sigma=0, rng=None):
+    import scipy.stats as stats
+
+    points = np.asarray(points)
+    assert points.ndim == 2 and points.shape[-1] == 3
+
+    R = stats.special_ortho_group.rvs(3, random_state=rng)
+    t = rng.normal(scale=sigma, size=3)
+
+    center = points.mean(axis=0)
+    return (points - center) @ R.T + t + center
+
+
+def interpolate_volume(vol, points, order=1, mode='wrap', background=0):
+    import scipy.ndimage
+    vol, pts = np.asarray(vol), np.asarray(points)
+
+    assert vol.ndim in {3, 4}, vol.shape
+    rgb = (vol.ndim == 4)
+    if rgb:
+        assert vol.shape[-1] == 3, vol.shape
+
+    assert pts.ndim == 2 and pts.shape[-1] == 3, pts.shape
+    
+    if not rgb:
+        return scipy.ndimage.map_coordinates(
+            input=vol,
+            coordinates=pts.T,
+            order=order,
+            prefilter=(order > 1),
+            mode=mode,
+            cval=background
+        )
+
+    out_shape = (pts.shape[0], 3)
+    out = np.full(out_shape, background, dtype=vol.dtype)
+    
+    for c in range(3):
+        out[:,c] = scipy.ndimage.map_coordinates(
+            input=vol[...,c],
+            coordinates=pts.T,
+            order=order,
+            prefilter=(order > 1),
+            mode=mode,
+            cval=background
+        )
+    return out
+
+
+## DEPRECATED
 
 
 def generate_volumetric_image(
@@ -69,7 +170,8 @@ def generate_volumetric_image(
     # global multiplicative noise
     image *= (1.0 + mul_noise)
 
-    image = scipy.ndimage.gaussian_filter(image, sigma=psf_sigma, mode='wrap')
+    if psf_sigma > 0:
+        image = scipy.ndimage.gaussian_filter(image, sigma=psf_sigma, mode='wrap')
 
     # global additive noise
     image += add_noise
@@ -100,16 +202,16 @@ def bandlimited_noise(shape, corr_len, rng, eps=1e-12):
     return zf
 
 
-def compute_blend_weights(mat_mask, sigma):
+def compute_blend_weights(mat_mask, sigma, eps=1e-12):
     I, J, K = mat_mask.shape
     labels = np.unique(mat_mask)
     blend = np.zeros((len(labels), I, J, K), dtype=float)
     for i, label in enumerate(labels):
-        if i == 0:
-            blend[i] = (mat_mask == 0)
-        else:
+        if label > 0 and sigma > 0:
             binary = (mat_mask == label).astype(float)
-            filtered = scipy.ndimage.gaussian_filter(binary, sigma=sigma, mode='wrap')
+            filtered = scipy.ndimage.gaussian_filter(binary, sigma=sigma, mode='reflect')
             blend[i] = (mat_mask != 0) * filtered
-    return blend / (blend.sum(axis=0, keepdims=True) + 1e-12)
+        else:
+            blend[i] = (mat_mask == label)
+    return blend / (blend.sum(axis=0, keepdims=True) + eps)
 
