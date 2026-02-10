@@ -1,4 +1,4 @@
-from .core import utils
+from .core import utils, fileio
 
 
 class RunOutputs:
@@ -139,10 +139,14 @@ def run_training(examples, config):
     split_kws = config.get('split', {})
     train_ex, test_ex, val_ex = training.split_on_metadata(examples, **split_kws)
 
+    # TODO is there a better way to determine this?
+    img = fileio.load_nibabel(examples[0].paths['input_image']).get_fdata()
+    rgb = (img.ndim == 4 and img.shape[-1] == 3)
+
     transform_kws = config.get('transform', {})
-    train_set  = datasets.torch.TorchDataset(train_ex, **transform_kws)
-    test_set   = datasets.torch.TorchDataset(test_ex, **transform_kws)
-    val_set    = datasets.torch.TorchDataset(val_ex, **transform_kws)
+    train_set  = datasets.torch.TorchDataset(train_ex, rgb=rgb, **transform_kws)
+    test_set   = datasets.torch.TorchDataset(test_ex, rgb=rgb, **transform_kws)
+    val_set    = datasets.torch.TorchDataset(val_ex, rgb=rgb, **transform_kws)
     collate_fn = datasets.torch.collate_fn
 
     loader_kws = config.get('loader', {})
@@ -159,7 +163,7 @@ def run_training(examples, config):
         val_loader = None
 
     task_kws = config.pop('task', {})
-    task = training.TaskSpec(**task_kws)
+    task = training.TaskSpec(rgb=rgb, **task_kws)
 
     # instantiate model architecture
     model_kws = config.get('model', {})

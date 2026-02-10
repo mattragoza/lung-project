@@ -244,11 +244,14 @@ class ViewerCallback(Callback):
             if key.startswith('mat_pred'):
                 outputs = ensure_material_map(outputs)
             array = _to_numpy(outputs[key])
-            assert array.ndim == 5, array.shape
-            array = array[0][0] # (B,C,I,J,K) -> (I,J,K)
             if self.apply_mask:
-                mask = _to_numpy(outputs['mask'][0][0])
+                mask = _to_numpy(outputs['mask'])
                 array = array * mask
+            assert array.ndim == 5, array.shape
+            if key in {'image', 'img_true', 'img_pred'} and array.shape[1] == 3: # RGB
+                array = array[0] # (B,C,I,J,K) -> (C,I,J,K)
+            else:
+                array = array[0][0] # (B,C,I,J,K) -> (I,J,K)
             viewer.update_array(array)
 
     def on_phase_end(self, epoch, phase):

@@ -63,9 +63,11 @@ class SliceViewer:
         array = np.asarray(array)
     
         if array.ndim == 4:
-            C, I, J, K = array.shape
-            if C != 3:
+            if array.shape[0] != 3 and array.shape[3] == 3:
+                array = array.transpose(3,0,1,2)
+            if array.shape[0] != 3:
                 raise ValueError(array.shape)
+            _, I, J, K = array.shape
             self.rgb = True
     
         elif array.ndim == 3:
@@ -98,8 +100,7 @@ class SliceViewer:
             self.im_i = self.ax_i.imshow(self.array[i,:,:].T, origin='lower', **self.imshow_kws)
             self.im_j = self.ax_j.imshow(self.array[:,j,:].T, origin='lower', **self.imshow_kws)
             self.im_k = self.ax_k.imshow(self.array[:,:,k].T, origin='lower', **self.imshow_kws)
-
-        plt.colorbar(self.im_k, cax=self.cbar_ax)
+            plt.colorbar(self.im_k, cax=self.cbar_ax)
 
         # crosshair lines
         self.v_i_j = self.ax_i.axvline(j, **self.j_line_kws)
@@ -124,7 +125,6 @@ class SliceViewer:
     def update_images(self):
         if not self._initialized:
             return self.init_images()
-
         i, j, k = self.index
 
         if self.rgb:

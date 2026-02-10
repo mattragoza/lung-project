@@ -17,7 +17,8 @@ class TorchDataset(torch.utils.data.Dataset):
         image_std=1.0,
         apply_mask=False,
         do_augment=False,
-        use_cache=False
+        use_cache=False,
+        rgb=False
     ):
         self.examples = examples
 
@@ -28,6 +29,7 @@ class TorchDataset(torch.utils.data.Dataset):
         self.apply_mask = apply_mask
         self.do_augment = do_augment
 
+        self.rgb = rgb
         self.use_cache = use_cache
         self._cache = {}
 
@@ -53,11 +55,17 @@ class TorchDataset(torch.utils.data.Dataset):
         material = fileio.load_nibabel(ex.paths['material_mask'])
         mesh     = fileio.load_meshio(ex.paths['interp_mesh'])
 
+        if self.rgb:
+            assert image.ndim == 4 and image.shape[-1] == 3
+        else:
+            assert image.ndim == 3
+            image = image[...,None]
+
         def _as_cpu_tensor(a, dtype):
             return torch.as_tensor(a, dtype=dtype, device='cpu')
 
         affine_t   = _as_cpu_tensor(image.affine, dtype=torch.float) # (4, 4)
-        image_t    = _as_cpu_tensor(image.get_fdata(), dtype=torch.float).unsqueeze(0)   # (1, I, J, K)
+        image_t    = _as_cpu_tensor(image.get_fdata(), dtype=torch.float).permute(3,0,1,2) # (C, I, J, K)
         material_t = _as_cpu_tensor(material.get_fdata(), dtype=torch.long).unsqueeze(0) # (1, I, J, K)
 
         mask_t = (material_t > 0)

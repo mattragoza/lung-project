@@ -12,20 +12,20 @@ def _to_numpy(x):
 
 
 class TaskSpec:
-    image_channels = 1
-    material_labels = 5
 
     def __init__(
         self,
         inputs:  List[str],
         targets: List[str],
         losses:  Dict[str, str],
-        weights: Dict[str, float] = None
+        weights: Dict[str, float] = None,
+        rgb: bool = False
     ):
         self.inputs  = inputs
         self.targets = targets
         self.losses  = losses
         self.weights = weights or {}
+        self.rgb = rgb
         self._validate()
 
     def _validate(self):
@@ -54,6 +54,14 @@ class TaskSpec:
             if loss.lower() == 'sim':
                 return True
         return False
+
+    @property
+    def image_channels(self):
+        return 3 if self.rgb else 1
+
+    @property
+    def material_labels(self):
+        return 5
 
     @property
     def in_channels(self) -> int:

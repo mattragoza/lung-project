@@ -142,6 +142,7 @@ def compute_cell_volume(verts, cells):
 
 
 def compute_node_adjacency(verts, cells, volume):
+
     inds, vals = [], []
     for c, vert_inds in enumerate(cells):
         for v in vert_inds:
@@ -158,13 +159,25 @@ def compute_node_adjacency(verts, cells, volume):
 
 
 def node_to_cell_values(cells, node_vals):
+    assert cells.ndim == 2 and cells.shape[-1] == 4, cells.shape
+    assert node_vals.ndim in {1, 2}, node_vals.shape
     return node_vals[cells].mean(axis=1)
 
 
 def cell_to_node_values(cells_to_nodes, cell_vals, eps=1e-12):
-    num = cells_to_nodes @ cell_vals
-    den = cells_to_nodes.sum(axis=1)
-    return num / np.maximum(den, eps)
+    assert cell_vals.ndim in {1, 2}
+
+    if cell_vals.ndim == 1:
+        cell_vals = cell_vals[:,None]
+        do_squeeze = True
+    else:
+        do_squeeze = False
+
+    num = cells_to_nodes @ cell_vals # (N, C) x (C, D) -> (N, D)
+    den = cells_to_nodes.sum(axis=1) # (N, C) -> (N,)
+    out = num / np.maximum(den, eps)[:,None]
+
+    return out[:,0] if do_squeeze else out
 
 
 def cell_to_node_labels(verts, cells, cell_labels):
