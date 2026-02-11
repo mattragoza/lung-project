@@ -18,6 +18,7 @@ class TorchDataset(torch.utils.data.Dataset):
         apply_mask=False,
         do_augment=False,
         use_cache=False,
+        n_mat_labels=5,
         rgb=False
     ):
         self.examples = examples
@@ -29,7 +30,9 @@ class TorchDataset(torch.utils.data.Dataset):
         self.apply_mask = apply_mask
         self.do_augment = do_augment
 
+        self.n_mat_labels = n_mat_labels
         self.rgb = rgb
+
         self.use_cache = use_cache
         self._cache = {}
 
@@ -56,9 +59,9 @@ class TorchDataset(torch.utils.data.Dataset):
         mesh     = fileio.load_meshio(ex.paths['interp_mesh'])
 
         if self.rgb:
-            assert image.ndim == 4 and image.shape[-1] == 3
+            assert image.ndim == 4 and image.shape[-1] == 3, image.shape
         else:
-            assert image.ndim == 3
+            assert image.ndim == 3, image.shape
             image = image[...,None]
 
         def _as_cpu_tensor(a, dtype):
@@ -71,7 +74,9 @@ class TorchDataset(torch.utils.data.Dataset):
         mask_t = (material_t > 0)
 
         # (1, I, J, K) -> (I, J, K) -> (I, J, K, C) -> (C, I, J, K)
-        mat_onehot_t = F.one_hot(material_t.squeeze(0), num_classes=6).permute(3,0,1,2)
+        mat_onehot_t = F.one_hot(
+            material_t.squeeze(0), num_classes=self.n_mat_labels + 1
+        ).permute(3,0,1,2)
 
         if self.normalize:
             image_t = (image_t - self.image_mean) / self.image_std
@@ -217,6 +222,9 @@ def accumulate_stats(loader, keys, use_mask=True):
         stats[k]['std'] = std
     
     return stats
+
+
+# NOT TESTED YET
 
 
 @torch.no_grad()

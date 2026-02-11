@@ -155,12 +155,12 @@ class PlotterCallback(Callback):
     def on_phase_end(self, epoch, phase):
         self._save_plot()
 
-    def _init_plot(self, n_cols=3):
+    def _init_plot(self, n_cols=4):
         import math
         n_axes = len(self.history.keys())
         n_rows = int(math.ceil(n_axes / n_cols))
         self.fig, self.axes = mpl_viz.subplot_grid(
-            n_rows, n_cols, ax_height=2.5, ax_width=2,
+            n_rows, n_cols, ax_height=2, ax_width=1.5,
             spacing=(1.0, 1.0),
             padding=(1.0, 0.5, 0.5, 0.5) # lrbt
         )
@@ -205,53 +205,60 @@ class PlotterCallback(Callback):
 
 class ViewerCallback(Callback):
 
-    def __init__(self, keys, update_interval=10, n_labels=5, apply_mask=True, **kwargs):
-        from .visual.matplotlib import SliceViewer
+    def __init__(
+        self,
+        keys,
+        update_interval=10,
+        apply_mask=True,
+        shift_rgb=True,
+        scale_rgb=1.0,
+        n_labels=5,
+        **kwargs
+    ):
         self.update_interval = update_interval
+
+        self.apply_mask = apply_mask
+        self.shift_rgb = shift_rgb
+        self.scale_rgb = scale_rgb
 
         self.output_dir = Path('./outputs')
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
-        import matplotlib.pyplot as plt
-        from matplotlib.colors import ListedColormap
-
-        colors = plt.get_cmap('tab10').colors
-        cmap = ListedColormap(colors[:n_labels])
-        cmap.set_under('white')
-        cmap.set_over('black')
-        cmap.set_bad('black')
-
-        self.viewers = {}
-        for k in keys:
-            if k in {'image', 'img_true', 'img_pred'}:
-                self.viewers[k] = SliceViewer(cmap='gray', clim=(-1, 1), title=k)
-            elif k in {'E', 'E_pred', 'E_true'}:
-                self.viewers[k] = SliceViewer(cmap='jet', clim=(0, 1e4), line_color='cmy', title=k)
-            elif k in {'logE', 'logE_pred', 'logE_true'}:
-                self.viewers[k] = SliceViewer(cmap='jet', clim=(2, 6), line_color='cmy', title=k)
-            elif k in {'material', 'mat_pred', 'mat_true'} or k.startswith('mat_pred'):
-                self.viewers[k] = SliceViewer(cmap=cmap, clim=(1, n_labels), title=k)
-            else:
-                self.viewers[k] = SliceViewer(cmap='seismic', clim=(-3, 3), title=k)
-
-        self.apply_mask = apply_mask
+        self._init_viewers(keys, n_labels)
 
     def on_batch_end(self, epoch, phase, batch, step, outputs):
-        if batch % self.update_interval != 0:
-            return
+        if batch % self.update_interval == 0:
+            self._update_viewers(outputs)
+
+    def _init_viewers(self, keys, n_labels):
+        from .visual.matplotlib import SliceViewer, get_color_kws
+        self.viewers = {}
+        for k in keys:
+            self.viewers[k] = SliceViewer(title=k, **get_color_kws(k))
+
+    def _update_viewers(self, outputs)
+        if self.apply_mask:
+            mask = _to_numpy(outputs['mask'][0])
 
         for key, viewer in self.viewers.items():
             if key.startswith('mat_pred'):
                 outputs = ensure_material_map(outputs)
-            array = _to_numpy(outputs[key])
-            if self.apply_mask:
-                mask = _to_numpy(outputs['mask'])
-                array = array * mask
+
+            array = _to_numpy(outputs[key][0])
             assert array.ndim == 5, array.shape
+
             if key in {'image', 'img_true', 'img_pred'} and array.shape[1] == 3: # RGB
-                array = array[0] # (B,C,I,J,K) -> (C,I,J,K)
+                if self.scale_rgb:
+                    array = array * self.scale_rgb
+                if self.shift_rgb: 
+                    array = (array + 1) / 2 # [-1, 1] -> [0, 1]
+                if self.apply_mask:
+                    array = array * mask
             else:
-                array = array[0][0] # (B,C,I,J,K) -> (I,J,K)
+                if self.apply_mask:
+                    array = array * mask
+                array = array[0]
+
             viewer.update_array(array)
 
     def on_phase_end(self, epoch, phase):

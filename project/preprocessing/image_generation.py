@@ -22,12 +22,8 @@ def generate_simple_image(
     I, J, K = mat_mask.shape
     points = grid_coords((I, J, K)).astype(np.float32)
 
-    if rgb:
-        image = np.zeros((I, J, K, 3), dtype=np.float32)
-    else:
-        image = np.zeros((I, J, K), dtype=np.float32)
-
-    img_ctr = (np.array([I, J, K], dtype=np.float32) - 1) / 2
+    shape = (I, J, K, 3) if rgb else (I, J, K)
+    image = np.zeros(shape, dtype=np.float32)
 
     rng = np.random.default_rng(seed)
 
@@ -39,6 +35,7 @@ def generate_simple_image(
             continue
 
         img_pts = points[loc]
+        img_ctr = (np.array([I, J, K], dtype=np.float32) - 1) / 2
         tex_ctr = (np.array(tex.shape[:3]) - 1) / 2
         tex_pts = (img_pts - img_ctr) * texel_scale + tex_ctr
 

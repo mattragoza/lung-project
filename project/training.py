@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 from .core import utils, transforms
 
+
 def _to_numpy(x):
     return x.detach().cpu().numpy() if torch.is_tensor(x) else np.asarray(x)
 
@@ -19,16 +20,21 @@ class TaskSpec:
         targets: List[str],
         losses:  Dict[str, str],
         weights: Dict[str, float] = None,
+        n_mat_labels: int = 5,
         rgb: bool = False
     ):
         self.inputs  = inputs
         self.targets = targets
         self.losses  = losses
         self.weights = weights or {}
+
+        self.n_mat_labels = n_mat_labels
         self.rgb = rgb
+
         self._validate()
 
     def _validate(self):
+
         utils.log(f'Inputs:  {self.inputs}')
         for input_ in self.inputs:
             assert input_ in {'image', 'material', 'mask'}, input_
@@ -61,7 +67,7 @@ class TaskSpec:
 
     @property
     def material_labels(self):
-        return 5
+        return self.n_mat_labels
 
     @property
     def in_channels(self) -> int:
@@ -334,32 +340,33 @@ class Trainer:
             y_true = batch[target_key].to(device)
             y_base = torch.full_like(y_pred, self.task.base_value(tgt), dtype=torch.float)
 
-            loss_name = self.task.losses[tgt].lower()
-            loss_weight = self.task.weights.get(tgt, 1.0)
+            if tgt in self.task.losses:
+                loss_name = self.task.losses[tgt].lower()
+                loss_weight = self.task.weights.get(tgt, 1.0)
 
-            if loss_name == 'ce':
-                loss = masked_cross_entropy(y_pred, y_true, mask)
-                base = masked_cross_entropy(y_base, y_true, mask)
+                if loss_name == 'ce':
+                    loss = masked_cross_entropy(y_pred, y_true, mask)
+                    base = masked_cross_entropy(y_base, y_true, mask)
 
-            elif loss_name == 'mse':
-                loss = mean_squared_error(y_pred, y_true, mask)
-                base = mean_squared_error(y_base, y_true, mask)
+                elif loss_name == 'mse':
+                    loss = mean_squared_error(y_pred, y_true, mask)
+                    base = mean_squared_error(y_base, y_true, mask)
 
-            elif loss_name == 'msre':
-                loss = mean_squared_relative_error(y_pred, y_true, mask)
-                base = mean_squared_relative_error(y_base, y_true, mask)
+                elif loss_name == 'msre':
+                    loss = mean_squared_relative_error(y_pred, y_true, mask)
+                    base = mean_squared_relative_error(y_base, y_true, mask)
 
-            elif loss_name == 'sim':
-                loss = sim_loss.mean()
-                base = 0.0
-            else:
-                raise ValueError(loss_name)
+                elif loss_name == 'sim':
+                    loss = sim_loss.mean()
+                    base = None
+                else:
+                    raise ValueError(loss_name)
 
-            total_loss = total_loss + loss_weight * loss
-            if loss_name != 'u_sim':
-                total_base = total_base + loss_weight * base
+                total_loss = total_loss + loss_weight * loss
+                if loss_name != 'sim':
+                    total_base = total_base + loss_weight * base
 
-            if tgt in {'E', 'logE'}:
+            if tgt in {'E', 'logE'}: # track both
                 outputs['E_true'] = batch['E_true'].cpu()
                 outputs['E_pred'] = preds['E_pred'].cpu()
                 outputs['logE_true'] = batch['logE_true'].cpu()

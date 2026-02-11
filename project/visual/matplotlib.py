@@ -425,3 +425,30 @@ def get_color_dict(brightness=0.5, saturation=1.0):
         'k': (l,l,l),
     }
 
+
+def get_label_cmap(n_labels: int):
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import ListedColormap
+    colors = plt.get_cmap('tab10')
+    assert n_labels <= len(colors), (n_labels, len(colors))
+    cmap = ListedColormap(colors[:n_labels])
+    cmap.set_under('white')
+    cmap.set_over('black')
+    return cmap
+
+
+def get_color_kws(key: str, n_labels: int=None):
+    if key in {'image', 'img_true', 'img_pred'}:
+        return dict(cmap='gray', clim=(-1, 1))
+
+    elif key in {'E', 'E_true', 'E_pred'}:
+        return dict(cmap='jet', clim=(0, 1e4), line_color='cmy')
+
+    elif key in {'logE', 'logE_true', 'logE_pred'}:
+        return dict(cmap='jet', clim=(2, 6), line_color='cmy')
+
+    elif key in {'material', 'mat_true'} or key.startswith('mat_pred'):
+        return dict(cmap=get_label_cmap(n_labels), clim=(1, n_labels))
+
+    return dict(cmap='seismic', clim=(-3, 3))
+
