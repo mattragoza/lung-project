@@ -39,7 +39,7 @@ def generate_simple_image(
         tex_ctr = (np.array(tex.shape[:3]) - 1) / 2
         tex_pts = (img_pts - img_ctr) * texel_scale + tex_ctr
 
-        interp_pts = random_transform(tex_pts, trans_sigma, rng)
+        interp_pts = random_rigid_transform(tex_pts, trans_sigma, rng)
         image[loc] = interpolate_volume(tex, interp_pts, interp_order, interp_mode)
 
     return image
@@ -51,7 +51,7 @@ def grid_coords(shape, axis=-1):
     return np.stack(xs, axis=axis)
 
 
-def random_transform(points, sigma=0, rng=None):
+def random_rigid_transform(points, sigma=0, rng=None):
     import scipy.stats as stats
 
     points = np.asarray(points)

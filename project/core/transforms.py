@@ -2,27 +2,56 @@ import numpy as np
 import torch
 
 
-def _as_tensor(a, b):
+def as_tensor(a, b):
     return torch.as_tensor(a, dtype=b.dtype, device=b.device)
 
 
-def _homogeneous(points):
+def grid_coords(shape, axis=-1, **kwargs):
     '''
     Args:
-        points: (..., D) input coords
+        shape: length D tuple of ints
+    Returns:
+        (..., D) array of grid indices
+    '''
+    module = torch if 'device' in kwargs else np
+    coords = (module.arange(n, **kwargs) for n in shape)
+    coords = module.meshgrid(*coords, indexing='ij')
+    return module.stack(coords, axis)
+
+
+def to_homo_coords(points):
+    '''
+    Args:
+        (..., D) coordinate array
     Returns:
         (..., D+1) homogeneous coords
     '''
-    if isinstance(points, torch.Tensor):
-        ones = torch.ones_like(points[...,:1])
-        return torch.cat([points, ones], dim=-1)
-    else:
-        points = np.asarray(points)
-        ones = np.ones_like(points[...,:1])
-        return np.concatenate([points, ones], axis=-1)
+    module = torch if torch.is_tensor(points) else np
+    ones = module.ones_like(points[...,:1])
+    return module.concatenate([points, ones], axis=-1)
 
 
-def build_affine_matrix(origin, spacing):
+def compute_bbox(points):
+    '''
+    Args:
+        points: (N, D) array of points
+    Returns:
+        bbox_min, bbox_extent
+    '''
+    assert points.ndim == 2
+    bbox_min = points.min(axis=0)
+    bbox_max = points.max(axis=0)
+    return bbox_min, (bbox_max - bbox_min)
+
+
+def to_affine_matrix(origin, spacing):
+    '''
+    Args:
+        origin:  (x0, y0, z0) point
+        spacing: (dx, dy, dz) vector
+    Returns:
+        (4, 4) voxel -> world matrix
+    '''
     ox, oy, oz = origin
     sx, sy, sz = spacing
     return np.array([
@@ -30,17 +59,30 @@ def build_affine_matrix(origin, spacing):
         [0., sy, 0., oy],
         [0., 0., sz, oz],
         [0., 0., 0., 1.],
-    ], dtype=float)
+    ], dtype=np.float32)
 
 
 def get_affine_origin(affine):
+    '''
+    Args:
+        affine: (4, 4) voxel -> world mapping
+    Returns:
+        (x0, y0, z0) origin point
+    '''
+    assert affine.shape == (4, 4)
     return affine[:3,3]
 
 
 def get_affine_spacing(affine):
-    if isinstance(affine, torch.Tensor):
-        return torch.linalg.norm(affine[:3,:3], dim=0)
-    return np.linalg.norm(affine[:3,:3], axis=0)
+    '''
+    Args:
+        affine: (4, 4) voxel -> world mapping
+    Returns:
+        (dx, dy, dz) spacing vector
+    '''
+    assert affine.shape == (4, 4)
+    module = torch if torch.is_tensor(affine) else np
+    return module.linalg.norm(affine[:3,:3], axis=0)
 
 
 def voxel_to_world_coords(points, affine):
@@ -52,11 +94,11 @@ def voxel_to_world_coords(points, affine):
         (N, 3) world coordinates
     '''
     assert affine.shape == (4, 4)
-    if isinstance(points, torch.Tensor):
-        A = _as_tensor(affine, points)
+    if torch.is_tensor(points):
+        A = as_tensor(affine, points)
     else:
         A = np.asarray(affine)
-    output = (A @ _homogeneous(points).T).T
+    output = (A @ to_homo_coords(points).T).T
     return output[:,:3] / output[:,3:4]
 
 
@@ -69,13 +111,13 @@ def world_to_voxel_coords(points, affine):
         (N, 3) voxel coordinates
     '''
     assert affine.shape == (4, 4)
-    if isinstance(points, torch.Tensor):
-        A = _as_tensor(affine, points)
-        H = _homogeneous(points)
+    if torch.is_tensor(points):
+        A = as_tensor(affine, points)
+        H = to_homo_coords(points)
         output = torch.linalg.solve(A, H.T).T
     else:
         A = np.asarray(affine)
-        H = _homogeneous(points)
+        H = to_homo_coords(points)
         output = np.linalg.solve(A, H.T).T
     return output[:,:3] / output[:,3:4]
 
@@ -88,8 +130,8 @@ def normalize_voxel_coords(points, shape, align_corners=True, flip_order=False):
     Returns:
         (N, D) coords normalized to [-1, 1]
     '''
-    if isinstance(points, torch.Tensor):
-        S = _as_tensor(shape, points)
+    if torch.is_tensor(points):
+        S = as_tensor(shape, points)
     else:
         points = np.asarray(points)
         S = np.asarray(shape)
@@ -111,13 +153,13 @@ def normalize_voxel_coords(points, shape, align_corners=True, flip_order=False):
 def get_grid_bounds(shape, affine, unit_m, align_corners=True):
     '''
     Return the upper and lower bounding corners of a grid
-    in world coordinates (in meters, NOT world units) using
+    in world coordinates (in *meters*, NOT world units) using
     the provided world affine matrix, 3D shape, and world unit.
     '''
     origin  = get_affine_origin(affine)
     spacing = get_affine_spacing(affine)
 
-    if isinstance(affine, torch.Tensor):
+    if torch.is_tensor(affine):
         shape = torch.as_tensor(shape)
     else:
         shape = np.asarray(shape)
@@ -142,7 +184,6 @@ def compute_cell_volume(verts, cells):
 
 
 def compute_node_adjacency(verts, cells, volume):
-
     inds, vals = [], []
     for c, vert_inds in enumerate(cells):
         for v in vert_inds:
@@ -151,7 +192,7 @@ def compute_node_adjacency(verts, cells, volume):
 
     inds = np.array(inds).T
     shape = len(verts), len(cells)
-    if isinstance(verts, torch.Tensor):
+    if torch.is_tensor(verts):
         return torch.sparse_coo_tensor(inds, vals, shape)
     else:
         import scipy.sparse
@@ -233,4 +274,52 @@ def compute_density_from_CT(ct, m_atten_ratio=1., density_water=1000.):
 
 def compute_emphysema_from_CT(ct, threshold=-950):
     return (ct <= threshold)
+
+
+def sample_rigid_transform(
+    do_rotate: bool,
+    do_reflect: bool,
+    sigma_trans: float,
+    center: tuple=None,
+    rng=None
+):
+    import scipy.stats as stats
+    rng = np.random.default_rng(rng)
+
+    if do_rotate and do_reflect:
+        R = stats.ortho_group.rvs(3, random_state=rng)
+    elif do_rotate:
+        R = stats.special_ortho_group.rvs(3, random_state=rng)
+    elif do_reflect:
+        R = np.diag(rng.choice([-1, 1], size=3))
+    else:
+        R = np.eye(3)
+
+    if not np.isclose(sigma_trans, 0):
+        t = rng.normal(0, sigma_trans, size=3)
+    else:
+        t = np.zeros(3)
+
+    R = R.astype(np.float32, copy=False)
+    t = t.astype(np.float32, copy=False)
+
+    if center is not None:
+        # p' = R @ (p - c) + c + t
+        c = np.asarray(center, dtype=np.float32)
+        t = t + c - R @ c
+
+    T = np.eye(4, dtype=np.float32)
+    T[:3,:3] = R
+    T[:3,3] = t
+    return T
+
+
+def apply_rigid_transform(points, transform):
+    assert transform.shape == (4, 4)
+    if torch.is_tensor(points):
+        T = as_tensor(transform, points)
+    else:
+        T = np.asarray(transform)
+    output = to_homo_coords(points) @ T.T
+    return output[:,:3] / output[:,3:4]
 

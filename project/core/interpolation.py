@@ -5,7 +5,7 @@ import torch
 def interpolate_image(
     image: torch.Tensor,
     points: torch.Tensor,
-    mode: str='bilinear',
+    mode: str='trilinear',
     padding: str='border',
     align_corners: bool=True,
     reshape: bool=True
@@ -21,12 +21,18 @@ def interpolate_image(
     from . import transforms
     import torch.nn.functional as F
 
+    assert image.ndim == 4, image.shape
+    assert points.ndim == 2 and points.shape[-1] == 3, points.shape
+
     points = transforms.normalize_voxel_coords(
-        points,
-        image.shape[1:],
+        points=points,
+        shape=image.shape[1:],
         align_corners=align_corners,
         flip_order=True
     )
+    if mode in {'trilinear', 'linear'}:
+        mode = 'bilinear'
+
     output = F.grid_sample(
         input=image[None,:,:,:,:],       # (B, C, I, J, K)
         grid=points[None,None,None,:,:], # (B, L, M, N, 3)
@@ -34,6 +40,7 @@ def interpolate_image(
         padding_mode=padding,
         align_corners=align_corners
     ) # (B, C, L, M, N)
+
     if reshape:
         return output[0,:,0,0,:].T # (N, C)
     else:

@@ -123,7 +123,7 @@ def pad_array_and_affine(array, affine, pad: int|float=0, value=0):
     array = np.pad(array, pad, mode='constant', constant_values=value)
     origin = np.array(affine[:3,3])
     spacing = np.diag(affine[:3,:3])
-    affine = transforms.build_affine_matrix(origin - pad * spacing, spacing)
+    affine = transforms.to_affine_matrix(origin - pad * spacing, spacing)
     return array, affine
 
 

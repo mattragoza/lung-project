@@ -1,6 +1,6 @@
 import numpy as np
 
-from ..core import utils
+from ..core import utils, transforms
 
 
 def infer_binvox_affine(binvox, points):
@@ -12,7 +12,7 @@ def infer_binvox_affine(binvox, points):
     utils.log(f'Binvox translate: {translate}')
     utils.log(f'Binvox scale:     {scale}')
 
-    bbox_min, bbox_extent = compute_bbox(points)
+    bbox_min, bbox_extent = transforms.compute_bbox(points)
 
     utils.log(f'Points bbox min:    {bbox_min}')
     utils.log(f'Points bbox extent: {bbox_extent}')
@@ -24,29 +24,11 @@ def infer_binvox_affine(binvox, points):
 
     spacing = scale ** power / shape
     origin = translate * sign + spacing / 2
-    affine = build_affine_matrix(origin, spacing)
+    affine = transforms.to_affine_matrix(origin, spacing)
 
     utils.log(affine)
     
     return affine
-
-
-def build_affine_matrix(origin, spacing):
-    ox, oy, oz = origin
-    sx, sy, sz = spacing
-    return np.array([
-        [sx, 0., 0., ox],
-        [0., sy, 0., oy],
-        [0., 0., sz, oz],
-        [0., 0., 0., 1.],
-    ], dtype=float)
-
-
-def compute_bbox(points):
-    bbox_min = points.min(axis=0)
-    bbox_max = points.max(axis=0)
-    bbox_extent = bbox_max - bbox_min
-    return bbox_min, bbox_extent
 
 
 def infer_sign(a, b, tol=1e-3):

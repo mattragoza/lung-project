@@ -12,14 +12,17 @@ class TorchDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         examples: List[Example],
-        normalize=False,
-        image_mean=0.0,
-        image_std=1.0,
-        apply_mask=False,
-        do_augment=False,
-        use_cache=False,
-        n_mat_labels=5,
-        rgb=False
+        normalize: bool = False,
+        image_mean: float = 0.0,
+        image_std:  float = 1.0,
+        apply_mask: bool = False,
+        do_augment: bool = False,
+        rand_rotate:  bool = False,
+        rand_reflect: bool = False,
+        sigma_trans: float = 0.0,
+        use_cache:  bool = False,
+        n_mat_labels: int = 5,
+        rgb: bool=False
     ):
         self.examples = examples
 
@@ -28,8 +31,14 @@ class TorchDataset(torch.utils.data.Dataset):
         self.image_mean = image_mean
         self.image_std  = image_std
         self.apply_mask = apply_mask
-        self.do_augment = do_augment
 
+        # data augmentation settings
+        self.do_augment   = do_augment
+        self.rand_rotate  = rand_rotate
+        self.rand_reflect = rand_reflect
+        self.sigma_trans  = sigma_trans
+
+        # expected data shapes
         self.n_mat_labels = n_mat_labels
         self.rgb = rgb
 
@@ -41,42 +50,41 @@ class TorchDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         ex = self.examples[idx]
-
         if self.use_cache:
-            key = id(ex)
-            if key not in self._cache:
-                self._cache[key] = self.load_example(ex)
-            return self._cache[key]
-
-        return self.load_example(ex)
+            if idx not in self._cache:
+                self._cache[idx] = self.load_example(ex)
+            out = self._cache[idx]
+        else:
+            out = self.load_example(ex)
+        if self.do_augment:
+            out = self.augment_sample(out)
+        return self.add_derived_keys(out)
 
     def clear_cache(self):
         self._cache.clear()
 
     def load_example(self, ex):
-        image    = fileio.load_nibabel(ex.paths['input_image'])
-        material = fileio.load_nibabel(ex.paths['material_mask'])
-        mesh     = fileio.load_meshio(ex.paths['interp_mesh'])
+        image = fileio.load_nibabel(ex.paths['input_image'])
+        matrl = fileio.load_nibabel(ex.paths['material_mask'])
+        mesh  = fileio.load_meshio(ex.paths['interp_mesh'])
 
+        image_a = image.get_fdata()
         if self.rgb:
-            assert image.ndim == 4 and image.shape[-1] == 3, image.shape
+            assert image_a.ndim == 4 and image_a.shape[-1] == 3
         else:
-            assert image.ndim == 3, image.shape
-            image = image[...,None]
+            assert image_a.ndim == 3
+            image_a = image_a[...,None] # add channel dim
+
+        matrl_a = matrl.get_fdata()
+        assert matrl_a.ndim == 3
 
         def _as_cpu_tensor(a, dtype):
             return torch.as_tensor(a, dtype=dtype, device='cpu')
 
-        affine_t   = _as_cpu_tensor(image.affine, dtype=torch.float) # (4, 4)
-        image_t    = _as_cpu_tensor(image.get_fdata(), dtype=torch.float).permute(3,0,1,2) # (C, I, J, K)
-        material_t = _as_cpu_tensor(material.get_fdata(), dtype=torch.long).unsqueeze(0) # (1, I, J, K)
-
-        mask_t = (material_t > 0)
-
-        # (1, I, J, K) -> (I, J, K) -> (I, J, K, C) -> (C, I, J, K)
-        mat_onehot_t = F.one_hot(
-            material_t.squeeze(0), num_classes=self.n_mat_labels + 1
-        ).permute(3,0,1,2)
+        affine_t = _as_cpu_tensor(image.affine, dtype=torch.float)
+        image_t  = _as_cpu_tensor(image_a, dtype=torch.float).permute(3,0,1,2)
+        matrl_t  = _as_cpu_tensor(matrl_a, dtype=torch.long).unsqueeze(0)
+        mask_t   = (matrl_t > 0)
 
         if self.normalize:
             image_t = (image_t - self.image_mean) / self.image_std
@@ -88,81 +96,101 @@ class TorchDataset(torch.utils.data.Dataset):
             'example':    ex,
             'affine':     affine_t,
             'img_true':   image_t, 
-            'mat_true':   material_t,
-            'mat_onehot': mat_onehot_t,
+            'mat_true':   matrl_t,
             'mask':       mask_t,
             'mesh':       mesh
         }
-        aligned_keys = ['img_true', 'mat_true', 'mat_onehot', 'mask']
 
         if 'elastic_field' in ex.paths:
-            elast = fileio.load_nibabel(ex.paths['elastic_field'])
-            elast_t = _as_cpu_tensor(elast.get_fdata(), dtype=torch.float).unsqueeze(0) # (1, I, J, K)
-            log_e_t = torch.log10(elast_t.clamp_min(1e-12))
-            sample['E_true']    = elast_t
-            sample['logE_true'] = log_e_t
-            aligned_keys.extend(['E_true', 'logE_true'])
+            elast_a = fileio.load_nibabel(ex.paths['elastic_field']).get_fdata()
+            elast_t = _as_cpu_tensor(elast_a, dtype=torch.float).unsqueeze(0)
+            sample['E_true'] = elast_t
 
-        if self.do_augment:
-            sample = augment_sample(sample, aligned_keys, max_shift=8, do_flip=True)
+        return sample
+
+    def augment_sample(self, sample, rng=None):
+        return apply_data_augmentation(
+            sample,
+            do_rotate=self.rand_rotate,
+            do_reflect=self.rand_reflect,
+            sigma_trans=self.sigma_trans,
+            rng=rng
+        )
+
+    def add_derived_keys(self, sample, eps=1e-12):
+        sample = sample.copy()
+
+        mat_label = sample['mat_true'][0].long() # (1, I, J, K) -> (I, J, K)
+        mat_onehot = F.one_hot(mat_label, self.n_mat_labels + 1) # (C, I, J, K)
+        sample['mat_onehot'] = mat_onehot.permute(3,0,1,2).float()
+
+        if 'E_true' in sample:
+            sample['logE_true'] = torch.log10(sample['E_true'].clamp_min(eps))
 
         return sample
 
 
-def augment_sample(sample, aligned_keys, max_shift=0, do_flip=False):
-    import random
+@torch.no_grad()
+def apply_data_augmentation(
+    sample: Dict[str, Any],
+    do_rotate: bool=False,
+    do_reflect: bool=False,
+    sigma_trans: float=0.0, # in voxels
+    device: str='cuda',
+    rng=None
+):
+    from ..core import transforms, interpolation
+
     sample = sample.copy()
+    if not (do_rotate or do_reflect) and np.isclose(sigma_trans, 0):
+        return sample
 
-    if max_shift > 0:
-        shift = (
-            random.randint(-max_shift, max_shift + 1),
-            random.randint(-max_shift, max_shift + 1),
-            random.randint(-max_shift, max_shift + 1)
-        )
-    else:
-        shift = (0, 0, 0)
+    # get voxel grid indices
+    mask = sample['mask'][0] # (I, J, K)
+    grid_ijk = transforms.grid_coords(mask.shape, device=device, dtype=torch.float)
+    grid_ijk = grid_ijk.reshape(-1, 3) # (N, 3)
 
-    if do_flip:
-        flip = (
-            random.randint(0, 1),
-            random.randint(0, 1),
-            random.randint(0, 1)
-        )
-    else:
-        flip = (0, 0, 0)
+    # convert voxel grid to world coordinates
+    A = sample['affine'].to(device=device, dtype=torch.float) # (4, 4)
+    grid_xyz = transforms.voxel_to_world_coords(grid_ijk, A)  # (N, 3)
 
-    for k in aligned_keys:
-        t = sample[k]
+    # get the object center (world coords) and max voxel size
+    center_xyz = grid_xyz[mask.ravel(),:].mean(0).cpu().numpy() # (3,)
+    voxel_size = transforms.get_affine_spacing(A).max().item()
 
-        if shift != (0, 0, 0):
-            t = translate(t, shift)
+    # randomly sample a rigid transformation
+    T = torch.as_tensor(transforms.sample_rigid_transform(
+        do_rotate=do_rotate,
+        do_reflect=do_reflect,
+        sigma_trans=sigma_trans * voxel_size,
+        center=center_xyz,
+        rng=rng
+    ), dtype=torch.float, device=device) # (4, 4)
 
-        if flip != (0, 0, 0):
-            flip_dims = tuple(np.nonzero(flip)[0] + 1)
-            t = torch.flip(t, dims=flip_dims)
+    # apply transformation to voxel grid in world space
+    B = T @ A
+    grid_xyz_T = transforms.voxel_to_world_coords(grid_ijk, B)
+    grid_ijk_T = transforms.world_to_voxel_coords(grid_xyz_T, A)
 
-        sample[k] = t
+    # resample volumes on transformed grid
+    def resample_volume(t, mode):
+        return interpolation.interpolate_image(
+            t.to(device, dtype=torch.float),
+            points=grid_ijk_T,
+            mode=mode,
+            reshape=False
+        ).reshape(t.shape).to(t.device, dtype=t.dtype)
+
+    sample['img_true'] = resample_volume(sample['img_true'], mode='linear')
+    sample['mat_true'] = resample_volume(sample['mat_true'], mode='nearest')
+    sample['mask'] = resample_volume(sample['mask'], mode='nearest')
+    if 'E_true' in sample:
+        sample['E_true'] = resample_volume(sample['E_true'], mode='linear')
+
+    # update affine to reflect new voxel -> world mapping
+    sample['affine'] = B
 
     return sample
-
-
-def translate(src, shift, pad_value=0):
-    C, X, Y, Z = src.shape
-    dx, dy, dz = shift
-    dst = torch.full(src.shape, pad_value, dtype=src.dtype)
-
-    x0_src = max(0, -dx); x1_src = min(X, X - dx)
-    y0_src = max(0, -dy); y1_src = min(Y, Y - dy)
-    z0_src = max(0, -dz); z1_src = min(Z, Z - dz)
-
-    x0_dst = max(0, dx); x1_dst = x0_dst + (x1_src - x0_src)
-    y0_dst = max(0, dy); y1_dst = y0_dst + (y1_src - y0_src)
-    z0_dst = max(0, dz); z1_dst = z0_dst + (z1_src - z0_src)
-
-    dst[:,x0_dst:x1_dst,y0_dst:y1_dst,z0_dst:z1_dst] = \
-        src[:,x0_src:x1_src,y0_src:y1_src,z0_src:z1_src]
-
-    return dst
 
 
 def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -222,115 +250,4 @@ def accumulate_stats(loader, keys, use_mask=True):
         stats[k]['std'] = std
     
     return stats
-
-
-# NOT TESTED YET
-
-
-@torch.no_grad()
-def apply_random_transform(
-    inputs,
-    rotate: bool=False,
-    mirror: bool=False,
-    translate: float=0,
-    crop_size: int=196,
-    device='cuda',
-    rng=None
-):
-    from ..core import transforms, interpolation
-    ex     = inputs['example']
-    image  = inputs['image'].to(device)  # (1, I, J, K)
-    mask   = inputs['mask'].to(device)   # (1, I, J, K)
-    elast  = inputs.get('elast')
-    elast  = elast.to(device) if elast is not None else None
-    affine = inputs['affine'].to(device) # (4, 4), world coords
-    mesh   = inputs['mesh'] # world coords
-
-    _, I, J, K = image.shape
-
-    if crop_size is not None: # get center crop indices
-        assert 0 < crop_size <= min(I, J, K)
-        i0 = (I - crop_size) // 2
-        j0 = (J - crop_size) // 2
-        k0 = (K - crop_size) // 2
-        i1 = i0 + crop_size
-        j1 = j0 + crop_size
-        k1 = k0 + crop_size
-    else:
-        i0, i1 = (0, I)
-        j0, j1 = (0, J)
-        k0, k1 = (0, K)
-
-    # construct voxel grid (possibly center-cropped)
-    ii, jj, kk = torch.meshgrid(
-        torch.arange(i0, i1, dtype=torch.float, device=device),
-        torch.arange(j0, j1, dtype=torch.float, device=device),
-        torch.arange(k0, k1, dtype=torch.float, device=device),
-        indexing='ij'
-    )
-    pts_voxel = torch.stack([ii, jj, kk], dim=-1) # (I, J, K, 3)
-    pts_voxel = pts_voxel.reshape(-1, 3)
-
-    # sample random rigid transform (only t is in voxel coords)
-    R, t = sample_rigid_transform(rotate, mirror, translate)
-    R = torch.from_numpy(R).to(dtype=torch.float, device=device)
-    t = torch.from_numpy(t).to(dtype=torch.float, device=device)
-    t_world = affine[:3,:3] @ t
-
-    # use PRE-crop center for rotation
-    ctr_voxel = torch.as_tensor(
-        [[(I-1)/2, (J-1)/2, (K-1)/2]], # (1, 3)
-        dtype=torch.float, device=device
-    )
-    ctr_world = transforms.voxel_to_world_coords(ctr_voxel, affine)
-
-    # apply the transform to grid points (in world coords)
-    pts_world = transforms.voxel_to_world_coords(pts_voxel, affine)
-    pts_w_rot = (pts_world - ctr_world) @ R.T + t_world + ctr_world
-    pts_v_rot = transforms.world_to_voxel_coords(pts_w_rot, affine)
-
-    # interpolate 3D image volumes on transformed grid points
-    image_out = interpolation.interpolate_image(image, pts_v_rot)
-    image_out = image_out.reshape(1, i1 - i0, j1 - j0, k1 - k0)
-    if elast is not None:
-        elast_out = interpolation.interpolate_image(elast, pts_v_rot)
-        elast_out = elast_out.reshape(1, i1 - i0, j1 - j0, k1 - k0)
-
-    mask_out = interpolation.interpolate_image(mask.float(), pts_v_rot, mode='nearest')
-    mask_out = mask_out.reshape(1, i1 - i0, j1 - j0, k1 - k0).int()
-
-    # also transform the mesh vertices (already in world coords)
-    mesh_out = mesh.copy()
-    vts_world = torch.as_tensor(mesh.points, dtype=torch.float, device=device)
-    vts_w_rot = (vts_world - ctr_world) @ R.T + t_world + ctr_world
-    mesh_out.points = vts_w_rot.detach().cpu().numpy()
-
-    output = {
-        'example': ex,
-        'affine': affine.cpu(),
-        'image': image_out.cpu(),
-        'mask':  mask_out.cpu(),
-        'mesh':  mesh_out,
-    }
-    if elast is not None:
-        output['elast'] = elast.cpu()
-
-    return output
-
-
-def sample_rigid_transform(rotate: bool, mirror: bool, translate: float, rng=None):
-    from scipy.stats import ortho_group, special_ortho_group
-    rng = np.random.default_rng(rng)
-
-    if rotate and mirror:
-        R = ortho_group.rvs(3, random_state=rng)
-    elif rotate:
-        R = special_ortho_group.rvs(3, random_state=rng)
-    elif mirror:
-        R = np.diag(rng.choice([-1., 1.], size=3))
-    else:
-        R = np.eye(3)
-
-    t = rng.normal(0., translate, size=3) if translate else np.zeros(3)
-    return R, t
 
