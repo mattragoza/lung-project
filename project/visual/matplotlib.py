@@ -429,7 +429,7 @@ def get_color_dict(brightness=0.5, saturation=1.0):
 def get_label_cmap(n_labels: int):
     import matplotlib.pyplot as plt
     from matplotlib.colors import ListedColormap
-    colors = plt.get_cmap('tab10')
+    colors = plt.get_cmap('tab10').colors
     assert n_labels <= len(colors), (n_labels, len(colors))
     cmap = ListedColormap(colors[:n_labels])
     cmap.set_under('white')

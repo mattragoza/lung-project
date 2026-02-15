@@ -116,7 +116,6 @@ class PhysicsAdapter:
             if key not in self._cache:
                 self._cache[key] = PhysicsContext(mesh, unit_m)
             return self._cache[key]
-
         return PhysicsContext(mesh, unit_m)
 
     def clear_cache(self):

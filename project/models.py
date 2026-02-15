@@ -6,7 +6,6 @@ import torch.nn.functional as F
 
 from .core import utils
 
-
 DEFAULT_KERNEL_SIZE = 3
 DEFAULT_RELU_LEAK = 0.01
 DEFAULT_NORM_TYPE = 'group'

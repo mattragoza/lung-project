@@ -3,15 +3,16 @@ import sys, time, random
 
 VERBOSE = True
 
-
 def set_verbose(val: bool):
     global VERBOSE
     VERBOSE = val
 
 
 def log(msg, end='\n'):
-    import torch
-    is_worker = torch.utils.data.get_worker_info()
+    is_worker = False
+    if 'torch' in sys.modules:
+        import torch
+        is_worker = torch.utils.data.get_worker_info()
     if VERBOSE and not is_worker:
         print(msg, end=end, file=sys.stdout, flush=True)
 

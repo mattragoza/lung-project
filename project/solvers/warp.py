@@ -32,7 +32,7 @@ class WarpFEMSolver(base.PDESolver):
 
     def __init__(
         self,
-        relative_loss: bool=True,
+        use_relative: bool=False,
         tv_reg_weight: float=0.0, # 1e-4 to 5e-2
         eps_reg: float=1e-3,
         eps_div: float=1e-12,
@@ -43,7 +43,7 @@ class WarpFEMSolver(base.PDESolver):
         vector_dtype=wp.vec3f,
         device=None
     ):
-        self.relative_loss = relative_loss
+        self.use_relative  = use_relative
         self.tv_reg_weight = tv_reg_weight
 
         self.eps_reg = eps_reg
@@ -311,7 +311,7 @@ class WarpFEMSolver(base.PDESolver):
             domain=self.interior,
             output=num
         )
-        if self.relative_loss:
+        if self.use_relative:
             wp.fem.integrate(
                 norm2_form,
                 fields={'u': u_obs, 'w': mask},
@@ -391,6 +391,19 @@ def inner_form(s: wp.fem.Sample, u: wp.fem.Field, v: wp.fem.Field):
 @wp.fem.integrand
 def error_form(s: wp.fem.Sample, u: wp.fem.Field, v: wp.fem.Field, w: wp.fem.Field):
     r_s = u(s) - v(s)
+    return w(s) * wp.dot(r_s, r_s)
+
+
+@wp.fem.integrand
+def rel_error_form(
+    s: wp.fem.Sample,
+    u: wp.fem.Field,
+    v: wp.fem.Field,
+    w: wp.fem.Field,
+    eps_div: float
+):
+    u_s, v_s = u(s), v(s)
+    r_s = (u_s - v_s) / (v_s + eps_div)
     return w(s) * wp.dot(r_s, r_s)
 
 

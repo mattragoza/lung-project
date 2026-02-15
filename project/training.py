@@ -516,7 +516,7 @@ def mean_squared_relative_error(pred, target, mask, eps=1e-12):
 
 def rmse(pred, target, mask):
     '''
-    RMSE = RMS(||pred - target||)
+    Root mean squared error.
 
     Args:
         pred:   (B, C, I, J, K) prediction tensor
@@ -531,6 +531,8 @@ def rmse(pred, target, mask):
 
 def normalized_rmse(pred, target, mask, eps=1e-12):
     '''
+    Normalized root mean squared error.
+
     NRMSE = RMS(||pred - target||) / RMS(||target||)
 
     Args:
@@ -553,6 +555,8 @@ def normalized_rmse(pred, target, mask, eps=1e-12):
 
 def masked_cross_entropy(pred, target, mask):
     '''
+    Masked cross entropy.
+
     Args:
         pred: (B, C, I, J, K) predicted material logits.
         target: (B, 1, I, J, K) integer material labels.

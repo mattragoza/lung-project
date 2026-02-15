@@ -215,6 +215,7 @@ class ViewerCallback(Callback):
         n_labels=5,
         **kwargs
     ):
+        assert len(keys) > 0
         self.update_interval = update_interval
 
         self.apply_mask = apply_mask
@@ -234,30 +235,32 @@ class ViewerCallback(Callback):
         from .visual.matplotlib import SliceViewer, get_color_kws
         self.viewers = {}
         for k in keys:
-            self.viewers[k] = SliceViewer(title=k, **get_color_kws(k))
+            self.viewers[k] = SliceViewer(title=k, **get_color_kws(k, n_labels))
 
-    def _update_viewers(self, outputs)
+    def _update_viewers(self, outputs, k=0):
         if self.apply_mask:
-            mask = _to_numpy(outputs['mask'][0])
+            mask = _to_numpy(outputs['mask'][k])
+            assert mask.ndim == 4 and mask.shape[0] == 1
 
         for key, viewer in self.viewers.items():
             if key.startswith('mat_pred'):
                 outputs = ensure_material_map(outputs)
 
-            array = _to_numpy(outputs[key][0])
-            assert array.ndim == 5, array.shape
+            array = _to_numpy(outputs[key][k])
+            assert array.ndim == 4, array.shape
 
-            if key in {'image', 'img_true', 'img_pred'} and array.shape[1] == 3: # RGB
+            if key in {'image', 'img_true', 'img_pred'} and array.shape[0] == 3: # RGB
                 if self.scale_rgb:
                     array = array * self.scale_rgb
-                if self.shift_rgb: 
-                    array = (array + 1) / 2 # [-1, 1] -> [0, 1]
+                if self.shift_rgb: # map [-1, 1] -> [0, 1]
+                    array = (array + 1) / 2 
                 if self.apply_mask:
                     array = array * mask
+                # array shape: (3, I, J, K)
             else:
                 if self.apply_mask:
                     array = array * mask
-                array = array[0]
+                array = array[0] # (I, J, K)
 
             viewer.update_array(array)
 
