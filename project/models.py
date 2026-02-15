@@ -20,29 +20,33 @@ def build_model(task, config):
 
     backbone_kws = config.get('backbone', {}).copy()
     backbone_cls = globals()[backbone_kws.pop('_class')]
-    backbone = backbone_cls(in_channels=task.in_channels, **backbone_kws)
+    backbone = backbone_cls(task.in_channels, **backbone_kws)
 
     heads_cfg = config.get('heads', {})
     heads = {}
 
-    for t in task.targets:
-        if t in {'E', 'logE'}:
+    for tgt in task.targets:
+        out_channels = task.out_channels(tgt)
+
+        if tgt in {'E', 'logE'}:
             head_kws = heads_cfg.get('elasticity', {})
             if head_kws.get('use_probs'):
                 in_channels = task.out_channels('material')
             else:
                 in_channels = backbone.out_channels
 
-            head = ElasticityHead(in_channels, task.out_channels(t), **head_kws)
-            t = "elasticity"
+            head = ElasticityHead(in_channels, out_channels, **head_kws)
+            heads['elasticity'] = head
 
-        elif t == 'material':
-            head_kws = heads_cfg.get(t, {})
-            head = SegmentationHead(backbone.out_channels, task.out_channels(t), **head_kws)
+        elif tgt == 'material':
+            head_kws = heads_cfg.get(tgt, {})
+            head = SegmentationHead(backbone.out_channels, out_channels, **head_kws)
+            heads[tgt] = head
+
         else:
-            head_kws = heads_cfg.get(t, {})
-            head = RegressionHead(backbone.out_channels, task.out_channels(t), **head_kws)
-        heads[t] = head
+            head_kws = heads_cfg.get(tgt, {})
+            head = RegressionHead(backbone.out_channels, out_channels, **head_kws)
+            heads[tgt] = head
 
     return MultiTaskModel(backbone, heads)
 
@@ -57,16 +61,9 @@ class MultiTaskModel(nn.Module):
     def forward(self, x):
         feats = self.backbone(x)
 
-        outputs = {}
-        if "material" in self.heads:
-            outputs.update(self.heads["material"](feats))
-
-        if "elasticity" in self.heads:
-            outputs.update(self.heads["elasticity"](feats, ctx=outputs))
-
+        outputs = {'feats': feats}
         for name, head in self.heads.items():
-            if name not in {"material", "elasticity"}:
-                outputs.update(head(feats))
+            outputs.update(head(outputs))
 
         return outputs
 
@@ -86,19 +83,21 @@ class ElasticityHead(nn.Module):
     ):
         super().__init__()
         self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1, bias=use_bias)
+    
         self.logE_mean = logE_mean
         self.logE_std  = logE_std
         self.logE_min  = logE_min
         self.logE_max  = logE_max
+
+        self.use_bias  = use_bias
         self.use_probs = use_probs
 
-    def forward(self, x, ctx=None):
-        ctx = ctx or {}
+    def forward(self, inputs):
 
         if self.use_probs:
-            z = self.conv(ctx['mat_probs'])
+            z = self.conv(inputs['mat_probs'])
         else:
-            z = self.conv(x)
+            z = self.conv(inputs['feats'])
 
         logE = torch.clamp(
             z * self.logE_std + self.logE_mean,
@@ -115,8 +114,8 @@ class SegmentationHead(nn.Module):
         super().__init__()
         self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
 
-    def forward(self, x):
-        logits = self.conv(x)
+    def forward(self, inputs):
+        logits = self.conv(inputs['feats'])
         probs = F.softmax(logits, dim=1)
         return {'mat_logits': logits, 'mat_probs': probs}
 
@@ -128,8 +127,8 @@ class RegressionHead(nn.Module):
         self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
         self.out_key = out_key
 
-    def forward(self, x):
-        return {self.out_key: self.conv(x)}
+    def forward(self, inputs):
+        return {self.out_key: self.conv(inputs['feats'])}
 
 
 # ----- architecture components -----
