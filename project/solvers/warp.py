@@ -32,7 +32,7 @@ class WarpFEMSolver(base.PDESolver):
 
     def __init__(
         self,
-        use_relative: bool=False,
+        relative_loss: bool=True,
         tv_reg_weight: float=0.0, # 1e-4 to 5e-2
         eps_reg: float=1e-3,
         eps_div: float=1e-12,
@@ -43,13 +43,17 @@ class WarpFEMSolver(base.PDESolver):
         vector_dtype=wp.vec3f,
         device=None
     ):
-        self.use_relative  = use_relative
+        # loss and regularization 
+        # NOTE: relative loss greatly improves gradient scaling
+        self.relative_loss = relative_loss
         self.tv_reg_weight = tv_reg_weight
 
+        # numerical constants
         self.eps_reg = eps_reg
         self.eps_div = eps_div
         self.cg_tol  = cg_tol
 
+        # mesh field representation
         self.scalar_degree = scalar_degree
         self.vector_degree = vector_degree
         self.scalar_dtype  = scalar_dtype
@@ -66,7 +70,6 @@ class WarpFEMSolver(base.PDESolver):
         # - if the geometry is defined from cpu but other arrays are cuda,
         #   rasterization fails silently- it produces all background values
         # - therefore we explicitly move the geometry to the solver device
-
         verts = verts.to(self.device)
         cells = cells.to(self.device)
 
@@ -311,7 +314,7 @@ class WarpFEMSolver(base.PDESolver):
             domain=self.interior,
             output=num
         )
-        if self.use_relative:
+        if self.relative_loss:
             wp.fem.integrate(
                 norm2_form,
                 fields={'u': u_obs, 'w': mask},
@@ -426,7 +429,7 @@ def tv_reg_form(
     eps_reg: float,
     eps_div: float,
 ):
-    # TV regularization on phi = log E
+    # TV regularization on phi = log mu ~= log E
     # grad phi = grad (log E)
     # grad phi = (grad E) / E
     # grad phi = (grad (k mu)) / (k mu) (for constant nu)

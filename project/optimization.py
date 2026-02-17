@@ -1,126 +1,228 @@
 from __future__ import annotations
+from typing import Any, List, Dict, Tuple
 import numpy as np
 import torch
 
 from .core import utils, fileio
-    
+from .models import ParameterSpec
 
-def optimize_example(ex, config, output_path, raster_path):
+
+def optimize_example(ex, config, output_path, raster_base):
     utils.check_keys(
         config,
-        valid={'physics_adapter', 'pde_solver', 'parameters', 'optimizer', 'evaluator'},
+        valid={'param_specs', 'physics_adapter', 'pde_solver', 'optimizer', 'evaluator'},
         where='optimization'
     )
     from . import datasets, physics, models, evaluation
 
-    inputs = datasets.torch.TorchDataset([ex])[0]
-    image  = inputs['image']
-    mask   = inputs['mask']
-    E_true = inputs['elast']
-    affine = inputs['affine']
-    mesh   = inputs['mesh']
+    # ----- load one example (CPU tensors) -----
+    sample = datasets.torch.TorchDataset([ex])[0]
+    mesh   = sample['mesh']
     unit_m = float(ex.metadata['unit'])
+    affine = sample['affine']
+    mask   = sample['mask'] # (1,I,J,K) bool
 
+    # ----- build physics adapter -----
     physics_adapter_kws = config.get('physics_adapter', {})
     pde_solver_kws = config.get('pde_solver', {}).copy()
+    pde_solver_cls = pde_solver_kws.pop('_class')
 
     physics_adapter = physics.PhysicsAdapter(
-        pde_solver_cls=pde_solver_kws.pop('_class'),
+        pde_solver_cls=pde_solver_cls,
         pde_solver_kws=pde_solver_kws,
         **physics_adapter_kws
     )
-    param_kws = config.get('parameters', {}).copy()
-    init_value = param_kws.pop('init_value')
-    param_map = models.ParameterMap(**param_kws)
-    param = physics_adapter.init_param_field(mesh, unit_m, init_value)
 
-    def fn_local(x):
-        E_pred = param_map(x)
-        loss = physics_adapter.simulation_loss(mesh, unit_m, E_pred, bc_spec=None, ret_outputs=False)
-        return loss
+    opt_targets = ['E', 'nu', 'rho']
 
-    def fn_global(x):
-        return fn_local(x.mean().expand(x.shape))
+    # ----- initialize param specs -----
+    param_specs_cfg = config.get('param_specs', {})
+    param_specs = {}
+    for name in opt_targets:
+        param_spec_kws = param_specs_cfg[name]
+        param_specs[name] = ParameterSpec(**param_spec_kws)
 
+    # ----- initialize free dofs -----
+    z_vars = {}
+    for name, spec in param_specs.items():
+        z0 = physics_adapter.init_param_field(mesh, unit_m)
+        z_vars[name] = torch.nn.Parameter(z0)
+
+    # ----- optimizer config -----
     optimizer_kws = config.get('optimizer', {}).copy()
     optimizer_cls = getattr(torch.optim, optimizer_kws.pop('_class'))
 
-    optimizer = optimizer_cls([param], **optimizer_kws)
-    optimize_fn(fn_global, param, optimizer)
+    # ----- run optimization -----
+    params = optimize_params_two_stage(
+        physics_adapter=physics_adapter,
+        mesh=mesh,
+        unit_m=unit_m,
+        bc_spec=None,
+        z_vars=z_vars,
+        param_specs=param_specs,
+        optimizer_cls=optimizer_cls,
+        optimizer_kws=optimizer_kws,
+        global_steps=optimizer_kws.pop('global_steps', 10),
+        local_steps=optimizer_kws.pop('local_steps', 100)
+    )
 
-    optimizer = optimizer_cls([param], **optimizer_kws)
-    optimize_fn(fn_local,  param, optimizer)
+    # ----- final forward sim -----
+    loss, sim_output = physics_adapter.mesh_simulation_loss(
+        mesh=mesh,
+        unit_m=unit_m,
+        params=params,
+        bc_spec=None,
+        ret_outputs=True
+    )
+    utils.log(f'Final loss: {loss.item()}')
+    utils.pprint(sim_output)
 
-    E_pred = param_map(param)
-    loss, pde_outputs = physics_adapter.simulation_loss(mesh, unit_m, E_pred, bc_spec=None, ret_outputs=True)
-
-    utils.pprint(pde_outputs)
-
+    # ----- evaluation config -----
     evaluator_kws = config.get('evaluator', {})
     evaluator = evaluation.EvaluatorCallback(**evaluator_kws)
 
-    # rasterize predicted elasticity field
-    utils.log('Rasterizing elasticity field')
-    shape = mask.shape[1:]
-    E_pred_vox = physics_adapter.rasterize_scalar_field(
-        mesh, unit_m, E_pred, shape, affine
-    )
-    assert E_pred_vox.norm().item() > 0
-
     outputs = {
         'example': [ex],
-        'image': [image.cpu()],
-        'mask': [mask.cpu()],
-        'E_true': [E_true.cpu()],
-        'E_pred': [E_pred_vox.cpu()],
-        'pde': [pde_outputs],
+        'mask': mask.cpu().unsqueeze(0),
+        'mat_true': sample['mat_true'].cpu().unsqueeze(0),
+        'sim': [sim_output],
         'loss': loss
     }
+
+    # ----- rasterize parameters -----
+    utils.log('Rasterizing parameter fields')
+
+    raster_base.mkdir(parents=True, exist_ok=True)
+    shape = mask.shape[1:]
+
+    for name in opt_targets:
+        pred_key = f'{name}_pred'
+        true_key = f'{name}_true'
+        pred_vox = physics_adapter.rasterize_scalar_field(
+            mesh, unit_m, params[name], shape, affine
+        )
+        outputs[pred_key] = pred_vox.cpu().unsqueeze(0)
+        if true_key in sample:
+            true_vox = sample[true_key]
+            outputs[true_key] = true_vox.cpu().unsqueeze(0)
+
+        raster_path = raster_base / f'{pred_key}.nii.gz'
+        fileio.save_nibabel(raster_path, pred_vox[0].detach().cpu().numpy(), affine)
+
     evaluator.evaluate(epoch=0, phase='optimize', batch=0, step=0, outputs=outputs)
     evaluator.on_phase_end(epoch=0, phase='optimize')
 
     def _assign_mesh_field(m, name):
-        m.point_data[name] = pde_outputs[name].nodes.numpy()
-        m.cell_data[name] = [pde_outputs[name].cells.numpy()]
+        m.point_data[name] = sim_output[name].nodes.numpy()
+        m.cell_data[name] = [sim_output[name].cells.numpy()]
 
     output_mesh = mesh.copy()
-    _assign_mesh_field(output_mesh, 'rho_true')
-    _assign_mesh_field(output_mesh, 'rho_pred')
     _assign_mesh_field(output_mesh, 'E_true')
     _assign_mesh_field(output_mesh, 'E_pred')
+    _assign_mesh_field(output_mesh, 'mu_true')
+    _assign_mesh_field(output_mesh, 'mu_pred')
+    _assign_mesh_field(output_mesh, 'lam_true')
+    _assign_mesh_field(output_mesh, 'lam_pred')
+    _assign_mesh_field(output_mesh, 'rho_true')
+    _assign_mesh_field(output_mesh, 'rho_pred')
     _assign_mesh_field(output_mesh, 'u_true')
     _assign_mesh_field(output_mesh, 'u_pred')
     _assign_mesh_field(output_mesh, 'residual')
+
     print(output_mesh)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_meshio(output_path, output_mesh)
 
-    raster_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_nibabel(raster_path, E_pred_vox[0].detach().cpu().numpy(), affine)
 
+def optimize_params_two_stage(
+    physics_adapter: PhysicsAdapter,
+    mesh: meshio.Mesh,
+    unit_m: float,
+    bc_spec: Any,
+    z_vars: Dictr[str, torch.nn.Parameter],
+    param_specs: Dict[str, ParameterSpec],
+    optimizer_cls,
+    optimizer_kws,
+    global_steps: int = 10,
+    local_steps: int = 100,
+):
+    assert global_steps > 0 or local_steps > 0
 
-def optimize_fn(fn, param, optimizer, max_iter=100):
-    history = OptimizationHistory()
+    def decode_local() -> Dict[str, torch.Tensor]:
+        return {k: v.decode(z_vars[k]) for k, v in param_specs.items()}
 
-    def closure():
-        optimizer.zero_grad()
-        loss = fn(param)
+    def decode_global() -> Dict[str, torch.Tensor]:
+        return {k: v.mean().expand(v.shape) for k, v in decode_local().items()}
+
+    def objective(params: Dict[str, torch.Tensor]) -> torch.Tensor:
+        return physics_adapter.mesh_simulation_loss(
+            mesh=mesh,
+            unit_m=unit_m,
+            params=params,
+            bc_spec=None,
+            ret_outputs=False
+        )
+
+    utils.log('Stage 1: Global optimization')
+    optimizer_g = optimizer_cls(list(z_vars.values()), **optimizer_kws)
+
+    def closure_g() -> torch.Tensor:
+        optimizer_g.zero_grad(set_to_none=True)
+        params = decode_global()
+        loss = objective(params)
         if not torch.isfinite(loss):
             raise RuntimeError(f'Invalid loss: {loss.item()}')
         loss.backward()
-        if not torch.isfinite(param.grad).all():
-            raise RuntimeError(f'Invalid gradient: {g.detach().cpu().numpy()}')
         return loss
 
-    for it in range(max_iter):
+    if global_steps > 0:
+        optimize_closure(optimizer_g, closure_g, global_steps)
+
+    utils.log('Stage 2: Local optimization')
+    optimizer_l = optimizer_cls(list(z_vars.values()), **optimizer_kws)
+
+    def closure_l() -> torch.Tensor:
+        optimizer_l.zero_grad(set_to_none=True)
+        params = decode_local()
+        loss = objective(params)
+        if not torch.isfinite(loss):
+            raise RuntimeError(f'Invalid loss: {loss.item()}')
+        loss.backward()
+        return loss
+
+    if local_steps > 0:
+        optimize_closure(optimizer_l, closure_l, local_steps)
+
+    with torch.no_grad():
+        params_final = {k: v.detach() for k, v in decode_local().items()}
+
+    return params_final
+
+
+def optimize_closure(optimizer, closure, max_steps=100):
+    history = OptimizationHistory()
+    params = optimizer.param_groups[0]['params']
+
+    # main optimization loop
+    loss = None
+    for step in range(max_steps):
         loss = optimizer.step(closure)
-        history.update(loss, param)
-        if history.converged(it):
+
+        if loss is None:
+            with torch.no_grad():
+                loss = closure().detach()
+
+        history.update(loss, params)
+        if history.converged(step):
             utils.log('Optimization converged')
             break
 
-    return param
+    if loss is None:
+        with torch.no_grad():
+            loss = closure().detach()
+
+    return loss
 
 
 class OptimizationHistory:
@@ -132,10 +234,23 @@ class OptimizationHistory:
 
         utils.log('iter\tloss (rel_delta)\tgrad_norm (rel_init)\tparam_norm (update_norm)')
 
-    def update(self, loss, param):
-        self.loss_history.append(float(loss.detach().item()))
-        self.grad_history.append(float(param.grad.detach().norm().item()))
-        self.param_history.append(param.detach().cpu().numpy())
+    def update(self, loss, params):
+
+        curr_loss = float(loss.detach().item())
+
+        curr_grad = 0.0
+        for p in params:
+            if p.grad is not None:
+                curr_grad += float(p.grad.pow(2).sum().cpu().item())
+        curr_grad = np.sqrt(curr_grad)
+
+        curr_param = np.concatenate([
+            p.detach().cpu().numpy().ravel() for p in params
+        ])
+
+        self.loss_history.append(curr_loss)
+        self.grad_history.append(curr_grad)
+        self.param_history.append(curr_param)
 
     def converged(self, it, tol=1e-3, eps=1e-12):
         from numpy.linalg import norm
@@ -144,7 +259,7 @@ class OptimizationHistory:
         curr_loss = self.loss_history[-1]
         curr_grad = self.grad_history[-1]
         curr_param = self.param_history[-1]
-        curr_norm  = np.linalg.norm(curr_param)
+        curr_norm  = norm(curr_param)
 
         if len(self.loss_history) > 1:
             prev_loss = self.loss_history[-2]

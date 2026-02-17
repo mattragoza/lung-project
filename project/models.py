@@ -1,10 +1,11 @@
+from __future__ import annotations
 from typing import Optional
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .core import utils
+from .core import utils, transforms
 
 DEFAULT_KERNEL_SIZE = 3
 DEFAULT_RELU_LEAK = 0.01
@@ -16,26 +17,26 @@ DEFAULT_UPSAMPLE = 'nearest'
 
 
 def build_model(task, config):
-    utils.check_keys(config, {'backbone', 'heads'})
+    utils.check_keys(config, {'backbone', 'param_specs'})
 
     backbone_kws = config.get('backbone', {}).copy()
     backbone_cls = globals()[backbone_kws.pop('_class')]
     backbone = backbone_cls(task.in_channels, **backbone_kws)
 
-    heads_cfg = config.get('heads', {})
-    heads = {}
+    param_specs_cfg = config.get('param_specs', {})
 
+    heads = {}
     for tgt in task.targets:
-        head_kws = heads_cfg.get(tgt, {})
         in_channels = backbone.out_channels
         out_channels = task.out_channels(tgt)
 
         if tgt in task.valid_physics:
-            head = ParameterHead(in_channels, out_channels, param_name=tgt, **head_kws)
+            spec = ParameterSpec(**param_specs_cfg.get(tgt, {}))
+            head = ParameterHead(in_channels, out_channels, param_name=tgt, param_spec=spec)
         elif tgt == 'material':
-            head = SegmentationHead(in_channels, out_channels, **head_kws)
+            head = SegmentationHead(in_channels, out_channels, out_name='mat')
         else:
-            head = RegressionHead(in_channels, out_channels, **head_kws)
+            head = RegressionHead(in_channels, out_channels, out_name=tgt)
 
         heads[tgt] = head
 
@@ -62,71 +63,110 @@ class ParameterHead(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        out_channels: int = 1,
-        param_name: str = 'E',
-        param_mode: str = 'log10',
-        param_mean: float = 0.0,
-        param_std: float = 1.0,
-        param_min: float = None,
-        param_max: float = None,
-        use_bias: bool = True,
+        out_channels: int,
+        param_name: str,
+        param_spec: ParameterSpec,
+        use_bias: bool = True
     ):
         super().__init__()
-        self.conv = nn.Conv3d(
-            in_channels, out_channels, kernel_size=1, bias=use_bias
-        )
+        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1, bias=use_bias)
         self.param_name = param_name
-
-        assert param_mode in {'linear', 'log10', 'logit'}
-        self.param_mode = param_mode
-
-        self.param_mean = param_mean
-        self.param_std  = param_std
-        self.param_min  = param_min
-        self.param_max  = param_max
+        self.param_spec = param_spec
 
     def forward(self, inputs):
         z = self.conv(inputs['feats'])
-        key = f'{self.param_name}_pred'
+        x = self.param_spec.decode(z)
+        return {
+            f'{self.param_name}_pred': x,
+            f'{self.param_name}_z': z
+        }
 
-        if self.param_mode == 'linear':
-            param = self.param_mean + self.param_std * z
-            param = torch.clamp(param, self.param_min, self.param_max)
-            return {key: param}
 
-        elif self.param_mode == 'log10':
-            log_param = self.param_mean + self.param_std * z
-            log_param = torch.clamp(log_param, self.param_min, self.param_max)
-            return {key: torch.pow(10, log_param), 'log' + key: log_param}
+class ParameterSpec:
 
-        elif self.param_mode == 'logit':
-            logit = self.param_mean + self.param_std * z
-            param_range = (self.param_max - self.param_min)
-            param = self.param_min + param_range * torch.sigmoid(logit)
-            return {key: param, 'logit' + key: logit}
+    def __init__(
+        self,
+        mode: str = 'log10',
+        mean: float = 0.0,
+        std: float = 1.0,
+        min: float = None,
+        max: float = None,
+        eps: float = 1e-12
+    ):
+        assert mode in {'linear', 'log10', 'logit'}
+        assert std > 0
+        self.mode = mode
+        self.mean = mean
+        self.std  = std
+        self.min  = min
+        self.max  = max
+        self.eps  = eps
+
+    def encode(self, x):
+
+        if self.mode == 'linear':
+            return (x - self.mean) / self.std
+
+        if self.mode == 'log10':
+            log_x = torch.log10(x.clamp_min(self.eps))
+            return (log_x - self.mean) / self.std
+
+        if self.mode == 'logit':
+            s = (x - self.min) / (self.max - self.min)
+            s = s.clamp(self.eps, 1 - self.eps)
+            logit = torch.log(s) - torch.log(1 - s)
+            return (logit - self.mean) / self.std
+
+        raise ValueError(self.mode)
+
+    def decode(self, z):
+
+        if self.mode == 'linear':
+            x = self.mean + self.std * z
+            if self.min is not None or self.max is not None:
+                x = x.clamp(self.min, self.max)
+            return x
+
+        elif self.mode == 'log10':
+            log_x = self.mean + self.std * z
+            if self.min is not None or self.max is not None:
+                log_x = log_x.clamp(self.min, self.max)
+            return torch.pow(10, log_x)
+
+        elif self.mode == 'logit':
+            logit = self.mean + self.std * z
+            s = torch.sigmoid(logit)
+            return s * (self.max - self.min) + self.min
+
+        raise ValueError(self.mode)
 
 
 class SegmentationHead(nn.Module):
 
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels: int, out_channels: int, out_name: str):
         super().__init__()
         self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
+        self.out_name = out_name
 
     def forward(self, inputs):
-        logits = self.conv(inputs['feats'])
-        probs = F.softmax(logits, dim=1)
-        return {'mat_logits': logits, 'mat_probs': probs}
+        z = self.conv(inputs['feats'])
+        p = F.softmax(z, dim=1)
+        return {
+            f'{self.out_name}_logits': z,
+            f'{self.out_name}_probs': p
+        }
 
 
 class RegressionHead(nn.Module):
 
-    def __init__(self, in_channels, out_channels, out_key='img_pred'):
+    def __init__(self, in_channels: int, out_channels: int, out_name: str):
         super().__init__()
         self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
-        self.out_key = out_key
+        self.out_name = out_name
 
     def forward(self, inputs):
-        return {self.out_key: self.conv(inputs['feats'])}
+        z = self.conv(inputs['feats'])
+        return {f'{self.out_name}_pred': z}
 
 
 # ----- architecture components -----

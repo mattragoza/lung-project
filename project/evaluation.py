@@ -272,8 +272,7 @@ class ViewerCallback(Callback):
 
 class EvaluatorCallback(Callback):
 
-    def __init__(self, task):
-        self.task = task
+    def __init__(self):
         self.example_rows  = defaultdict(list)
         self.material_rows = defaultdict(list)
 
@@ -294,10 +293,12 @@ class EvaluatorCallback(Callback):
             'phase': str(phase),
             'batch': int(batch),
             'step': int(step),
-            'loss': float(outputs['loss'].item()),
-            'loss_base': float(outputs['loss_base'].item()),
-            'loss_ratio': float(outputs['loss_ratio'].item())
+            'loss': float(outputs['loss'].item())
         }
+        if 'loss_base' in outputs:
+            base['loss_base'] = float(outputs['loss_base'].item()),
+            base['loss_ratio'] = float(outputs['loss_ratio'].item())
+
         outputs = ensure_material_map(outputs)
 
         for k in range(batch_size):
@@ -323,7 +324,7 @@ class EvaluatorCallback(Callback):
     def compute_voxel_metrics(self, outputs, index, label=None):
         ex = outputs['example'][index]
 
-        mask = _to_numpy(outputs['mask'][index]).reshape(-1, 1)
+        mask = _to_numpy(outputs['mask'][index].bool()).reshape(-1, 1)
         mat_true = _to_numpy(outputs['mat_true'][index]).reshape(-1, 1)
         mat_pred = _to_numpy(outputs['mat_pred'][index]).reshape(-1, 1)
 
@@ -347,7 +348,7 @@ class EvaluatorCallback(Callback):
                 true = _to_numpy(outputs[true_key][index]).reshape(-1, 1)
                 ret |= _evaluate(pred[sel], true[sel], name=f'{name}_vox')
             else:
-                ret |= _evaluate(pred[sel], name=f'{name}_vox')
+                ret |= _evaluate(pred[sel], None, name=f'{name}_vox')
     
         if label is not None:
             ret |= _evaluate(mat_pred == label, mat_true == label, name='mat_vox')
@@ -384,10 +385,13 @@ class EvaluatorCallback(Callback):
 
         ret = {'num_cells': num_cells, 'volume': vol_sum}
 
-        if 'u_true' in sim_output and 'u_pred' in sim_output:
-            u_true = _to_numpy(sim_output['u_true'].cells) # meters
+        if 'u_pred' in sim_output:
             u_pred = _to_numpy(sim_output['u_pred'].cells) # meters
-            ret |= _evaluate(u_pred[sel], u_true[sel], vol_sel, name='u_cell')
+            if 'u_true' in sim_output:
+                u_true = _to_numpy(sim_output['u_true'].cells) # meters
+                ret |= _evaluate(u_pred[sel], u_true[sel], vol_sel, name='u_cell')
+            else:
+                ret |= _evaluate(u_pred[sel], None, vol_sel, name='u_cell')
 
         if 'residual' in sim_output:
             residual = _to_numpy(sim_output['residual'].cells)

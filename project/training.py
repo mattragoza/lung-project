@@ -344,7 +344,6 @@ class Trainer:
                     bc_spec=None,
                     ret_outputs=True
                 )
-                print(sim_outputs[k].keys())
 
             outputs['sim'] = sim_outputs
 

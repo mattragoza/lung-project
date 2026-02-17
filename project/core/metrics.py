@@ -55,8 +55,8 @@ class MetricRegistry:
         for name in fn_names:
             fn, requires_target = self._fns[name]
             if requires_target and target is None:
-                if profile is not None:
-                    raise ValueError(f'metric {name} requires a target')
+                #if profile is not None:
+                #    raise ValueError(f'metric {name} requires a target')
                 # with no profile specified, just skip invalid metrics
                 continue
             elif requires_target:

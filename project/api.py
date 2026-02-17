@@ -21,6 +21,12 @@ class RunOutputs:
     def nifti_path(self, ex, name):
         return self.base_dir / ex.subject / 'niftis' / (name + '.nii.gz')
 
+    def raster_base(self, ex):
+        return self.base_dir / ex.subject / 'rasters'
+
+    def raster_path(self, ex, name):
+        return self.base_dir / ex.subject / 'rasters' / (name + '.nii.gz')
+
 
 def get_examples(config):
     utils.check_keys(
@@ -102,8 +108,8 @@ def run_optimize(examples, config):
         utils.log(f'Optimizing subject: {ex.subject}')
         try:
             output_path = outputs.mesh_path(ex, name='optimized')
-            raster_path = outputs.nifti_path(ex, name='optimized')
-            metrics = optimization.optimize_example(ex, config, output_path, raster_path)
+            raster_base = outputs.raster_base(ex)
+            metrics = optimization.optimize_example(ex, config, output_path, raster_base)
             if metrics is not None:
                 all_metrics.append(metrics)
         except Exception as e:
@@ -190,7 +196,7 @@ def run_training(examples, config):
         evaluation.LoggerCallback(keys=task.metric_keys),
         evaluation.PlotterCallback(keys=task.metric_keys),
         evaluation.ViewerCallback(keys=task.viewer_keys),
-        evaluation.EvaluatorCallback(task=task, **evaluator_kws),
+        evaluation.EvaluatorCallback(**evaluator_kws),
         evaluation.TimerCallback()
     ]
 
