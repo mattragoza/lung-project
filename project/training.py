@@ -13,6 +13,10 @@ def _to_numpy(x):
 
 
 class TaskSpec:
+    valid_inputs  = {'image', 'material', 'mask'}
+    valid_physics = {'E', 'nu', 'G', 'K', 'mu', 'lam', 'rho'}
+    valid_targets = {'image', 'material'} | valid_physics
+    valid_losses  = {'ce', 'mse', 'msre', 'sim'}
 
     def __init__(
         self,
@@ -23,10 +27,10 @@ class TaskSpec:
         n_mat_labels: int = 5,
         rgb: bool = False
     ):
-        self.inputs  = inputs
-        self.targets = targets
-        self.losses  = losses
-        self.weights = weights or {}
+        self.inputs  = list(inputs)
+        self.targets = list(targets)
+        self.losses  = dict(losses)
+        self.weights = dict(weights or {})
 
         self.n_mat_labels = n_mat_labels
         self.rgb = rgb
@@ -36,37 +40,54 @@ class TaskSpec:
     def _validate(self):
 
         utils.log(f'Inputs:  {self.inputs}')
-        for input_ in self.inputs:
-            assert input_ in {'image', 'material', 'mask'}, input_
-
         utils.log(f'Targets: {self.targets}')
-        for target in self.targets:
-            assert target in {'image', 'material', 'E', 'logE'}, target
-
         utils.log(f'Losses:  {self.losses}')
+
+        assert len(self.inputs)  > 0
+        assert len(self.targets) > 0
+        assert len(self.losses)  > 0
+
+        for input_ in self.inputs:
+            if input_ not in self.valid_inputs:
+                raise ValueError(f'Invalid input: {input_}')
+
+        for target in self.targets:
+            if target not in self.valid_targets:
+                raise ValueError(f'Invalid target: {target}')
+
         for target, loss in self.losses.items():
-            assert target in self.targets, (target, loss)
-            assert loss.lower() in {'ce', 'mse', 'msre', 'sim'}, (target, loss)
-            if loss.lower() == 'sim':
-                assert target in {'E', 'logE'}, (target, loss)
+            loss_l = loss.lower()
+            if target not in self.targets:
+                raise ValueError(f'Invalid loss target: {target}')
+            if loss_l not in self.valid_losses:
+                raise ValueError(f'Invalid loss function: {loss}')
+            if loss_l == 'sim' and target not in self.valid_physics:
+                raise ValueError(f'Invalid physics target: {target}')
 
         for target, weight in self.weights.items():
-            assert target in self.targets, (target, weight)
-            assert weight >= 0.0, (target, weight)
+            if target not in self.losses:
+                raise ValueError(f'Invalid weight target: {target}')
+            if weight < 0.0:
+                raise ValueError(f'Invalid weight value: {weight}')
 
     @property
-    def has_physics_loss(self):
-        for target, loss in self.losses.items():
-            if loss.lower() == 'sim':
-                return True
-        return False
+    def physics_outputs(self) -> List[str]:
+        return [t for t in self.targets if t in self.valid_physics]
 
     @property
-    def image_channels(self):
+    def has_physics_output(self) -> bool:
+        return len(self.physics_outputs) > 0
+
+    @property
+    def has_physics_loss(self) -> bool:
+        return any(l.lower() == 'sim' for l in self.losses.values())
+
+    @property
+    def image_channels(self) -> int:
         return 3 if self.rgb else 1
 
     @property
-    def material_labels(self):
+    def material_labels(self) -> int:
         return self.n_mat_labels
 
     @property
@@ -88,7 +109,7 @@ class TaskSpec:
             return self.image_channels
         elif target == 'material':
             return self.material_labels + 1
-        elif target in {'E', 'logE'}:
+        elif target in self.valid_physics:
             return 1
         raise ValueError(target)
 
@@ -102,33 +123,26 @@ class TaskSpec:
         raise ValueError(input_)
 
     def output_key(self, target: str, visual: bool=False) -> str:
-        if target == 'E':
-            return 'E_pred'
-        elif target == 'logE':
-            return 'logE_pred'
-        elif target == 'image':
+        if target == 'image':
             return 'img_pred'
         elif target == 'material':
             return 'mat_pred' if visual else 'mat_logits'
+        elif target in self.valid_physics:
+            return f'{target}_pred'
         raise ValueError(target)
 
     def target_key(self, target: str, visual: bool=False) -> str:
-        assert target in self.targets, target
-        if target == 'E':
-            return 'E_true'
-        elif target == 'logE':
-            return 'logE_true'
-        elif target == 'image':
+        if target == 'image':
             return 'img_true'
         elif target == 'material':
             return 'mat_true'
+        elif target in self.valid_physics:
+            return f'{target}_true'
         raise ValueError(target)
 
     def base_value(self, target: str) -> float:
         if target == 'E':
-            return 10**3.4863
-        elif target == 'logE':
-            return 3.4863
+            return 3.4863 # logE mean
         return 0.0
 
     @property
@@ -308,25 +322,31 @@ class Trainer:
 
         # decide whether to run physics simulation
         need_physics_loss = self.task.has_physics_loss
-        need_physics_eval = eval_mode and 'E_pred' in preds
+        need_physics_eval = self.task.has_physics_output and eval_mode
         run_physics = need_physics_loss or need_physics_eval
 
         sim_loss = None
         if run_physics: # compute displacement error via physics simulation
+
             sim_loss = torch.zeros(batch_size, device=self.device, dtype=torch.float)
-            pde_outputs = [None] * batch_size
+            sim_outputs = [None] * batch_size
 
             for k in range(batch_size):
-                sim_loss[k], pde_outputs[k] = self.physics_adapter.voxel_simulation_loss(
+                sim_params = {
+                    name: preds[self.task.output_key(name)][k]
+                    for name in self.task.physics_outputs
+                }
+                sim_loss[k], sim_outputs[k] = self.physics_adapter.voxel_simulation_loss(
                     mesh=batch['mesh'][k],
                     unit_m=batch['example'][k].metadata['unit'],
                     affine=batch['affine'][k],
-                    E_vox=preds['E_pred'][k],
-                    bc_spec=None
+                    params=sim_params,
+                    bc_spec=None,
+                    ret_outputs=True
                 )
+                print(sim_outputs[k].keys())
 
-            outputs['sim_loss'] = sim_loss.mean().detach().cpu()
-            outputs['pde'] = pde_outputs
+            outputs['sim'] = sim_outputs
 
         # compute multi-task loss
         total_loss = torch.zeros((), device=device)
@@ -358,22 +378,15 @@ class Trainer:
 
                 elif loss_name == 'sim':
                     loss = sim_loss.mean()
-                    base = None
+                    base = 1.0 # TODO
                 else:
                     raise ValueError(loss_name)
 
                 total_loss = total_loss + loss_weight * loss
-                if loss_name != 'sim':
-                    total_base = total_base + loss_weight * base
+                total_base = total_base + loss_weight * base
 
-            if tgt in {'E', 'logE'}: # track both
-                outputs['E_true'] = batch['E_true'].cpu()
-                outputs['E_pred'] = preds['E_pred'].cpu()
-                outputs['logE_true'] = batch['logE_true'].cpu()
-                outputs['logE_pred'] = preds['logE_pred'].cpu()
-            else:
-                outputs[output_key] = preds[output_key].cpu()
-                outputs[target_key] = batch[target_key].cpu()
+            outputs[output_key] = preds[output_key].cpu()
+            outputs[target_key] = batch[target_key].cpu()
 
             m = mask.expand(-1, y_pred.shape[1], -1, -1, -1)
             outputs[output_key + '.mean'] = torch.mean(y_pred[m].float()).detach().cpu()

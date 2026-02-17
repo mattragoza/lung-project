@@ -26,27 +26,18 @@ def build_model(task, config):
     heads = {}
 
     for tgt in task.targets:
+        head_kws = heads_cfg.get(tgt, {})
+        in_channels = backbone.out_channels
         out_channels = task.out_channels(tgt)
 
-        if tgt in {'E', 'logE'}:
-            head_kws = heads_cfg.get('elasticity', {})
-            if head_kws.get('use_probs'):
-                in_channels = task.out_channels('material')
-            else:
-                in_channels = backbone.out_channels
-
-            head = ElasticityHead(in_channels, out_channels, **head_kws)
-            heads['elasticity'] = head
-
+        if tgt in task.valid_physics:
+            head = ParameterHead(in_channels, out_channels, param_name=tgt, **head_kws)
         elif tgt == 'material':
-            head_kws = heads_cfg.get(tgt, {})
-            head = SegmentationHead(backbone.out_channels, out_channels, **head_kws)
-            heads[tgt] = head
-
+            head = SegmentationHead(in_channels, out_channels, **head_kws)
         else:
-            head_kws = heads_cfg.get(tgt, {})
-            head = RegressionHead(backbone.out_channels, out_channels, **head_kws)
-            heads[tgt] = head
+            head = RegressionHead(in_channels, out_channels, **head_kws)
+
+        heads[tgt] = head
 
     return MultiTaskModel(backbone, heads)
 
@@ -60,52 +51,59 @@ class MultiTaskModel(nn.Module):
 
     def forward(self, x):
         feats = self.backbone(x)
-
         outputs = {'feats': feats}
         for name, head in self.heads.items():
             outputs.update(head(outputs))
-
         return outputs
 
 
-class ElasticityHead(nn.Module):
+class ParameterHead(nn.Module):
 
     def __init__(
         self,
-        in_channels,
-        out_channels=1,
-        logE_mean=0.0,
-        logE_std=1.0,
-        logE_min=None,
-        logE_max=None,
-        use_bias=True,
-        use_probs=False
+        in_channels: int,
+        out_channels: int = 1,
+        param_name: str = 'E',
+        param_mode: str = 'log10',
+        param_mean: float = 0.0,
+        param_std: float = 1.0,
+        param_min: float = None,
+        param_max: float = None,
+        use_bias: bool = True,
     ):
         super().__init__()
-        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1, bias=use_bias)
-    
-        self.logE_mean = logE_mean
-        self.logE_std  = logE_std
-        self.logE_min  = logE_min
-        self.logE_max  = logE_max
+        self.conv = nn.Conv3d(
+            in_channels, out_channels, kernel_size=1, bias=use_bias
+        )
+        self.param_name = param_name
 
-        self.use_bias  = use_bias
-        self.use_probs = use_probs
+        assert param_mode in {'linear', 'log10', 'logit'}
+        self.param_mode = param_mode
+
+        self.param_mean = param_mean
+        self.param_std  = param_std
+        self.param_min  = param_min
+        self.param_max  = param_max
 
     def forward(self, inputs):
+        z = self.conv(inputs['feats'])
+        key = f'{self.param_name}_pred'
 
-        if self.use_probs:
-            z = self.conv(inputs['mat_probs'])
-        else:
-            z = self.conv(inputs['feats'])
+        if self.param_mode == 'linear':
+            param = self.param_mean + self.param_std * z
+            param = torch.clamp(param, self.param_min, self.param_max)
+            return {key: param}
 
-        logE = torch.clamp(
-            z * self.logE_std + self.logE_mean,
-            min=self.logE_min,
-            max=self.logE_max
-        )
-        E = torch.pow(10.0, logE)
-        return {'E_pred': E, 'logE_pred': logE, 'z': z}
+        elif self.param_mode == 'log10':
+            log_param = self.param_mean + self.param_std * z
+            log_param = torch.clamp(log_param, self.param_min, self.param_max)
+            return {key: torch.pow(10, log_param), 'log' + key: log_param}
+
+        elif self.param_mode == 'logit':
+            logit = self.param_mean + self.param_std * z
+            param_range = (self.param_max - self.param_min)
+            param = self.param_min + param_range * torch.sigmoid(logit)
+            return {key: param, 'logit' + key: logit}
 
 
 class SegmentationHead(nn.Module):

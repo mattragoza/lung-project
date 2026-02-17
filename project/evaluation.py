@@ -17,7 +17,7 @@ def _to_numpy(t):
     return t.detach().cpu().numpy() if torch.is_tensor(t) else np.asarray(t)
 
 
-def _eval(pred, target, weight=None, name=None, profile=None):
+def _evaluate(pred, target, weight=None, name=None, profile=None):
     if profile is None:
         profile = name.split('_')[0]
     metrics = mm.evaluate_metrics(pred, target, weight, profile)
@@ -272,9 +272,8 @@ class ViewerCallback(Callback):
 
 class EvaluatorCallback(Callback):
 
-    def __init__(self, n_labels: int=5):
-        self.n_labels = n_labels
-
+    def __init__(self, task):
+        self.task = task
         self.example_rows  = defaultdict(list)
         self.material_rows = defaultdict(list)
 
@@ -300,33 +299,24 @@ class EvaluatorCallback(Callback):
             'loss_ratio': float(outputs['loss_ratio'].item())
         }
         outputs = ensure_material_map(outputs)
+
         for k in range(batch_size):
             ex = outputs['example'][k]
             ex_base = {**base, 'subject': ex.subject}
+
             ex_metrics = self.compute_metrics(outputs, index=k)
             self.example_rows[phase].append(ex_base | ex_metrics)
 
-            for l in self.get_material_labels(outputs, index=k):
+            for l in _material_labels(outputs, index=k):
                 mat_base = {**ex_base, 'material': int(l)}
                 mat_metrics = self.compute_metrics(outputs, index=k, label=l)
                 self.material_rows[phase].append(mat_base | mat_metrics)
-
-    def get_material_labels(self, outputs, index):
-        labels = set()
-        if 'mat_true' in outputs:
-            mat_mask = _to_numpy(outputs['mat_true'][index]).reshape(-1, 1)
-            labels |= set(np.unique(mat_mask[mat_mask > 0]))
-        if 'pde' in outputs:
-            pde_output = outputs['pde'][index]
-            mat_cells = _to_numpy(pde_output['material'].cells)
-            labels |= set(np.unique(mat_cells[mat_cells > 0]))
-        return sorted(labels)
 
     def compute_metrics(self, outputs, index, label=None):
         ret = {}
         if 'mask' in outputs:
             ret |= self.compute_voxel_metrics(outputs, index, label)
-        if 'pde' in outputs:
+        if 'sim' in outputs:
             ret |= self.compute_mesh_metrics(outputs, index, label)
         return ret
 
@@ -338,9 +328,9 @@ class EvaluatorCallback(Callback):
         mat_pred = _to_numpy(outputs['mat_pred'][index]).reshape(-1, 1)
 
         if label is None:
-            sel = mask.astype(bool)
+            sel = mask
         else:
-            sel = mask.astype(bool) & (mat_true == label)
+            sel = mask & (mat_true == label)
 
         num_voxels = int(np.count_nonzero(sel))
         if num_voxels == 0:
@@ -348,48 +338,39 @@ class EvaluatorCallback(Callback):
             return {'num_voxels': num_voxels}
 
         ret = {'num_voxels': num_voxels}
+
+        for name in _voxel_param_fields(outputs):
+            pred_key = f'{name}_pred'
+            true_key = f'{name}_true'
+            pred = _to_numpy(outputs[pred_key][index]).reshape(-1, 1)
+            if true_key in outputs:
+                true = _to_numpy(outputs[true_key][index]).reshape(-1, 1)
+                ret |= _evaluate(pred[sel], true[sel], name=f'{name}_vox')
+            else:
+                ret |= _evaluate(pred[sel], name=f'{name}_vox')
     
-        if 'E_true' in outputs and 'E_pred' in outputs:
-            E_true = _to_numpy(outputs['E_true'][index]).reshape(-1, 1) # Pa
-            E_pred = _to_numpy(outputs['E_pred'][index]).reshape(-1, 1) # Pa
-            ret |= _eval(E_pred[sel], E_true[sel], name='E_vox')
-
-        elif 'E_pred' in outputs:
-            E_pred = _to_numpy(outputs['E_pred'][index]).reshape(-1, 1) # Pa
-            ret |= _eval(E_pred[sel], name='E_vox')
-
         if label is not None:
-            ret |= _eval(mat_pred == label, mat_true == label, name='mat_vox')
+            ret |= _evaluate(mat_pred == label, mat_true == label, name='mat_vox')
 
             for key in ['mat_pred_a', 'mat_pred_r', 'mat_pred_o']:
-                if key in outputs:
+                if outputs.get(key) is not None:
                     mat_pred_ = _to_numpy(outputs[key][index]).reshape(-1, 1)
-                    ret |= _eval(mat_pred_ == label, mat_true == label, name=key)
-
+                    ret |= _evaluate(mat_pred_ == label, mat_true == label, name=key)
         return ret
 
     def compute_mesh_metrics(self, outputs, index, label=None):
         ex = outputs['example'][index]
-        pde_output = outputs['pde'][index]
+        sim_output = outputs['sim'][index]
+        if sim_output is None:
+            return {}
 
-        vol_cells = _to_numpy(pde_output['volume'])
-        mat_cells = _to_numpy(pde_output['material'].cells)
+        vol_cells = _to_numpy(sim_output['volume'])
+        mat_cells = _to_numpy(sim_output['material'].cells)
 
-        rho_true = _to_numpy(pde_output['rho_true'].cells)
-        rho_pred = _to_numpy(pde_output['rho_pred'].cells)
-
-        E_true = _to_numpy(pde_output['E_true'].cells) # Pa
-        E_pred = _to_numpy(pde_output['E_pred'].cells) # Pa
-
-        u_true = _to_numpy(pde_output['u_true'].cells) # meters
-        u_pred = _to_numpy(pde_output['u_pred'].cells) # meters
-
-        residual = _to_numpy(pde_output['residual'].cells)
-
-        if label is None:
-            sel = (mat_cells != 0)
+        if mat_cells is None:
+            sel = np.ones_like(vol_cells, dtype=bool)
         else:
-            sel = (mat_cells == label)
+            sel = (mat_cells != 0) if label is None else (mat_cells == label)
 
         num_cells = int(np.count_nonzero(sel))
         if num_cells == 0:
@@ -397,15 +378,31 @@ class EvaluatorCallback(Callback):
 
         vol_sel = vol_cells[sel]
         vol_sum = float(np.sum(vol_sel))
-        if vol_sum <= 0:
+        if not np.isfinite(vol_sum) or vol_sum <= 0:
             utils.warn(f'WARNING: Invalid cell volume for subject {ex.subject} (material {label}); skipping')
             return {'num_cells': 0, 'volume': vol_sum}
 
         ret = {'num_cells': num_cells, 'volume': vol_sum}
-        ret |= _eval(rho_pred[sel], rho_true[sel], vol_sel, name='rho_cell')
-        ret |= _eval(E_pred[sel], E_true[sel], vol_sel, name='E_cell')
-        ret |= _eval(u_pred[sel], u_true[sel], vol_sel, name='u_cell')
-        ret |= _eval(residual[sel], None, vol_sel, name='res_cell')
+
+        if 'u_true' in sim_output and 'u_pred' in sim_output:
+            u_true = _to_numpy(sim_output['u_true'].cells) # meters
+            u_pred = _to_numpy(sim_output['u_pred'].cells) # meters
+            ret |= _evaluate(u_pred[sel], u_true[sel], vol_sel, name='u_cell')
+
+        if 'residual' in sim_output:
+            residual = _to_numpy(sim_output['residual'].cells)
+            ret |= _evaluate(residual[sel], None, vol_sel, name='res_cell')
+
+        for name in _mesh_param_fields(sim_output):
+            pred_key = f'{name}_pred'
+            true_key = f'{name}_true'
+
+            pred = _to_numpy(sim_output[pred_key].cells)
+            if sim_output.get(true_key) is not None:
+                true = _to_numpy(sim_output[true_key].cells)
+                ret |= _evaluate(pred[sel], true[sel], vol_sel, name=f'{name}_cell')
+            else:
+                ret |= _evaluate(pred[sel], None, vol_sel, name=f'{name}_cell')
 
         return ret
 
@@ -437,6 +434,46 @@ class EvaluatorCallback(Callback):
         utils.log(f'{phase.capitalize()} metrics @ epoch {epoch}: \n{m}')
 
 
+
+def _material_labels(outputs, index):
+    labels = set()
+    if 'mat_true' in outputs:
+        mat_mask = _to_numpy(outputs['mat_true'][index]).reshape(-1, 1)
+        labels |= set(np.unique(mat_mask[mat_mask > 0]))
+    if outputs.get('sim') is not None:
+        sim_output = outputs['sim'][index]
+        if sim_output and sim_output.get('material') is not None:
+            mat_cells = _to_numpy(sim_output['material'].cells)
+            labels |= set(np.unique(mat_cells[mat_cells > 0]))
+    return sorted(labels)
+
+
+def _voxel_param_fields(outputs):
+    names = []
+    for k, v in outputs.items():
+        if not k.endswith('_pred'):
+            continue
+        name = k[:-5]
+        if name not in {'E', 'nu', 'G', 'K', 'mu', 'lam', 'rho'}:
+            continue
+        if torch.is_tensor(v) and v.ndim == 5 and v.shape[1] == 1:
+            names.append(name)
+    return sorted(set(names))
+
+
+def _mesh_param_fields(sim_output):
+    names = []
+    for k, v in sim_output.items():
+        if not k.endswith('_pred'):
+            continue
+        name = k[:-5]
+        if name not in {'E', 'nu', 'G', 'K', 'mu', 'lam', 'rho'}:
+            continue
+        if getattr(v, 'cells') is not None:
+            names.append(name)
+    return sorted(set(names))
+
+
 def ensure_material_map(outputs):
     if 'mat_pred' in outputs:
         return outputs
@@ -445,6 +482,10 @@ def ensure_material_map(outputs):
         mat_logits = outputs['mat_logits']                # (B,C,I,J,K)
         mat_pred = torch.argmax(mat_logits, dim=1)        # (B,I,J,K)
         outputs['mat_pred'] = mat_pred.unsqueeze(1).cpu() # (B,1,I,J,K)
+        return outputs
+
+    if 'E_true' not in outputs or 'E_pred' not in outputs:
+        utils.warn('Cannot estimate material map from provided outputs.')
         return outputs
 
     batch_size = len(outputs['example'])
@@ -457,9 +498,11 @@ def ensure_material_map(outputs):
         mat_true = _to_numpy(outputs['mat_true'][k]) # (B,1,I,J,K)
         E_true   = _to_numpy(outputs['E_true'][k])   # (B,1,I,J,K)
         E_pred   = _to_numpy(outputs['E_pred'][k])   # (B,1,I,J,K)
+
         mat_pred_a = predict_material_map(E_pred, E_true, mat_true, mode='absolute')
         mat_pred_r = predict_material_map(E_pred, E_true, mat_true, mode='relative')
         mat_pred_o = predict_material_map(E_pred, E_true, mat_true, mode='ordinal')
+
         outputs['mat_pred_a'][k] = torch.from_numpy(mat_pred_a)
         outputs['mat_pred_r'][k] = torch.from_numpy(mat_pred_r)
         outputs['mat_pred_o'][k] = torch.from_numpy(mat_pred_o)

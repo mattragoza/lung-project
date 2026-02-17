@@ -190,7 +190,7 @@ def run_training(examples, config):
         evaluation.LoggerCallback(keys=task.metric_keys),
         evaluation.PlotterCallback(keys=task.metric_keys),
         evaluation.ViewerCallback(keys=task.viewer_keys),
-        evaluation.EvaluatorCallback(**evaluator_kws),
+        evaluation.EvaluatorCallback(task=task, **evaluator_kws),
         evaluation.TimerCallback()
     ]
 
