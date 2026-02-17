@@ -104,6 +104,7 @@ def run_optimize(examples, config):
     outputs = RunOutputs(stage='optimize', **config.pop('outputs', {}))
 
     all_metrics = []
+    failed_sids = []
     for ex in examples:
         utils.log(f'Optimizing subject: {ex.subject}')
         try:
@@ -114,13 +115,17 @@ def run_optimize(examples, config):
                 all_metrics.append(metrics)
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
-            raise
+            failed_sids.append(ex.subject)
+            if len(examples) == 1:
+                raise
 
     if all_metrics:
         import pandas as pd
         csv_path = outputs.csv_path(name='metrics')
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         df = pd.concat(all_metrics).to_csv(csv_path, index=False)
+
+    utils.log(f'Failed subjects: {failed_sids}')
 
 
 def run_training(examples, config):

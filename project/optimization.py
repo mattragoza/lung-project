@@ -10,7 +10,7 @@ from .models import ParameterSpec
 def optimize_example(ex, config, output_path, raster_base):
     utils.check_keys(
         config,
-        valid={'param_specs', 'physics_adapter', 'pde_solver', 'optimizer', 'evaluator'},
+        valid={'targets', 'param_specs', 'physics_adapter', 'pde_solver', 'optimizer', 'evaluator'},
         where='optimization'
     )
     from . import datasets, physics, models, evaluation
@@ -33,7 +33,9 @@ def optimize_example(ex, config, output_path, raster_base):
         **physics_adapter_kws
     )
 
-    opt_targets = ['E', 'nu', 'rho']
+    # ----- optimization targets -----
+    opt_targets = config.get('targets', ['E'])
+    utils.log(f'Targets: {opt_targets}')
 
     # ----- initialize param specs -----
     param_specs_cfg = config.get('param_specs', {})

@@ -33,9 +33,9 @@ class WarpFEMSolver(base.PDESolver):
     def __init__(
         self,
         relative_loss: bool=True,
-        tv_reg_weight: float=0.0, # 1e-4 to 5e-2
+        tv_reg_weight: float=1e-4,
         eps_reg: float=1e-3,
-        eps_div: float=1e-12,
+        eps_div: float=1e-6,
         cg_tol:  float=1e-5,
         scalar_degree: int=1,
         vector_degree: int=1,
@@ -177,7 +177,7 @@ class WarpFEMSolver(base.PDESolver):
                 arrays=[res.dof_values, u_sim.dof_values]
             )
             with tape:
-                loss = self.compute_loss(mu, lam, u_sim, u_obs, mask)
+                loss = self.compute_loss(mu, lam, rho, u_sim, u_obs, mask)
 
         outputs = {
             'u_sim': wp.to_torch(u_sim.dof_values),
@@ -304,7 +304,7 @@ class WarpFEMSolver(base.PDESolver):
             output=res.dof_values
         )
 
-    def compute_loss(self, mu, lam, u_sim, u_obs, mask):
+    def compute_loss(self, mu, lam, rho, u_sim, u_obs, mask):
         num = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
         den = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
 
@@ -334,7 +334,7 @@ class WarpFEMSolver(base.PDESolver):
 
         wp.fem.integrate(
             tv_reg_form,
-            fields={'mu': mu, 'lam': lam},
+            fields={'mu': mu, 'lam': lam, 'rho': rho},
             values={'eps_reg': self.eps_reg, 'eps_div': self.eps_div},
             domain=self.interior,
             output=reg
@@ -426,16 +426,19 @@ def tv_reg_form(
     s: wp.fem.Sample,
     mu: wp.fem.Field,
     lam: wp.fem.Field,
+    rho: wp.fem.Field,
     eps_reg: float,
     eps_div: float,
 ):
-    # TV regularization on phi = log mu ~= log E
-    # grad phi = grad (log E)
-    # grad phi = (grad E) / E
-    # grad phi = (grad (k mu)) / (k mu) (for constant nu)
-    # grad phi = (grad mu) / mu
-    grad_phi = wp.fem.grad(mu, s) / (mu(s) + eps_div)
-    return wp.sqrt(wp.dot(grad_phi, grad_phi) + eps_reg * eps_reg)
+    # TV regularization on gradient of log params
+    grad_mu = wp.fem.grad(mu, s) / (mu(s) + eps_div)
+    grad_lam = wp.fem.grad(lam, s) / (lam(s) + eps_div)
+    grad_rho = wp.fem.grad(rho, s) / (rho(s) + eps_div)
+    return (
+        wp.sqrt(wp.dot(grad_mu, grad_mu) + eps_reg * eps_reg) +
+        wp.sqrt(wp.dot(grad_lam, grad_lam) + eps_reg * eps_reg) +
+        wp.sqrt(wp.dot(grad_rho, grad_rho) + eps_reg * eps_reg)
+    )
 
 
 def rasterize_field(src: wp.fem.Field, shape, bounds, background=0.0):
