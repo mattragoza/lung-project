@@ -2,7 +2,7 @@ dataset:
     name: "ShapeNet"
     root: "/ocean/projects/asc170022p/mtragoza/lung-project/data/ShapeNetSem"
     examples:
-        subjects: "subjects.csv"
+        subjects: "2026-01-26_preprocessed.csv"
         variant: "2026-01-15"
     metadata:
         parse_metadata: true
@@ -124,7 +124,7 @@ optimization:
 training:
     task:
         inputs: ["image"]
-        targets: ["E", "nu", "rho"]
+        targets: ["E"]
         losses:
             E: "sim"
     split:
@@ -134,17 +134,17 @@ training:
         seed: 0
     transform:
         normalize: true
-        image_mean: 1.0
+        image_mean: 0.0
         image_std: 1.0
         apply_mask: true
         do_augment: true
+        rand_rotate: true
+        rand_reflect: true
+        sigma_trans: 4.0
     loader:
         batch_size: 1
         shuffle: true
-        num_workers: 2
-        persistent_workers: true
-        prefetch_factor: 2
-        pin_memory: true
+        num_workers: 0
     model:
         backbone:
             _class: UNet3Dv2
@@ -163,8 +163,6 @@ training:
                 mode: "log10"
                 mean: 3.4863
                 std: 0.3271
-                min: 0.0
-                max: 6.0
             nu:
                 mode: "logit"
                 min: 0.0
