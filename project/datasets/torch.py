@@ -184,8 +184,9 @@ def apply_data_augmentation(
     sample['img_true'] = resample_volume(sample['img_true'], mode='linear')
     sample['mat_true'] = resample_volume(sample['mat_true'], mode='nearest')
     sample['mask'] = resample_volume(sample['mask'], mode='nearest')
-    if 'E_true' in sample:
-        sample['E_true'] = resample_volume(sample['E_true'], mode='linear')
+    for key in ['E_true', 'nu_true', 'rho_true']:
+        if key in sample:
+            sample[key] = resample_volume(sample[key], mode='linear')
 
     # update affine to reflect new voxel -> world mapping
     sample['affine'] = B

@@ -356,10 +356,11 @@ class Trainer:
             target_key = self.task.target_key(tgt)
 
             y_pred = preds[output_key].to(device)
-            y_true = batch[target_key].to(device)
-            y_base = torch.full_like(y_pred, self.task.base_value(tgt), dtype=torch.float)
 
             if tgt in self.task.losses:
+                y_true = batch[target_key].to(device)
+                y_base = y_true.mean().expand(y_true.shape)
+
                 loss_name = self.task.losses[tgt].lower()
                 loss_weight = self.task.weights.get(tgt, 1.0)
 
@@ -385,15 +386,15 @@ class Trainer:
                 total_base = total_base + loss_weight * base
 
             outputs[output_key] = preds[output_key].cpu()
-            outputs[target_key] = batch[target_key].cpu()
-
             m = mask.expand(-1, y_pred.shape[1], -1, -1, -1)
             outputs[output_key + '.mean'] = torch.mean(y_pred[m].float()).detach().cpu()
             outputs[output_key + '.std']  = torch.std(y_pred[m].float()).detach().cpu()
 
-            m = mask.expand(-1, y_true.shape[1], -1, -1, -1)
-            outputs[target_key + '.mean'] = torch.mean(y_true[m].float()).detach().cpu()
-            outputs[target_key + '.std']  = torch.std(y_true[m].float()).detach().cpu()
+            if target_key in batch:
+                outputs[target_key] = batch[target_key].cpu()
+                m = mask.expand(-1, y_true.shape[1], -1, -1, -1)
+                outputs[target_key + '.mean'] = torch.mean(y_true[m].float()).detach().cpu()
+                outputs[target_key + '.std']  = torch.std(y_true[m].float()).detach().cpu()
 
         outputs['loss'] = total_loss
         outputs['loss_base'] = total_base.detach().cpu()

@@ -115,7 +115,7 @@ class LoggerCallback(Callback):
         utils.log(f'[Epoch {epoch} | {phase.capitalize()} batch {batch}] start')
 
     def on_batch_end(self, epoch, phase, batch, step, outputs):
-        metrics = {k: round(outputs[k].item(), 4) for k in self.keys}
+        metrics = {k: round(outputs[k].item(), 4) for k in self.keys if k in outputs}
         utils.log(f'[Epoch {epoch} | {phase.capitalize()} batch {batch}] {metrics}')
 
     def on_phase_end(self, epoch, phase, *args, **kwargs):
@@ -147,8 +147,9 @@ class PlotterCallback(Callback):
         for key in self.history:
             if key == 'mat_pred':
                 outputs = ensure_material_map(outputs)
-            val = float(outputs[key].float().norm().item())
-            self.history[key][phase][step].append(val)
+            if key in outputs:
+                val = float(outputs[key].float().norm().item())
+                self.history[key][phase][step].append(val)
         if batch % self.update_interval == 0:
             self._update_plot()
 
@@ -245,6 +246,9 @@ class ViewerCallback(Callback):
         for key, viewer in self.viewers.items():
             if key.startswith('mat_pred'):
                 outputs = ensure_material_map(outputs)
+
+            if key not in outputs:
+                continue
 
             array = _to_numpy(outputs[key][k])
             assert array.ndim == 4, array.shape

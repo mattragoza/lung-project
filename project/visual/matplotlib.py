@@ -13,7 +13,7 @@ class SliceViewer:
         ax_height=2,
         ax_width=2,
         spacing=(0.5, 0.75),
-        padding=(0.75, 0.75, 0.5, 0.25),
+        padding=(0.75, 0.75, 0.5, 0.5),
         cbar_width=0.25,
         cbar_spacing=0.25,
         line_color='rgb',
@@ -446,6 +446,12 @@ def get_color_kws(key: str, n_labels: int=None):
 
     elif key in {'logE', 'logE_true', 'logE_pred'}:
         return dict(cmap='jet', clim=(2, 6), line_color='cmy')
+
+    elif key in {'nu', 'nu_true', 'nu_pred'}:
+        return dict(cmap='gray', clim=(0, 0.5), line_color='cmy')
+
+    elif key in {'rho', 'rho_true', 'rho_pred'}:
+        return dict(cmap='gray', clim=(0, 2e3), line_color='cmy')
 
     elif key in {'material', 'mat_true'} or key.startswith('mat_pred'):
         return dict(cmap=get_label_cmap(n_labels), clim=(1, n_labels))
