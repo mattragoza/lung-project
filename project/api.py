@@ -216,5 +216,10 @@ def run_training(examples, config):
         val_loader=val_loader,
         callbacks=callbacks
     )
+    try:
+        trainer.load_state(by_mtime=True)
+    except FileNotFoundError:
+        utils.warn('Checkpoint not found.')
+
     trainer.train(**trainer_kws)
 

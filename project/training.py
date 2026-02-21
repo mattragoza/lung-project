@@ -207,10 +207,11 @@ class Trainer:
 
     # ----- training loop / phases -----
 
-    def train(self, num_epochs, val_every=1, save_every=10):
+    def train(self, num_epochs, val_every=1, test_every=10, save_every=10):
         self.start_train()
+        start_step = self.step
 
-        for ep in range(num_epochs):
+        while self.epoch < num_epochs:
             self.start_epoch()
 
             if self.output_dir and save_every and self.epoch % save_every == 0:
@@ -219,10 +220,13 @@ class Trainer:
             if self.val_loader and val_every and self.epoch % val_every == 0:
                 self.run_val_phase()
 
+            if self.test_loader and test_every and self.epoch % test_every == 0:
+                self.run_test_phase()
+
             self.run_train_phase()
             self.end_epoch()
 
-        if self.output_dir:
+        if self.output_dir and self.step > start_step:
             self.save_state()
 
         if self.val_loader:
@@ -403,27 +407,6 @@ class Trainer:
         outputs['loss_ratio'] = (total_loss / total_base.clamp_min(1e-12)).detach().cpu()
         return outputs
 
-    # ----- saving / loading state -----
-
-    def save_state(self, path=None):
-        if path is None:
-            path = self.output_dir / f'checkpoint{self.epoch:05d}.pt'
-        utils.log(f'Saving {path}')
-        torch.save({
-            'epoch': self.epoch,
-            'model': self.model.state_dict(),
-            'optim': self.optimizer.state_dict()
-        }, path)
-
-    def load_state(self, path=None, epoch=None):
-        if path is None:
-            path = self.output_dir / f'checkpoint{epoch:05d}.pt'
-        utils.log(f'Loading {path}')
-        state = torch.load(path)
-        self.epoch = state['epoch']
-        self.model.load_state_dict(state['model'])
-        self.optimizer.load_state_dict(state['optim'])
-
     # ----- callback hooks -----
 
     def start_train(self):
@@ -481,6 +464,62 @@ class Trainer:
     def end_backward(self):
         for cb in self.callbacks:
             cb.on_backward_end()
+
+    # ----- saving / loading state -----
+
+    def save_state(self, path=None):
+        if path is None:
+            path = self._checkpoint_path(self.epoch)
+        path = Path(path)
+        utils.log(f'Saving {path}')
+        torch.save({
+            'epoch': self.epoch,
+            'step':  self.step,
+            'model': self.model.state_dict(),
+            'optim': self.optimizer.state_dict()
+        }, path)
+
+    def load_state(self, path=None, epoch=None, by_mtime=False):
+        if path is not None:
+            path = Path(path)
+        elif epoch is not None:
+            path = self._checkpoint_path(epoch)
+        else:
+            path = self._latest_checkpoint(by_mtime)
+        if path is None:
+            raise FileNotFoundError(f'No checkpoints found in {self.output_dir}')
+
+        utils.log(f'Loading {path}')
+        state = torch.load(path, map_location=self.device)
+
+        self.epoch = int(state.get('epoch', 0))
+        self.step  = int(state.get('step', 0))
+
+        self.model.load_state_dict(state['model'])
+        self.optimizer.load_state_dict(state['optim'])
+
+    def _checkpoint_path(self, epoch: int):
+        return self.output_dir / f'checkpoint{epoch:05d}.pt'
+
+    def _latest_checkpoint(self, by_mtime=False):
+        ckpts = self._list_checkpoints(by_mtime)
+        if not ckpts:
+            return None
+        return ckpts[-1]
+
+    def _list_checkpoints(self, by_mtime=False):
+        if not self.output_dir.exists():
+            return []
+        import re
+        ckpt_re = re.compile(r'^checkpoint(\d{5})\.pt$')
+        if by_mtime:
+            key = lambda p: p.stat().st_mtime
+        else:
+            key = lambda p: p.name
+        return sorted(
+            [p for p in self.output_dir.iterdir() if p.is_file() and ckpt_re.match(p.name)],
+            key=key
+        )
 
 
 @torch.no_grad()
