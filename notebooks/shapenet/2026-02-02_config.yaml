@@ -120,6 +120,8 @@ optimization:
         max_iter: 100
         history_size: 10
         line_search_fn: "strong_wolfe"
+        global_steps: 10
+        local_steps: 10
 
 training:
     task:

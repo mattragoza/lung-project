@@ -32,26 +32,26 @@ class WarpFEMSolver(base.PDESolver):
 
     def __init__(
         self,
-        relative_loss: bool=True,
-        tv_reg_weight: float=1e-4,
-        eps_reg: float=1e-3,
-        eps_div: float=1e-6,
-        cg_tol:  float=1e-5,
-        scalar_degree: int=1,
-        vector_degree: int=1,
-        scalar_dtype=wp.float32,
-        vector_dtype=wp.vec3f,
-        device=None
+        relative_loss: bool = True,
+        tv_reg_weight: float = 1e-4,
+        eps_reg: float = 1e-3,
+        eps_div: float = 1e-6,
+        cg_tol:  float = 1e-5,
+        scalar_degree: int = 1,
+        vector_degree: int = 1,
+        scalar_dtype = wp.float32,
+        vector_dtype = wp.vec3f,
+        device: str = None
     ):
         # loss and regularization 
         # NOTE: relative loss greatly improves gradient scaling
-        self.relative_loss = relative_loss
-        self.tv_reg_weight = tv_reg_weight
+        self.relative_loss = bool(relative_loss)
+        self.tv_reg_weight = float(tv_reg_weight)
 
         # numerical constants
-        self.eps_reg = eps_reg
-        self.eps_div = eps_div
-        self.cg_tol  = cg_tol
+        self.eps_reg = float(eps_reg)
+        self.eps_div = float(eps_div)
+        self.cg_tol  = float(cg_tol)
 
         # mesh field representation
         self.scalar_degree = scalar_degree
@@ -64,12 +64,20 @@ class WarpFEMSolver(base.PDESolver):
         self._initialized = False
 
     def bind_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
+        '''
+        Args:
+            verts: (N, 3) float tensor of vertex coords, in meters
+            cells: (M, 4) int tensor of tetra cell vertex indices
+        '''
+        assert verts.ndim == 2 and verts.shape[1] == 3, verts.shape
+        assert cells.ndim == 2 and cells.shape[1] == 4, cells.shape
 
         # IMPORTANT NOTE:
         # - ScopedDevice doesn't affect wp.from_torch, only internal arrays
         # - if the geometry is defined from cpu but other arrays are cuda,
         #   rasterization fails silently- it produces all background values
         # - therefore we explicitly move the geometry to the solver device
+
         verts = verts.to(self.device)
         cells = cells.to(self.device)
 
@@ -78,7 +86,6 @@ class WarpFEMSolver(base.PDESolver):
             cells = _as_warp_array(cells, dtype=wp.int32)
 
             self.geometry = wp.fem.Tetmesh(cells, verts, build_bvh=True)
-
             self.interior = wp.fem.Cells(self.geometry)
             self.boundary = wp.fem.BoundarySides(self.geometry)
 
@@ -92,30 +99,37 @@ class WarpFEMSolver(base.PDESolver):
 
             self.g = self.vector_dtype([0, 0, -9.81]) # m/s^2
             self.I = wp.diag(self.vector_dtype(1.0))
+
             self._initialized = True
 
     def make_scalar_field(self, values=None, requires_grad=None):
         assert self._initialized, 'Geometry not initialized'
+
         s = self.S.make_field() # controlled by ScopedDevice
         if values is not None:
             array_vals = _as_warp_array(values, dtype=self.scalar_dtype)
             _copy_warp_array(src=array_vals, dst=s.dof_values)
+
         if requires_grad is not None:
-            s.dof_values.requires_grad = requires_grad
+            s.dof_values.requires_grad = bool(requires_grad)
         elif values is not None:
             s.dof_values.requires_grad = values.requires_grad
+
         return s
 
     def make_vector_field(self, values=None, requires_grad=None):
         assert self._initialized, 'Geometry not initialized'
+
         v = self.V.make_field() # controlled by ScopedDevice
         if values is not None:
             array_vals = _as_warp_array(values, dtype=self.vector_dtype)
             _copy_warp_array(src=array_vals, dst=v.dof_values)
+
         if requires_grad is not None:
-            v.dof_values.requires_grad = requires_grad
+            v.dof_values.requires_grad = bool(requires_grad)
         elif values is not None:
             v.dof_values.requires_grad = values.requires_grad
+
         return v
 
     def rasterize_scalar_field(self, values, shape, bounds):
@@ -141,6 +155,7 @@ class WarpFEMSolver(base.PDESolver):
             P = self.assemble_projector()
             u0 = self.apply_lifting(P, u_bc)
             f_tilde = self.shift_rhs(f, K, u0)
+
             u_sim = self.make_vector_field()
             self.solve_forward(K, u_sim, f_tilde, P, M, u0)
 
@@ -199,17 +214,21 @@ class WarpFEMSolver(base.PDESolver):
 
     def backward(self, loss_grad, context):
         input_grads = {}
+
         with wp.ScopedDevice(self.device):
             context['loss'].grad = _as_warp_array(loss_grad)
             context['tape'].backward()
+
             input_grads['mu'] = _torch_grad(context['mu'].dof_values)
             input_grads['lam'] = _torch_grad(context['lam'].dof_values)
             input_grads['rho'] = _torch_grad(context['rho'].dof_values)
             input_grads['u_bc'] = _torch_grad(context['u_bc'].dof_values)
             input_grads['u_obs'] = _torch_grad(context['u_obs'].dof_values)
-            for key in list(context.keys()): # try to explicitly free warp arrays
+
+            for key in context: # try to explicitly free warp context
                 context[key] = None
             context.clear()
+
         return input_grads
 
     def zero_grad(self):
@@ -305,6 +324,7 @@ class WarpFEMSolver(base.PDESolver):
         )
 
     def compute_loss(self, mu, lam, rho, u_sim, u_obs, mask):
+
         num = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
         den = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
 
@@ -339,6 +359,7 @@ class WarpFEMSolver(base.PDESolver):
             domain=self.interior,
             output=reg
         )
+
         loss = err + reg * self.tv_reg_weight
         loss.requires_grad = True
         return loss
