@@ -359,20 +359,22 @@ class Trainer:
 
             if tgt in self.task.losses:
                 y_true = batch[target_key].to(device)
-                y_base = y_true.mean().expand(y_true.shape)
 
                 loss_name = self.task.losses[tgt].lower()
                 loss_weight = self.task.weights.get(tgt, 1.0)
 
                 if loss_name == 'ce':
+                    y_base = torch.zeros_like(y_pred) # uniform logits
                     loss = masked_cross_entropy(y_pred, y_true, mask)
                     base = masked_cross_entropy(y_base, y_true, mask)
 
                 elif loss_name == 'mse':
+                    y_base = torch.full_like(y_pred, y_true.mean())
                     loss = mean_squared_error(y_pred, y_true, mask)
                     base = mean_squared_error(y_base, y_true, mask)
 
                 elif loss_name == 'msre':
+                    y_base = torch.full_like(y_pred, y_true.mean())
                     loss = mean_squared_relative_error(y_pred, y_true, mask)
                     base = mean_squared_relative_error(y_base, y_true, mask)
 
@@ -576,7 +578,7 @@ def masked_cross_entropy(pred, target, mask):
         mask: (B, 1, I, J, K) boolean foreground mask.
     '''
     assert target.min() >= 0
-    assert target.max() < pred.shape[1]
+    assert target.max() < pred.shape[1], pred.shape
 
     if target.dim() == 5:
         target = target.squeeze(1)
