@@ -330,7 +330,6 @@ class EvaluatorCallback(Callback):
 
         mask = _to_numpy(outputs['mask'][index].bool()).reshape(-1, 1)
         mat_true = _to_numpy(outputs['mat_true'][index]).reshape(-1, 1)
-        mat_pred = _to_numpy(outputs['mat_pred'][index]).reshape(-1, 1)
 
         if label is None:
             sel = mask
@@ -354,13 +353,15 @@ class EvaluatorCallback(Callback):
             else:
                 ret |= _evaluate(pred[sel], None, name=f'{name}_vox')
     
-        if label is not None:
+        if label is not None and 'mat_pred' in outputs:
+            mat_pred = _to_numpy(outputs['mat_pred'][index]).reshape(-1, 1)
             ret |= _evaluate(mat_pred == label, mat_true == label, name='mat_vox')
 
             for key in ['mat_pred_a', 'mat_pred_r', 'mat_pred_o']:
                 if outputs.get(key) is not None:
                     mat_pred_ = _to_numpy(outputs[key][index]).reshape(-1, 1)
                     ret |= _evaluate(mat_pred_ == label, mat_true == label, name=key)
+
         return ret
 
     def compute_mesh_metrics(self, outputs, index, label=None):

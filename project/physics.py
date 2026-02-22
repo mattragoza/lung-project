@@ -89,7 +89,9 @@ class PhysicsAdapter:
         pde_solver_cls: str,
         pde_solver_kws=None,
         use_cache: bool=True,
-        device: str='cuda'
+        device: str='cuda',
+        snr_db: float = None,
+        seed: int = 0
     ):
         self.default_nu  = float(default_nu)
         self.default_rho = float(default_rho)
@@ -101,6 +103,9 @@ class PhysicsAdapter:
         self.vector_degree = vector_degree
 
         self.device = device
+
+        self.snr_db = None if snr_db is None else float(snr_db)
+        self.seed = int(seed)
 
         self.pde_solver_cls = solvers.base.PDESolver.get_subclass(pde_solver_cls)
         self.pde_solver_kws = pde_solver_kws or {}
@@ -190,18 +195,30 @@ class PhysicsAdapter:
         bc_spec: Any
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        if bc_spec in ctx.bc_cache:
-            return ctx.bc_cache[bc_spec]
+        if bc_spec not in ctx.bc_cache: # cache clean only
+            params = self.get_material_params(ctx)
+            mu, lam, rho = self.get_canonical_params(ctx, params)
+            u_bc = self.get_boundary_condition(ctx, bc_spec)
+            self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
+            u_true = self.pde_solver.solve(mu, lam, rho, u_bc)
+            ctx.bc_cache[bc_spec] = (u_bc.cpu(), u_true.detach().cpu())
 
-        params = self.get_material_params(ctx)
-        mu, lam, rho = self.get_canonical_params(ctx, params)
-        u_bc = self.get_boundary_condition(ctx, bc_spec)
+        u_bc, u_obs = ctx.bc_cache[bc_spec]
 
-        self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
-        u_obs = self.pde_solver.solve(mu, lam, rho, u_bc)
+        if self.snr_db is not None:
+            u_obs = self.add_observation_noise(u_obs, self.snr_db, self.seed)
 
-        ctx.bc_cache[bc_spec] = (u_bc.cpu(), u_obs.detach().cpu())
-        return ctx.bc_cache[bc_spec]
+        return u_bc, u_obs
+
+    def add_observation_noise(self, u_obs, snr_db, seed=None):
+        rng = torch.Generator(device=u_obs.device)
+        rng.manual_seed(seed)
+
+        sigma = (10 ** -(snr_db / 10)) ** 0.5
+        rms = torch.sqrt(torch.mean(u_obs**2))
+        eta = torch.randn(u_obs.shape, generator=rng)
+
+        return u_obs + sigma * rms * eta
 
     # ----- public API -----
 
@@ -245,8 +262,8 @@ class PhysicsAdapter:
         unit_m: float,
         params: Dict[str, torch.Tensor],
         bc_spec: Any,
-        ret_outputs: bool = False,
-        p_obs: float = 1.0
+        p_obs: float = 1.0,
+        ret_outputs: bool = False
     ):
         ctx = self.get_pde_context(mesh, unit_m)
         u_bc, u_obs = self.get_observations(ctx, bc_spec)

@@ -92,24 +92,25 @@ def optimize_example(ex, config, output_path, raster_base):
     }
 
     # ----- rasterize parameters -----
-    utils.log('Rasterizing parameter fields')
+    if raster_base:
+        utils.log('Rasterizing parameter fields')
 
-    raster_base.mkdir(parents=True, exist_ok=True)
-    shape = mask.shape[1:]
+        raster_base.mkdir(parents=True, exist_ok=True)
+        shape = mask.shape[1:]
 
-    for name in opt_targets:
-        pred_key = f'{name}_pred'
-        true_key = f'{name}_true'
-        pred_vox = physics_adapter.rasterize_scalar_field(
-            mesh, unit_m, params[name], shape, affine
-        )
-        outputs[pred_key] = pred_vox.cpu().unsqueeze(0)
-        if true_key in sample:
-            true_vox = sample[true_key]
-            outputs[true_key] = true_vox.cpu().unsqueeze(0)
+        for name in opt_targets:
+            pred_key = f'{name}_pred'
+            true_key = f'{name}_true'
+            pred_vox = physics_adapter.rasterize_scalar_field(
+                mesh, unit_m, params[name], shape, affine
+            )
+            outputs[pred_key] = pred_vox.cpu().unsqueeze(0)
+            if true_key in sample:
+                true_vox = sample[true_key]
+                outputs[true_key] = true_vox.cpu().unsqueeze(0)
 
-        raster_path = raster_base / f'{pred_key}.nii.gz'
-        fileio.save_nibabel(raster_path, pred_vox[0].detach().cpu().numpy(), affine)
+            raster_path = raster_base / f'{pred_key}.nii.gz'
+            fileio.save_nibabel(raster_path, pred_vox[0].detach().cpu().numpy(), affine)
 
     evaluator.evaluate(epoch=0, phase='optimize', batch=0, step=0, outputs=outputs)
     evaluator.on_phase_end(epoch=0, phase='optimize')
@@ -142,7 +143,7 @@ def optimize_params_two_stage(
     mesh: meshio.Mesh,
     unit_m: float,
     bc_spec: Any,
-    z_vars: Dictr[str, torch.nn.Parameter],
+    z_vars: Dict[str, torch.nn.Parameter],
     param_specs: Dict[str, ParameterSpec],
     optimizer_cls,
     optimizer_kws,
