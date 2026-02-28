@@ -124,6 +124,7 @@ optimization:
         local_steps: 10
 
 training:
+    random_seed: 0
     task:
         inputs: ["image"]
         targets: ["E"]
