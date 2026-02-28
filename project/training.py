@@ -207,7 +207,7 @@ class Trainer:
 
     # ----- training loop / phases -----
 
-    def train(self, num_epochs, val_every=1, test_every=10, save_every=10):
+    def train(self, num_epochs, val_every=1, test_every=5, save_every=10):
         self.start_train()
         start_step = self.step
 
@@ -263,6 +263,7 @@ class Trainer:
             self.optimizer.step()
             self.optimizer.zero_grad(set_to_none=True)
             self.step += 1
+
             self.end_batch(phase='train', batch=i, outputs=outputs)
 
         self.end_phase(phase='train')

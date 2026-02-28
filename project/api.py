@@ -132,7 +132,7 @@ def run_training(examples, config):
     utils.check_keys(
         config,
         {'split', 'transform', 'loader', 'model', 'optimizer', 'evaluator'} |
-        {'physics_adapter', 'pde_solver', 'trainer', 'task'},
+        {'physics_adapter', 'pde_solver', 'trainer', 'task', 'random_seed'},
         where='training'
     )
     from . import datasets, models, training, evaluation, physics
@@ -140,6 +140,7 @@ def run_training(examples, config):
     import torch
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
+    torch.manual_seed(config.get('random_seed'))
 
     utils.log('Running training')
     config = config.copy()

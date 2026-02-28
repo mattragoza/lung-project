@@ -216,7 +216,7 @@ class PhysicsAdapter:
 
         sigma = (10 ** -(snr_db / 10)) ** 0.5
         rms = torch.sqrt(torch.mean(u_obs**2))
-        eta = torch.randn(u_obs.shape, generator=rng)
+        eta = torch.randn(*u_obs.shape, generator=rng)
 
         return u_obs + sigma * rms * eta
 
