@@ -32,7 +32,7 @@ class TorchDataset(torch.utils.data.Dataset):
         self.image_std  = image_std
         self.apply_mask = apply_mask
 
-        # data augmentation settings
+        # data augmentation
         self.do_augment   = do_augment
         self.rand_rotate  = rand_rotate
         self.rand_reflect = rand_reflect
@@ -102,9 +102,19 @@ class TorchDataset(torch.utils.data.Dataset):
         }
 
         if 'elastic_field' in ex.paths:
-            elast_a = fileio.load_nibabel(ex.paths['elastic_field']).get_fdata()
-            elast_t = _as_cpu_tensor(elast_a, dtype=torch.float).unsqueeze(0)
-            sample['E_true'] = elast_t
+            elastic_a = fileio.load_nibabel(ex.paths['elastic_field']).get_fdata()
+            elastic_t = _as_cpu_tensor(elastic_a, dtype=torch.float).unsqueeze(0)
+            sample['E_true'] = elastic_t
+
+        if 'poisson_field' in ex.paths:
+            poisson_a = fileio.load_nibabel(ex.paths['poisson_field']).get_fdata()
+            poisson_t = _as_cpu_tensor(poisson_a, dtype=torch.float).unsqueeze(0)
+            sample['nu_true'] = poisson_t
+
+        if 'density_field' in ex.paths:
+            density_a = fileio.load_nibabel(ex.paths['density_field']).get_fdata()
+            density_t = _as_cpu_tensor(density_a, dtype=torch.float).unsqueeze(0)
+            sample['rho_true'] = density_t
 
         return sample
 
@@ -126,6 +136,9 @@ class TorchDataset(torch.utils.data.Dataset):
 
         if 'E_true' in sample:
             sample['logE_true'] = torch.log10(sample['E_true'].clamp_min(eps))
+
+        if 'rho_true' in sample:
+            sample['logrho_true'] = torch.log10(sample['rho_true'].clamp_min(eps))
 
         return sample
 

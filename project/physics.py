@@ -167,8 +167,15 @@ class PhysicsAdapter:
 
         elif elast_keys == ('E', 'nu'):
             E, nu = params['E'], params['nu']
+            if torch.any(nu > 0.49):
+                utils.warn(f'Material is nearly incompressible: {nu.max()}')
             mu = E / (2*(1 + nu))
             lam = E * nu / ((1 + nu)*(1 - 2*nu))
+
+        elif elast_keys == ('E', 'K'):
+            E, K = params['E'], params['K']
+            mu = 3*K*E /  (9*K - E)
+            lam = K - (2/3)*G
 
         elif elast_keys == ('G', 'K'):
             G, K = params['G'], params['K']

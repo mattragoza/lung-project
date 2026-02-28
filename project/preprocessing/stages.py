@@ -104,7 +104,13 @@ def create_volume_mesh_from_mask(mask_path, output_path, config, random_seed=0):
 
 
 def create_material_mask(
-    mask_path, output_path, density_path, elastic_path, config, random_seed=0
+    mask_path,
+    output_path,
+    density_path,
+    elastic_path,
+    poisson_path,
+    config,
+    random_seed=0
 ):
     utils.check_keys(
         config,
@@ -134,13 +140,15 @@ def create_material_mask(
 
     # NOTE we can always recover material properties from material label + catalog,
     #   we choose to save the material property masks here for supervised training
-    rho_mask, E_mask = materials.assign_material_properties(mat_mask, mat_df)
-
-    density_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_nibabel(density_path, rho_mask.astype(np.float32), nifti.affine)
+    E_mask, nu_mask, rho_mask = materials.assign_material_properties(mat_mask, mat_df)
 
     elastic_path.parent.mkdir(parents=True, exist_ok=True)
+    poisson_path.parent.mkdir(parents=True, exist_ok=True)
+    density_path.parent.mkdir(parents=True, exist_ok=True)
+
     fileio.save_nibabel(elastic_path, E_mask.astype(np.float32), nifti.affine)
+    fileio.save_nibabel(poisson_path, nu_mask.astype(np.float32), nifti.affine)
+    fileio.save_nibabel(density_path, rho_mask.astype(np.float32), nifti.affine)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, mat_mask.astype(np.int16), nifti.affine)

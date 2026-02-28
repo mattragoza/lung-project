@@ -71,6 +71,7 @@ def preprocess_shapenet(ex, config):
         output_path=ex.paths['material_mask'],
         density_path=ex.paths['density_field'],
         elastic_path=ex.paths['elastic_field'],
+        poisson_path=ex.paths['poisson_field'],
         config=config.get('material_mask', {}),
         random_seed=subj_seed
     )

@@ -201,16 +201,18 @@ def assign_materials_to_regions(region_mask, mat_df, sampling_kws=None, random_s
 
 def assign_material_properties(material_labels, mat_df):
 
-    density_by_material = mat_df['density_val'].to_numpy()
     elastic_by_material = mat_df['elastic_val'].to_numpy()
+    poisson_by_material = mat_df['poisson_val'].to_numpy()
+    density_by_material = mat_df['density_val'].to_numpy()
 
     if material_labels.min() < 0:
         raise ValueError(material_labels.unique())
 
-    density_values = density_by_material[material_labels]
     elastic_values = elastic_by_material[material_labels]
+    poisson_values = poisson_by_material[material_labels]
+    density_values = density_by_material[material_labels]
 
-    return density_values, elastic_values
+    return elastic_values, poisson_values, density_values
 
 
 def infer_material_by_region(region_labels, material_labels):

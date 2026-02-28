@@ -50,6 +50,7 @@ DEFAULT_TAGS = {
     'material_mask': 'material',
     'density_field': 'density',
     'elastic_field': 'elastic',
+    'poisson_field': 'poisson',
     'input_image':   'image',
     'material_mesh': 'mat',
     'simulate_mesh': 'sim',
@@ -64,6 +65,7 @@ DEPENDENCY_GRAPH = {
     'material_mask': ['region_mask'],
     'density_field': ['material_mask'],
     'elastic_field': ['material_mask'],
+    'poisson_field': ['material_mask'],
     'input_image':   ['material_mask'],
     'material_mesh': ['material_mask', 'volume_mesh'],
     'interp_mesh':   ['input_image', 'material_mesh'],
@@ -214,6 +216,7 @@ class ShapeNetDataset(base.Dataset):
                 paths['input_image']   = self.path(s, v, 'image', name=names['input_image'])
                 paths['density_field'] = self.path(s, v, 'field', name=names['density_field'])
                 paths['elastic_field'] = self.path(s, v, 'field', name=names['elastic_field'])
+                #paths['poisson_field'] = self.path(s, v, 'field', name=names['poisson_field'])
 
             yield base.Example(
                 dataset='ShapeNet',
