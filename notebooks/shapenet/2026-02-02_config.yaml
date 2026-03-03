@@ -99,8 +99,8 @@ optimization:
             std: 0.3271
         nu:
             mode: "logit"
-            min: 0.0
-            max: 0.5
+            min: 0.0001
+            max: 0.4999
         rho:
             mode: "log10"
             mean: 3.0
@@ -168,8 +168,8 @@ training:
                 std: 0.3271
             nu:
                 mode: "logit"
-                min: 0.0
-                max: 0.5
+                min: 0.0001
+                max: 0.4999
             rho:
                 mode: "log10"
                 mean: 3.0
