@@ -246,6 +246,7 @@ registry = MetricRegistry()
 
 registry.add_metric('mean', mean_norm, requires_target=False)
 registry.add_metric('rms',  rms_norm,  requires_target=False)
+registry.add_metric('std',  std_norm,  requires_target=False)
 
 registry.add_metric('mae',   absolute_error,  requires_target=True)
 registry.add_metric('mre',   relative_error,  requires_target=True)
@@ -258,7 +259,7 @@ registry.add_metric('srmse', standardized_rmse, requires_target=True)
 registry.add_metric('dice', dice_score, requires_target=True)
 
 for name in ['E', 'nu', 'G', 'K', 'mu', 'lam', 'rho', 'u']:
-    registry.add_profile(name, ['mean', 'rms', 'rmse', 'nrmse', 'srmse', 'pcorr', 'scorr'])
+    registry.add_profile(name, ['mean', 'std', 'mae', 'mre', 'rms', 'rmse', 'nrmse', 'srmse', 'pcorr', 'scorr'])
 
 registry.add_profile('res', ['mean', 'rms'])
 registry.add_profile('mat', ['dice'])

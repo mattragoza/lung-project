@@ -207,7 +207,7 @@ class Trainer:
 
     # ----- training loop / phases -----
 
-    def train(self, num_epochs, val_every=1, test_every=5, save_every=10):
+    def train(self, num_epochs, val_every=1, test_every=5, save_every=5):
         self.start_train()
         start_step = self.step
 

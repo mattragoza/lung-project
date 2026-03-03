@@ -283,6 +283,12 @@ class EvaluatorCallback(Callback):
         self.output_dir = Path('./outputs')
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
+        self.ex_path = _get_new_path(self.output_dir / 'example_metrics.csv')
+        self.mat_path = _get_new_path(self.output_dir / 'material_metrics.csv')
+
+        print(self.ex_path)
+        print(self.mat_path)
+
     def on_batch_end(self, epoch, phase, batch, step, outputs):
         self.evaluate(epoch, phase, batch, step, outputs)
 
@@ -416,9 +422,6 @@ class EvaluatorCallback(Callback):
         return ret
 
     def summarize(self, epoch, phase):
-        ex_path  = self.output_dir / 'example_metrics.csv'
-        mat_path = self.output_dir / 'material_metrics.csv'
-
         ex_df_all = pd.concat(
             [pd.DataFrame(rows) for rows in self.example_rows.values()],
             ignore_index=True
@@ -427,7 +430,7 @@ class EvaluatorCallback(Callback):
             [pd.DataFrame(rows) for rows in self.material_rows.values()],
             ignore_index=True
         )
-        for df, path in [(ex_df_all, ex_path), (mat_df_all, mat_path)]:
+        for df, path in [(ex_df_all, self.ex_path), (mat_df_all, self.mat_path)]:
             if df.empty:
                 continue
             tmp = path.with_suffix(path.suffix + '.tmp')
@@ -442,6 +445,11 @@ class EvaluatorCallback(Callback):
         m = pd.DataFrame(self.example_rows[phase])
         utils.log(f'{phase.capitalize()} metrics @ epoch {epoch}: \n{m}')
 
+
+def _get_new_path(path: Path):
+    while path.is_file():
+        path = Path(str(path) + '.new')
+    return path
 
 
 def _material_labels(outputs, index):
