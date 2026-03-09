@@ -3,6 +3,8 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import ipywidgets
 
+from ..core import utils
+
 
 class SliceViewer:
 
@@ -33,9 +35,9 @@ class SliceViewer:
         )
 
         # style helpers
-        self.imshow_kws = with_defaults(imshow_kws, interpolation='none')
+        self.imshow_kws = utils.update_defaults(imshow_kws, interpolation='none')
         color_dict = get_color_dict(brightness=0.5, saturation=1.0)
-        colors = as_iterable(line_color, length=3, string_ok=True)
+        colors = utils.as_iterable(line_color, length=3, string_ok=True)
         colors = [color_dict.get(c, c) for c in colors]
         self.i_line_kws = dict(color=colors[0], linewidth=line_width)
         self.j_line_kws = dict(color=colors[1], linewidth=line_width)
@@ -191,20 +193,20 @@ def subplot_grid(
     n_cols,
     ax_height,
     ax_width,
-    spacing=0.3,
-    padding=0.0,
+    spacing=0.3, # hw
+    padding=0.0, # lrbt
     cbar_width=0.0,
     cbar_spacing=0.0,
     **subplot_kws
 ):
-    ax_heights = as_iterable(ax_height, length=n_rows)
-    ax_widths  = as_iterable(ax_width,  length=n_cols)
+    ax_heights = utils.as_iterable(ax_height, length=n_rows)
+    ax_widths  = utils.as_iterable(ax_width,  length=n_cols)
 
-    h_spacing, w_spacing = as_iterable(spacing, length=2)
-    l_pad, r_pad, b_pad, t_pad = as_iterable(padding, length=4)
+    h_spacing, w_spacing = utils.as_iterable(spacing, length=2)
+    l_pad, r_pad, b_pad, t_pad = utils.as_iterable(padding, length=4)
 
-    assert len(ax_heights) == n_rows
-    assert len(ax_widths)  == n_cols
+    assert len(ax_heights) == n_rows, (len(ax_heights), n_rows)
+    assert len(ax_widths)  == n_cols, (len(ax_widths), n_cols)
 
     total_ax_height = sum(ax_heights)
     total_ax_width  = sum(ax_widths)
@@ -255,28 +257,6 @@ def subplot_grid(
         return fig, axes
 
 
-def as_iterable(obj, length=1, string_ok=False):
-    if not is_iterable(obj, string_ok):
-        return [obj] * length
-    return obj
-
-
-def is_iterable(obj, string_ok=False):
-    if isinstance(obj, str):
-        return string_ok
-    return hasattr(obj, '__iter__')
-
-
-def fractional_index(idx, length):
-    if isinstance(idx, float):
-        return int(round(idx * (length - 1)))
-    return idx
-
-
-def with_defaults(overrides=None, **defaults):
-    return defaults | (overrides or {})
-
-
 def set_ax_spine_props(ax, color, linewidth):
     for spine in ['left', 'right', 'top', 'bottom']:
         ax.spines[spine].set_color(color)
@@ -299,35 +279,46 @@ def get_color_dict(brightness=0.5, saturation=1.0):
     }
 
 
-def get_label_cmap(n_labels: int):
+def get_label_cmap(
+    n_labels: int = 5,
+    base: str = 'tab10',
+    select = (0, 9, 2, 8, 7),
+    weights = (0.2, 0.7, 0.1),
+    grayscale: bool = False,
+    colorblind: bool = False,
+    include_background: bool = True
+):
     import matplotlib.pyplot as plt
     from matplotlib.colors import ListedColormap
-    colors = plt.get_cmap('tab10').colors
-    assert n_labels <= len(colors), (n_labels, len(colors))
-    cmap = ListedColormap(colors[:n_labels])
-    cmap.set_under('white')
-    cmap.set_over('black')
-    return cmap
+    c = plt.get_cmap(base).colors
+    if select:
+        c = [c[idx] for idx in select]
+    w_r, w_g, w_b = weights
+    if colorblind:
+        cb = lambda r,g: (r*w_r + g*w_g) / (w_r + w_g)
+        c = [(cb(r,g), cb(r,g), b) for r,g,b in c]
+    if grayscale:
+        gs = lambda r,g,b: (r*w_r + g*w_g + b*w_b)
+        c = [(gs(r,g,b),)*3 for r,g,b in c]
+    assert n_labels <= len(c), (n_labels, len(c))
+    if include_background:
+        return ListedColormap(['white'] + c[:n_labels])
+    return ListedColormap(c[:n_labels])
 
 
-def get_color_kws(key: str, n_labels: int=None):
-    if key in {'image', 'img_true', 'img_pred'}:
+def get_color_kws(key: str, n_labels: int = 5):
+    k = key.lower()
+    if k in {'image', 'img_true', 'img_pred'}:
         return dict(cmap='gray', clim=(-1, 1))
-
-    elif key in {'E', 'E_true', 'E_pred'}:
+    elif k in {'E', 'E_true', 'E_pred'}:
         return dict(cmap='jet', clim=(0, 1e4), line_color='cmy')
-
-    elif key in {'logE', 'logE_true', 'logE_pred'}:
+    elif k in {'logE', 'logE_true', 'logE_pred'}:
         return dict(cmap='jet', clim=(2, 6), line_color='cmy')
-
-    elif key in {'nu', 'nu_true', 'nu_pred'}:
+    elif k in {'nu', 'nu_true', 'nu_pred'}:
         return dict(cmap='gray', clim=(0, 0.5), line_color='cmy')
-
-    elif key in {'rho', 'rho_true', 'rho_pred'}:
+    elif k in {'rho', 'rho_true', 'rho_pred'}:
         return dict(cmap='gray', clim=(0, 2e3), line_color='cmy')
-
-    elif key in {'material', 'mat_true'} or key.startswith('mat_pred'):
+    elif k in {'material', 'mat_true'} or k.startswith('mat_pred'):
         return dict(cmap=get_label_cmap(n_labels), clim=(1, n_labels))
-
     return dict(cmap='seismic', clim=(-3, 3))
 

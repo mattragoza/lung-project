@@ -142,8 +142,10 @@ def is_iterable(obj, string_ok=False):
     return hasattr(obj, '__iter__')
 
 
-def as_iterable(obj, string_ok=False):
-    return obj if is_iterable(obj, string_ok) else [obj]
+def as_iterable(obj, string_ok=False, length=1):
+    if not is_iterable(obj, string_ok):
+        return [obj] * length
+    return obj
 
 
 def as_bool(val):

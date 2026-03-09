@@ -2,8 +2,120 @@ import numpy as np
 import pyvista as pv
 
 
+
+def wrap_image(image, key='image'):
+    assert image.ndim in {3, 4}, image.shape
+    X, Y, Z = image.shape[:3]
+    m = pv.ImageData(dimensions=(X,Y,Z), spacing=(1,1,1), origin=(0,0,0))
+    if image.ndim == 4:
+        X, Y, Z, C = image.shape
+        m.point_data[key] = image.reshape(-1, C, order='F')
+    elif image.ndim == 3:
+        m.point_data[key] = image.reshape(-1, order='F')
+    return m
+
+
+def render_image(image, mask=None, **kwargs):
+    m = wrap_image(image, key='image')
+    if mask is not None:
+        m.point_data['mask'] = mask.reshape(-1, order='F')
+        m = m.threshold(scalars='mask', value=0.5)
+    return render_mesh(m, scalars='image', **kwargs)
+
+
+def show_image(image, mask=None, **kwargs):
+    m = wrap_image(image, key='image')
+    if mask is not None:
+        m.point_data['mask'] = mask.reshape(-1, order='F')
+        m = m.threshold(scalars='mask', value=0.5)
+    return show_mesh(m, scalars='image', **kwargs)
+
+
+def render_mesh(mesh, size=512, **kwargs):
+    m = pv.wrap(mesh)
+    p = pv.Plotter(window_size=(size, size), off_screen=True)
+    plot_mesh(m, plotter=p, **kwargs)
+    p.camera_position = 'iso'
+    p.camera.azimuth = 180
+    try:
+        return p.screenshot(return_img=True)
+    finally:
+        p.close()
+
+
+def show_mesh(mesh, size=512, **kwargs):
+    m = pv.wrap(mesh)
+    p = pv.Plotter(window_size=(size, size), off_screen=False)
+    plot_mesh(m, plotter=p, **kwargs)
+    p.camera_position = 'iso'
+    p.camera.azimuth = 180
+    try:
+        return p.show(jupyter_backend='static')
+    finally:
+        p.close()
+
+
+def plot_mesh(
+    mesh,
+    plotter=None,
+    main_kws=None,
+    slice_xyz=None,
+    slice_kws=None, 
+    glyph_factor=None,
+    glyph_kws=None,
+    **kwargs
+):
+    m = pv.wrap(mesh)
+    p = plotter or pv.Plotter()
+
+    kws = kwargs | (main_kws or {})
+    p.add_mesh(m, show_scalar_bar=False, **kws)
+
+    if slice_xyz is True or (slice_xyz is None and slice_kws):
+        slice_xyz = (0.5, 0.5, 0.5)
+
+    if slice_xyz:
+        s = slice_mesh(mesh, *slice_xyz)
+        kws = kwargs | (slice_kws or {})
+        plot_mesh(s, plotter=p, **kws)
+
+    if glyph_factor is None and glyph_kws:
+        glyph_factor = 1.0
+
+    if glyph_factor and glyph_factor > 0:
+        kws = kwargs | (glyph_kws or {})
+        vector = kws.pop('scalars', 'u')
+        g = m.glyph(scale=vector, orient=vector, factor=glyph_factor)
+        plot_mesh(g, plotter=p, **kws)
+
+    return p
+
+
+def slice_mesh(mesh, x: float, y: float, z: float):
+    m = pv.wrap(mesh)
+    x_vals, y_vals, z_vals = m.points.T
+    x_min, x_max = x_vals.min(), x_vals.max()
+    y_min, y_max = y_vals.min(), y_vals.max()
+    z_min, z_max = z_vals.min(), z_vals.max()
+    s = m.slice_orthogonal(
+        x=x_min + x * (x_max - x_min),
+        y=y_min + y * (y_max - y_min),
+        z=z_min + z * (z_max - z_min)
+    )
+    return s
+
+
+# DEPRECATED
+
+
 def _all_same_shape(arrays):
     return len(set(a.shape for a in arrays)) == 1
+
+
+def as_pyvista_mesh(mesh, scalar=None):
+    mesh = pv.wrap(mesh)
+    mesh.set_active_scalars(scalar)
+    return mesh
 
 
 def as_pyvista_grid(affine=None, **kwargs):
@@ -28,20 +140,6 @@ def as_pyvista_grid(affine=None, **kwargs):
         grid.point_data[k] = v.flatten(order='F')
 
     return grid
-
-
-def as_pyvista_mesh(mesh, scalar=None):
-    mesh = pv.wrap(mesh)
-    mesh.set_active_scalars(scalar)
-    return mesh
-
-
-def plot_mesh(mesh, scalar=None, plotter=None, **plot_kws):
-    plotter = plotter or pv.Plotter()
-    mesh = as_pyvista_mesh(mesh, scalar)
-    plotter.add_mesh(mesh, scalars=scalar, **plot_kws)
-    plotter.enable_depth_peeling(10)
-    return plotter
 
 
 def plot_volume(array, affine=None, scalar='value', plotter=None, **plot_kws):
