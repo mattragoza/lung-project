@@ -2,41 +2,52 @@ import numpy as np
 import pyvista as pv
 
 
-
-def wrap_image(image, key='image'):
+def wrap_image(image, key='image', on_points=False):
     assert image.ndim in {3, 4}, image.shape
     X, Y, Z = image.shape[:3]
-    m = pv.ImageData(dimensions=(X,Y,Z), spacing=(1,1,1), origin=(0,0,0))
+    m = pv.ImageData(
+        dimensions=(X, Y, Z) if on_points else (X+1, Y+1, Z+1),
+        spacing=(1, 1, 1),
+        origin=(0, 0, 0)
+    )
+    mesh_data = m.point_data if on_points else m.cell_data
     if image.ndim == 4:
-        X, Y, Z, C = image.shape
-        m.point_data[key] = image.reshape(-1, C, order='F')
+        mesh_data[key] = image.reshape(-1, image.shape[-1], order='F')
     elif image.ndim == 3:
-        m.point_data[key] = image.reshape(-1, order='F')
+        mesh_data[key] = image.reshape(-1, order='F')
     return m
 
 
 def render_image(image, mask=None, **kwargs):
     m = wrap_image(image, key='image')
     if mask is not None:
-        m.point_data['mask'] = mask.reshape(-1, order='F')
-        m = m.threshold(scalars='mask', value=0.5)
+        m.cell_data['mask'] = mask.reshape(-1, order='F')
+        m = m.threshold(scalars='mask', value=1.0 - 1e-12)
     return render_mesh(m, scalars='image', **kwargs)
 
 
 def show_image(image, mask=None, **kwargs):
     m = wrap_image(image, key='image')
     if mask is not None:
-        m.point_data['mask'] = mask.reshape(-1, order='F')
+        m.cell_data['mask'] = mask.reshape(-1, order='F')
         m = m.threshold(scalars='mask', value=0.5)
     return show_mesh(m, scalars='image', **kwargs)
 
 
-def render_mesh(mesh, size=512, **kwargs):
+def render_mesh(mesh, size=512, view='iso', **kwargs):
     m = pv.wrap(mesh)
     p = pv.Plotter(window_size=(size, size), off_screen=True)
     plot_mesh(m, plotter=p, **kwargs)
-    p.camera_position = 'iso'
-    p.camera.azimuth = 180
+    if view == 'iso':
+        p.camera_position = 'iso'
+        p.camera.azimuth = 180
+    elif view == 'xy':
+        p.view_xy()
+    elif view == 'xz':
+        p.view_xz()
+    elif view == 'yz':
+        p.view_yz()
+    p.camera.parallel_projection = True
     try:
         return p.screenshot(return_img=True)
     finally:

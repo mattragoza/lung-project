@@ -93,7 +93,7 @@ class ParameterSpec:
         max: float = None,
         eps: float = 1e-12
     ):
-        assert mode in {'linear', 'log10', 'logit'}
+        assert mode in {'linear', 'log10', 'logit'}, mode
         assert std > 0
         self.mode = mode
         self.mean = mean

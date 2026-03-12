@@ -14,8 +14,8 @@ class SliceViewer:
         index=None,
         ax_height=2,
         ax_width=2,
-        spacing=(0.5, 0.75),
-        padding=(0.75, 0.75, 0.5, 0.5),
+        spacing=(0.5, 0.75), # hw
+        padding=(0.75, 0.75, 0.5, 0.5), # lrbt
         cbar_width=0.25,
         cbar_spacing=0.25,
         line_color='rgb',
@@ -245,7 +245,7 @@ def subplot_grid(
     if cbar_width > 0:
         cbar_left = total_ax_width + total_w_spacing + l_pad + cbar_spacing
         cbar_bottom = b_pad
-        cbar_height = total_ax_height
+        cbar_height = total_ax_height + total_h_spacing
         cbar_ax = fig.add_axes([
             cbar_left   / fig_width,
             cbar_bottom / fig_height,
