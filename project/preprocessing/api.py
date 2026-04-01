@@ -155,3 +155,26 @@ def preprocess_copdgene(ex, config):
         config=config.get('deformable_registration', {})
     )
 
+
+def preprocess_emory4dct(ex, config):
+    utils.check_keys(
+        config,
+        {'image_resampling', 'image_segmentation', 'region_mask', 'volume_mesh', 'deformable_registration'},
+        where='preprocessing[emory4dct]'
+    )
+    _ensure_output(
+        stages.convert_image_to_nifti,
+        input_path=ex.paths['fixed_source'],
+        output_path=ex.paths['fixed_nifti'],
+        shape=ex.metadata['source_shape'],
+        spacing=ex.metadata['source_spacing']
+    )
+    _ensure_output(
+        stages.convert_image_to_nifti,
+        input_path=ex.paths['moving_source'],
+        output_path=ex.paths['moving_nifti'],
+        shape=ex.metadata['source_shape'],
+        spacing=ex.metadata['source_spacing']
+    )
+
+

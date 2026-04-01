@@ -1,0 +1,11 @@
+case_id,case_num,case_dir,img_suffix,shape_x,shape_y,shape_z,spacing_x,spacing_y,spacing_z,n_features
+case1,1,Case1Pack,_s,256,256,94,0.97,0.97,2.5,1280
+case2,2,Case2Pack,-ssm,256,256,112,1.16,1.16,2.5,1487
+case3,3,Case3Pack,-ssm,256,256,104,1.15,1.15,2.5,1561
+case4,4,Case4Pack,-ssm,256,256,99,1.13,1.13,2.5,1166
+case5,5,Case5Pack,-ssm,256,256,106,1.1,1.1,2.5,1268
+case6,6,Case6Pack,,512,512,128,0.97,0.97,2.5,419
+case7,7,Case7Pack,,512,512,136,0.97,0.97,2.5,398
+case8,8,Case8Deploy,,512,512,128,0.97,0.97,2.5,476
+case9,9,Case9Pack,,512,512,128,0.97,0.97,2.5,342
+case10,10,Case10Pack,,512,512,120,0.97,0.97,2.5,435

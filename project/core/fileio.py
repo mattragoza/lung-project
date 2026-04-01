@@ -72,12 +72,11 @@ def load_fenics(path, label_key='label'):
     return mesh, cell_labels
 
 
-def load_analyze75(img_file, shape, dtype=None):
+def load_binary_image(path, shape, dtype='h'):
     # source: https://stackoverflow.com/questions/27507928/loading-analyze-7-5-format-images-in-python
     import numpy as np
     utils.log(f'Loading {path}')
-    dtype = dtype or np.int16
-    array = np.fromfile(img_file, dtype=dtype).reshape(shape)
+    array = np.fromfile(path, dtype=dtype).reshape(shape)
     item_size = array.dtype.itemsize
     array.strides = (
         item_size,

@@ -310,7 +310,15 @@ def simulate_displacement_field(
     fileio.save_meshio(output_path, mesh)
 
 
-# ---- CT image preprocessing -----
+# ----- CT image preprocessing -----
+
+
+def convert_image_to_nifti(input_path, output_path, shape, spacing, slope=1, intercept=-1024):
+    import numpy as np
+    array = fileio.load_binary_image(input_path, shape, dtype='h')
+    array = (array * slope + intercept).astype(np.float32)[:,:,::-1]
+    affine = np.diag([spacing[0], spacing[1], spacing[2], 1.0])
+    fileio.save_nibabel(output_path, array, affine)
 
 
 def resample_image_on_reference(
