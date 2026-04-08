@@ -24,7 +24,9 @@ def preprocess_example(ex, config):
         return preprocess_copdgene(ex, config)
     elif dataset == 'emory4dct':
         return preprocess_emory4dct(ex, config)
-    raise ValueError(f'Invalid dataset: {ex.dataset:r}')
+    elif dataset == 'bmc4dct':
+        raise preprocess_bmc4dct(ex, config)
+    raise ValueError(f'Invalid dataset: {ex.dataset!r}')
     
 
 def preprocess_shapenet(ex, config):
@@ -177,4 +179,7 @@ def preprocess_emory4dct(ex, config):
         spacing=ex.metadata['source_spacing']
     )
 
+
+def preprocess_bmc4dct(ex, config):
+    raise NotImplementedError
 

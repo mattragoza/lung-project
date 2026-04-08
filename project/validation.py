@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 
+from .core import utils
+
 
 def _missing(s):
     return pd.isna(s) or str(s).strip() == ''
@@ -24,7 +26,25 @@ def _fail(metrics, reason):
     return {**metrics, 'valid': False, 'reasons': reasons}
 
 
-def validate_example(
+def validate_example(ex, config):
+    dataset = ex.dataset.lower()
+    if dataset == 'shapenet':
+        return validate_shapenet(ex, **config)
+    elif dataset == 'copdgene':
+        raise NotImplementedError(ex.dataset)
+    elif dataset == 'emory4dct':
+        raise NotImplementedError(ex.dataset)
+    elif dataset == 'bmc4dct':
+        return validate_bmc4dct(ex, **config)
+    raise ValueError(f'Invalid dataset: {ex.dataset!r}')
+
+
+def validate_bmc4dct(ex):
+    metrics = {'subject': ex.subject}
+    return metrics
+
+
+def validate_shapenet(
     ex, metadata: bool=True, paths: bool=True, artifacts: bool=True
 ):
     '''
