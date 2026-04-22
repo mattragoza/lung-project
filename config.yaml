@@ -1,18 +1,19 @@
 dataset:
     name: "ShapeNet"
-    root: "data/ShapeNetSem"
+    root: "/ocean/projects/asc170022p/mtragoza/lung-project/data/ShapeNetSem"
     examples:
-        subjects: "one_subject.csv"
-        variant: "TEST"
+        subjects: "2026-01-26_preprocessed.csv"
+        variant: "2026-01-15"
     metadata:
         parse_metadata: true
         unit_policy: "prefer_metadata"
         default_unit: 0.01
     selectors:
-        binary_mask: "pad37"
-        input_image: "solid"
+        material_mask: "uniform-seed"
+        input_image: "no-noise"
 
 preprocessing:
+    random_seed: 0
     binary_mask:
         foreground_filter:
             max_components: 1
@@ -36,11 +37,11 @@ preprocessing:
             lloyd: true
             odt: true
     material_mask:
-        material_catalog: "2025-11-20_materials.csv"
+        material_catalog: "/ocean/projects/asc170022p/mtragoza/lung-project/notebooks/shapenet/2026-02-10_materials.csv"
         material_sampling:
-            sample_rate: 0.0001
+            sample_rate: 1.0
     material_mesh:
-        material_catalog: "2025-11-20_materials.csv"
+        material_catalog: "/ocean/projects/asc170022p/mtragoza/lung-project/notebooks/shapenet/2026-02-10_materials.csv"
     displacement_simulation:
         physics_adapter:
             nu_value: 0.4
@@ -50,7 +51,19 @@ preprocessing:
         pde_solver:
             _class: WarpFEMSolver
     image_generation:
-        material_catalog: "2025-11-20_materials.csv"
+        use_simple: True
+        material_catalog: "/ocean/projects/asc170022p/mtragoza/lung-project/notebooks/shapenet/2026-02-10_materials.csv"
+        texture_source:
+            annotations: "/ocean/projects/asc170022p/mtragoza/lung-project/notebooks/shapenet/2025-11-20_annotations.csv"
+            use_solid: true
+            preprocessing:
+                do_crop: true
+                crop_size: 256
+                do_filter: true
+                cutoff_freq: 0.03125
+                normalize: true
+                norm_mode: "mean_std"
+                per_channel: true
         intensity_model:
             density_scale: 1000.0
             density_power: 1.0
@@ -60,40 +73,46 @@ preprocessing:
             bias_from_density: 1.0
             bias_from_elastic: 0.0
             bias_from_product: 0.0
-            range_offset: 0.0
+            range_offset: 0.5
             range_from_density: 0.0
             range_from_elastic: 0.0
-            range_from_product: 1.0
-        texture_source:
-            annotations: "/ocean/projects/asc170022p/mtragoza/lung-project/notebooks/shapenet/2025-11-20_annotations.csv"
-            use_solid: true
-            iqr_mult: 4.0
+            range_from_product: 0.0
         noise_model:
-            seed: 0
             tex_noise_len: 2.0
-            tex_noise_std: 0.1
+            tex_noise_std: 0.0
             mul_noise_len: 128
-            mul_noise_std: 0.25
+            mul_noise_std: 0.0
             add_noise_len: 0.5
-            add_noise_std: 0.025
-            psf_sigma: 0.5
-            mat_sigma: 1.0
+            add_noise_std: 0.0
+            psf_sigma: 0.0
+            mat_sigma: 0.0
     image_interpolation:
         order: 1
         mode: "nearest"
 
 optimization:
-    parameters:
-        init_value: 3.0
-        param_func: "pow10"
+    targets: ["E"]
+    param_specs:
+        E:
+            mode: "log10"
+            mean: 3.4863
+            std: 0.3271
+        nu:
+            mode: "logit"
+            min: 0.0001
+            max: 0.4999
+        rho:
+            mode: "log10"
+            mean: 3.0
+            std: 0.1
     physics_adapter:
-        nu_value: 0.4
-        rho_bias: 1000
-        rho_known: false
+        default_nu: 0.4
+        default_rho: 1000
         scalar_degree: 1
         vector_degree: 1
     pde_solver:
         _class: WarpFEMSolver
+        relative_loss: true
         tv_reg_weight: 0.0001
     optimizer:
         _class: LBFGS
@@ -101,44 +120,72 @@ optimization:
         max_iter: 100
         history_size: 10
         line_search_fn: "strong_wolfe"
+        global_steps: 10
+        local_steps: 10
 
 training:
+    random_seed: 0
+    task:
+        inputs: ["image"]
+        targets: ["E"]
+        losses:
+            E: "sim"
     split:
         key: "category"
         test_ratio: 0.2
         val_ratio: 0.1
         seed: 0
+    transform:
+        normalize: true
+        image_mean: 0.0
+        image_std: 1.0
+        apply_mask: true
+        do_augment: true
+        rand_rotate: true
+        rand_reflect: true
+        sigma_trans: 4.0
     loader:
         batch_size: 1
         shuffle: true
-        num_workers: 4
-        pin_memory: true
+        num_workers: 0
     model:
-        _class: UNet3D
-        conv_channels: 16
-        n_enc_blocks: 3
-        n_conv_units: 2
-        n_init_units: 1
-        kernel_size: 3
-        relu_leak: 0.01
-        norm_type: "group"
-        num_groups: 8
-        pooling_type: "max"
-        upsample_mode: "nearest"
-        output_func: "pow10"
+        backbone:
+            _class: UNet3Dv2
+            out_channels: 16
+            conv_channels: 16
+            n_conv_units: 2
+            n_sub_levels: 2
+            kernel_size: 3
+            relu_leak: 0.1
+            norm_type: "group"
+            num_groups: 4
+            pooling_type: "max"
+            upsample_mode: "trilinear"
+        param_specs:
+            E:
+                mode: "log10"
+                mean: 3.4863
+                std: 0.3271
+            nu:
+                mode: "logit"
+                min: 0.0001
+                max: 0.4999
+            rho:
+                mode: "log10"
+                mean: 3.0
+                std: 0.1
     physics_adapter:
-        nu_value: 0.4
-        rho_bias: 1000
-        rho_known: false
+        default_nu: 0.4
+        default_rho: 1000
         scalar_degree: 1
         vector_degree: 1
     pde_solver:
         _class: WarpFEMSolver
+        relative_loss: true
         tv_reg_weight: 0.0001
     optimizer:
         _class: AdamW
-        lr: 0.0001
+        lr: 0.001
     trainer:
-        supervised: false
         num_epochs: 100
 
