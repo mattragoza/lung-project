@@ -12,6 +12,7 @@ class SliceViewer:
         self,
         array=None,
         index=None,
+        vox_spacing=None,
         ax_height=2,
         ax_width=2,
         spacing=(0.5, 0.75), # hw
@@ -24,7 +25,11 @@ class SliceViewer:
         **imshow_kws
     ):
         self._initialized = False
-    
+
+        self.vox_spacing = vox_spacing or (1, 1, 1)
+        self.vox_size = tuple(abs(v) for v in self.vox_spacing)
+        self.ax_signs = tuple(1 if v >= 0 else -1 for v in self.vox_spacing)
+
         self.subplot_kws = dict(
             ax_height=ax_height,
             ax_width=ax_width,
@@ -90,27 +95,73 @@ class SliceViewer:
 
         self.update_images()
 
+    def _display_slice_i(self):
+        _, sy, sz = self.ax_signs
+        if self.rgb:
+            return self.array[:, self.index[0], ::sy, ::sz].T
+        return self.array[self.index[0], ::sy, ::sz].T
+
+    def _display_slice_j(self):
+        sx, _, sz = self.ax_signs
+        if self.rgb:
+            return self.array[:, ::sx, self.index[1], ::sz].T
+        return self.array[::sx, self.index[1], ::sz].T
+
+    def _display_slice_k(self):
+        sx, sy, _ = self.ax_signs
+        if self.rgb:
+            return self.array[:, ::sx, ::sy, self.index[2]].T
+        return self.array[::sx, ::sy, self.index[2]].T
+
+    def _display_coords(self, i, j, k):
+        I, J, K = self.shape
+        sx, sy, sz = self.ax_signs
+
+        # map voxel indices to displayed coordinates
+        di = i if sx > 0 else I - 1 - i
+        dj = j if sy > 0 else J - 1 - j
+        dk = k if sz > 0 else K - 1 - k
+
+        return di, dj, dk
+
     def init_images(self, interact=True):
         assert not self._initialized
         i, j, k = self.index
 
-        if self.rgb:
-            self.im_i = self.ax_i.imshow(self.array[:,i,:,:].T, origin='lower', **self.imshow_kws)
-            self.im_j = self.ax_j.imshow(self.array[:,:,j,:].T, origin='lower', **self.imshow_kws)
-            self.im_k = self.ax_k.imshow(self.array[:,:,:,k].T, origin='lower', **self.imshow_kws)
-        else:
-            self.im_i = self.ax_i.imshow(self.array[i,:,:].T, origin='lower', **self.imshow_kws)
-            self.im_j = self.ax_j.imshow(self.array[:,j,:].T, origin='lower', **self.imshow_kws)
-            self.im_k = self.ax_k.imshow(self.array[:,:,k].T, origin='lower', **self.imshow_kws)
+        dx, dy, dz = self.vox_size
+        aspect_i = dz / dy
+        aspect_j = dz / dx
+        aspect_k = dy / dx
+
+        self.im_i = self.ax_i.imshow(
+            self._display_slice_i(),
+            origin='lower',
+            aspect=aspect_i,
+            **self.imshow_kws
+        )
+        self.im_j = self.ax_j.imshow(
+            self._display_slice_j(),
+            origin='lower',
+            aspect=aspect_j,
+            **self.imshow_kws
+        )
+        self.im_k = self.ax_k.imshow(
+            self._display_slice_k(),
+            origin='lower',
+            aspect=aspect_k,
+            **self.imshow_kws
+        )
+        if not self.rgb:
             plt.colorbar(self.im_k, cax=self.cbar_ax)
 
         # crosshair lines
-        self.v_i_j = self.ax_i.axvline(j, **self.j_line_kws)
-        self.h_i_k = self.ax_i.axhline(k, **self.k_line_kws)
-        self.v_j_i = self.ax_j.axvline(i, **self.i_line_kws)
-        self.h_j_k = self.ax_j.axhline(k, **self.k_line_kws)
-        self.v_k_i = self.ax_k.axvline(i, **self.i_line_kws)
-        self.h_k_j = self.ax_k.axhline(j, **self.j_line_kws)
+        di, dj, dk = self._display_coords(i, j, k)
+        self.v_i_j = self.ax_i.axvline(dj, **self.j_line_kws)
+        self.h_i_k = self.ax_i.axhline(dk, **self.k_line_kws)
+        self.v_j_i = self.ax_j.axvline(di, **self.i_line_kws)
+        self.h_j_k = self.ax_j.axhline(dk, **self.k_line_kws)
+        self.v_k_i = self.ax_k.axvline(di, **self.i_line_kws)
+        self.h_k_j = self.ax_k.axhline(dj, **self.j_line_kws)
 
         self.ax_i.set_title(f'i = {i}')
         self.ax_j.set_title(f'j = {j}')
@@ -121,29 +172,25 @@ class SliceViewer:
     
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
-
         self._initialized = True
 
     def update_images(self):
         if not self._initialized:
             return self.init_images()
+
         i, j, k = self.index
 
-        if self.rgb:
-            self.im_i.set_data(self.array[:,i,:,:].T)
-            self.im_j.set_data(self.array[:,:,j,:].T)
-            self.im_k.set_data(self.array[:,:,:,k].T)
-        else:
-            self.im_i.set_data(self.array[i,:,:].T)
-            self.im_j.set_data(self.array[:,j,:].T)
-            self.im_k.set_data(self.array[:,:,k].T)
+        self.im_i.set_data(self._display_slice_i())
+        self.im_j.set_data(self._display_slice_j())
+        self.im_k.set_data(self._display_slice_k())
 
-        self.v_j_i.set_xdata([i, i])
-        self.v_k_i.set_xdata([i, i])
-        self.v_i_j.set_xdata([j, j])
-        self.h_k_j.set_ydata([j, j])
-        self.h_i_k.set_ydata([k, k])
-        self.h_j_k.set_ydata([k, k])
+        di, dj, dk = self._display_coords(i, j, k)
+        self.v_j_i.set_xdata([di, di])
+        self.v_k_i.set_xdata([di, di])
+        self.v_i_j.set_xdata([dj, dj])
+        self.h_k_j.set_ydata([dj, dj])
+        self.h_i_k.set_ydata([dk, dk])
+        self.h_j_k.set_ydata([dk, dk])
 
         self.ax_i.set_title(f'i = {i}')
         self.ax_j.set_title(f'j = {j}')
@@ -154,38 +201,55 @@ class SliceViewer:
 
     def update_i(self, new_i):
         i, j, k = self.index
-        i = int(np.round(new_i))
+        I, _, _ = self.shape
+        i = int(np.clip(np.round(new_i), 0, I - 1))
         self.index = (i, j, k)
         self.update_images()
 
     def update_j(self, new_j):
         i, j, k = self.index
-        j = int(np.round(new_j))
+        _, J, _ = self.shape
+        j = int(np.clip(np.round(new_j), 0, J - 1))
         self.index = (i, j, k)
         self.update_images()
 
     def update_k(self, new_k):
         i, j, k = self.index
-        k = int(np.round(new_k))
+        _, _, K = self.shape
+        k = int(np.clip(np.round(new_k), 0, K - 1))
         self.index = (i, j, k)
         self.update_images()
 
     def on_click(self, event):
         if event.inaxes is None or event.xdata is None or event.ydata is None:
             return
+
+        I, J, K = self.shape
+        sx, sy, sz = self.ax_signs
+
+        def inv_x(coord, n, s):
+            coord = int(np.round(coord))
+            coord = int(np.clip(coord, 0, n - 1))
+            return coord if s > 0 else (n - 1 - coord)
     
         ax = event.inaxes
         if ax == self.ax_i:
-            self.update_j(event.xdata)
-            self.update_k(event.ydata)
-    
+            j = inv_x(event.xdata, J, sy)
+            k = inv_x(event.ydata, K, sz)
+            self.index = (self.index[0], j, k)
+            self.update_images()
+
         elif ax == self.ax_j:
-            self.update_i(event.xdata)
-            self.update_k(event.ydata)
-    
+            i = inv_x(event.xdata, I, sx)
+            k = inv_x(event.ydata, K, sz)
+            self.index = (i, self.index[1], k)
+            self.update_images()
+
         elif ax == self.ax_k:
-            self.update_i(event.xdata)
-            self.update_j(event.ydata)
+            i = inv_x(event.xdata, I, sx)
+            j = inv_x(event.ydata, J, sy)
+            self.index = (i, j, self.index[2])
+            self.update_images()
 
 
 def subplot_grid(
