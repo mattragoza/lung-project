@@ -1,21 +1,21 @@
 name: warp
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
 dependencies:
-  - python
-  - numpy
+  - python>=3.10
+  - numpy>=2
   - pandas
-  - xarray
-  - nibabel
-  - pytorch
-  - cudatoolkit=11.7
-  - torchvision
-  - simpleitk
+  - scipy
   - scikit-image
+  - scikit-learn
+  - pytorch::pytorch
+  - pytorch::pytorch-cuda=12.4
+  - pytorch::torchvision
+  - nibabel
+  - simpleitk
   - meshio
   - pygalmesh
+  - warp-lang
   - matplotlib
   - seaborn
   - ipython
@@ -29,6 +29,3 @@ dependencies:
   - pip
   - pip:
     - TotalSegmentator
-    - --extra-index-url=https://pypi.nvidia.com/
-    - --pre
-    - warp-lang
