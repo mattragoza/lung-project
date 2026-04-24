@@ -1,0 +1,11 @@
+phase_name,phase_percent,has_image,has_sampled,has_extreme
+T00,0,True,True,True
+T10,10,True,True,False
+T20,20,True,True,False
+T30,30,True,True,False
+T40,40,True,True,False
+T50,50,True,True,True
+T60,60,True,False,False
+T70,70,True,False,False
+T80,80,True,False,False
+T90,90,True,False,False

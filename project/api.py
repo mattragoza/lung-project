@@ -31,22 +31,20 @@ class RunOutputs:
 def get_examples(config):
     utils.check_keys(
         config,
-        valid={'name', 'root', 'examples', 'metadata', 'selectors'},
+        valid={'name', 'root', 'examples', 'selectors'},
         where='dataset'
     )
-    from . import datasets
+    from .datasets import Dataset
 
-    config = config.copy()
-    dataset_name = config.pop('name')
-    dataset_root = config.pop('root')
-    examples_kws = config.pop('examples')
-    metadata_kws = config.pop('metadata')
-    selector_kws = config.pop('selectors')
+    dataset_name = config['name'] # required
+    dataset_root = config['root'] # required
+    examples_kws = config.get('examples', {})
+    selector_kws = config.get('selectors', {})
 
     utils.log('Gathering examples')
-    dataset_cls = datasets.base.Dataset.get_subclass(dataset_name)
-    dataset = dataset_cls(dataset_root).get_subset(**examples_kws)
-    return dataset.list_examples(selectors=selector_kws, **metadata_kws)
+    dataset_cls = Dataset.get_subclass(dataset_name)
+    dataset = dataset_cls(dataset_root)
+    return dataset.list_examples(selectors=selector_kws, **examples_kws)
 
 
 def run_validate(examples, config):

@@ -4,6 +4,23 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _resolve_dataset_name(name: str):
+    n = name.lower()
+    if n in {'shapenet', 'shapenetsem'}:
+        from . import shapenet
+        return shapenet.ShapeNetDataset
+    elif n in {'copdgene'}:
+        from . import copdgene
+        return copdgene.COPDGeneDataset
+    elif n in {'emory4dct', 'emory-4dct', 'dirlab'}:
+        from . import emory4dct
+        return emory4dct.Emory4DCTDataset
+    elif n in {'bmc4dct', 'bmc-4dct', '4d_lungs'}:
+        from . import bmc4dct
+        return bmc4dct.BMC4DCTDataset
+    raise ValueError(f'Invalid dataset name: {name!r}')
+
+
 def _resolve_subject_list(val: str|Path|List[str]) -> List[str]:
     from ..core import fileio
     if isinstance(val, Path):
@@ -28,42 +45,23 @@ class Example:
     metadata: Dict[str, Any]
 
 
-@dataclass
-class DataSubset:
-    dataset:  Dataset
-    subjects: List[str]
-    variant:  Optional[str]
-
-    def examples(self, **kwargs) -> Iterable[Example]:
-        return self.dataset.examples(self.subjects, self.variant, **kwargs)
-
-    def list_examples(self, **kwargs) -> List[Example]:
-        return list(self.examples(**kwargs))
-
-
 class Dataset:
 
     @classmethod
     def get_subclass(cls, name: str):
-        n = name.lower()
-        if n in {'shapenet', 'shapenetsem'}:
-            from . import shapenet
-            return shapenet.ShapeNetDataset
-        elif n in {'copdgene'}:
-            from . import copdgene
-            return copdgene.COPDGeneDataset
-        elif n in {'emory4dct', 'emory-4dct', 'dirlab'}:
-            from . import emory4dct
-            return emory4dct.Emory4DCTDataset
-        elif n in {'bmc4dct', 'bmc-4dct', '4d_lungs'}:
-            from . import bmc4dct
-            return bmc4dct.BMC4DCTDataset
-        raise ValueError(f'Invalid dataset name: {name!r}')
+        return _resolve_dataset_name(name)
 
-    def get_subset(self, subjects: str|Path|List[str], variant: str) -> DataSubset:
-        return DataSubset(self, subjects=subjects, variant=variant)
+    def __init__(self, root: str|Path):
+        self.root = Path(root)
+        if not self.root.is_dir():
+            raise RuntimeError(f'Invalid directory: {root}')
+        self._metadata_loaded = False
 
-    def __init__(self, root: Path):
+    def require_metadata(self):
+        if not self._metadata_loaded:
+            self.load_metadata()
+
+    def load_metadata(self):
         raise NotImplementedError
 
     def subjects(self, *args, **kwargs) -> Iterable[str]:
@@ -72,20 +70,24 @@ class Dataset:
     def variants(self, *args, **kwargs) -> Iterable[str]:
         raise NotImplementedError
 
-    def path(
+    def source_path(self, subject: str, *, asset_type: str) -> Path:
+        raise NotImplementedError
+
+    def derived_path(
         self,
         subject: str,
         variant: str,
-        *, # all args after this are keyword-only
         asset_type: str,
-        **selectors
+        asset_name: str
     ) -> Path:
         raise NotImplementedError
 
     def examples(
         self,
-        subjects: Optional[List[str]]=None,
-        variant:  Optional[str]=None,
+        subjects: Optional[List[str]] = None,
+        variant:  Optional[str] = None,
+        *, # source selectors (e.g. visit, state, etc.)
+        selectors: Dict[str, str] = None, # pipeline tags
         **kwargs
     ) -> Iterable[Example]:
         raise NotImplementedError
