@@ -33,80 +33,86 @@ def _correlation_r2(a, b, m):
 
 
 def register_corrfield(
-    image_mov: np.ndarray,
-    image_fix: np.ndarray,
-    mask_fix: np.ndarray,
-    device: str='cuda'
+    moving_image: np.ndarray,
+    fixed_image: np.ndarray,
+    fixed_mask: np.ndarray,
+    evaluate: bool = True,
+    device: str = 'cuda'
 ) -> np.ndarray:
     '''
+    Use CorrField deformable registration to estimate
+    a *voxel* displacement field between two 3D images.
+
     Args:
-        image_mov: (I, J, K) array
-        image_fix: (I, J, K) array
-        mask_fix:  (I, J, K) array
+        moving_image: (I, J, K) array
+        fixed_image: (I, J, K) array
+        fixed_mask:  (I, J, K) array
     Returns:
-        disp_voxel: (L, M, N, 3) array
-        image_warp: (I, J, L, C) array
+        disp_field: (I, J, K, 3) array
+        warped_image: (I, J, K) array
     '''
     import corrfield
-    assert image_mov.shape == image_fix.shape == mask_fix.shape
+    assert moving_image.shape == fixed_image.shape == fixed_mask.shape
 
-    moving_tensor = _as_tensor(image_mov, device)
-    fixed_tensor = _as_tensor(image_fix, device)
-    mask_tensor = _as_tensor(mask_fix, device)
+    moving_tensor = _as_tensor(moving_image, device)
+    fixed_tensor = _as_tensor(fixed_image, device)
+    mask_tensor = _as_tensor(fixed_mask, device)
 
     utils.log('Registering images using CorrField')
 
-    disp_voxel, kpts_fix, kpts_warp = corrfield.corrfield.corrfield(
+    disp_tensor, _, _ = corrfield.corrfield.corrfield(
         img_mov=moving_tensor[None,None,...], # (1, 1, I, J, K)
         img_fix=fixed_tensor[None,None,...],  # (1, 1, I, J, K)
         mask_fix=mask_tensor[None,None,...],  # (1, 1, I, J, K)
     )
-    disp_voxel = disp_voxel[0] # (1, I, J, K, 3) -> (I, J, K, 3)
+    disp_tensor = disp_tensor[0] # (1, I, J, K, 3) -> (I, J, K, 3)
 
     utils.log('Applying deformation to moving image')
-    warp_tensor = deform_image(moving_tensor, disp_voxel)
 
-    disp_voxel = _as_array(disp_voxel)
-    image_warp = _as_array(warp_tensor)
+    warped_tensor = deform_image(moving_tensor, disp_tensor)
 
-    utils.log('Evaluating registration metrics')
+    disp_field = _as_array(disp_tensor)
+    warped_image = _as_array(warped_tensor)
 
-    e1 = _relative_error(image_mov, image_fix, mask_fix)
-    e2 = _relative_error(image_warp, image_fix, mask_fix)
+    if evaluate:
+        utils.log('Evaluating registration metrics')
 
-    utils.log(f'Rel. error:   {e1 * 100:.2f}% -> {e2 * 100:.2f}%')
-    if e2 >= e1:
-        utils.warn('WARNING: registration did not decrease error')
+        e1 = _relative_error(moving_image, fixed_image, fixed_mask)
+        e2 = _relative_error(warped_image, fixed_image, fixed_mask)
 
-    r1 = _correlation_r2(image_mov, image_fix, mask_fix)
-    r2 = _correlation_r2(image_warp, image_fix, mask_fix)
+        utils.log(f'Rel. error:   {e1 * 100:.2f}% -> {e2 * 100:.2f}%')
+        if e2 >= e1:
+            utils.warn('WARNING: registration did not decrease error')
 
-    utils.log(f'Correlation:  {r1:.4f} -> {r2:.4f}')
-    if r2 <= r1:
-        utils.warn('WARNING: registration did not increase correlation')
+        r1 = _correlation_r2(moving_image, fixed_image, fixed_mask)
+        r2 = _correlation_r2(warped_image, fixed_image, fixed_mask)
 
-    return disp_voxel, image_warp
+        utils.log(f'Correlation:  {r1:.4f} -> {r2:.4f}')
+        if r2 <= r1:
+            utils.warn('WARNING: registration did not increase correlation')
+
+    return disp_field, warped_image
 
 
-def deform_image(image: torch.Tensor, disp_voxel: torch.Tensor):
+def deform_image(image: torch.Tensor, disp: torch.Tensor):
     '''
     Args:
         image: (I, J, K)
-        disp_voxel: (I, J, K, 3)
+        disp: (I, J, K, 3)
     Returns:
         warped: (I, J, K)
     '''
     import corrfield
-    I, J, K = disp_voxel.shape[:3]
+    I, J, K = disp.shape[:3]
 
     grid = F.affine_grid(
-        torch.eye(3, 4, dtype=torch.float, device=disp_voxel.device)[None,...],
+        torch.eye(3, 4, dtype=torch.float, device=disp.device)[None,...],
         size=(1,1,I,J,K),
         align_corners=True
     )
 
     disp = corrfield.utils.flow_pt(
-        disp_voxel[None,...], # (1, I, J, K, 3)
+        disp[None,...], # (1, I, J, K, 3)
         shape=(I,J,K),
         align_corners=True
     )
@@ -118,6 +124,9 @@ def deform_image(image: torch.Tensor, disp_voxel: torch.Tensor):
     )[0,0] # (1, 1, I, J, K) -> (I, J, K)
 
     return warped
+
+
+## DEPRECATED
 
 
 def register_simpleitk(
@@ -134,7 +143,7 @@ def register_simpleitk(
     print_every: int=10,
 ):
     '''
-    Perform non-deformable image registration using SITK.
+    Perform rigid image registration using SITK.
 
     This is intended for intra-patient registration as a
     preprocessing step to generate images with the same

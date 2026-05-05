@@ -1,3 +1,5 @@
+from typing import List, Dict, Tuple
+from pathlib import Path
 import numpy as np
 from ..core import fileio, utils
 
@@ -78,29 +80,6 @@ def create_mesh_region_mask(mask_path, mesh_path, output_path, config):
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, regions.astype(np.int16), affine)
-
-
-def create_volume_mesh_from_mask(mask_path, output_path, config, random_seed=0):
-    utils.check_keys(
-        config,
-        valid={'use_affine_spacing', 'meshing_parameters'},
-        where='volume_mesh'
-    )
-    from . import volume_meshing
-    nifti = fileio.load_nibabel(mask_path)
-
-    utils.log('Generating volume mesh from mask')
-    mesh = volume_meshing.generate_mesh_from_mask(
-        mask=nifti.get_fdata(),
-        affine=nifti.affine,
-        use_affine_spacing=config.get('use_affine_spacing'),
-        pygalmesh_kws=config.get('meshing_parameters', {}),
-        random_seed=random_seed,
-        label_key='region'
-    )
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_meshio(output_path, mesh)
 
 
 def create_material_mask(
@@ -310,93 +289,146 @@ def simulate_displacement_field(
     fileio.save_meshio(output_path, mesh)
 
 
-# ----- CT image preprocessing -----
+# ----- CT image processing -----
 
 
-def convert_image_to_nifti(input_path, output_path, shape, spacing, slope=1, intercept=-1024):
-    import numpy as np
-    array = fileio.load_binary_image(input_path, shape, dtype='h')
-    array = (array * slope + intercept).astype(np.float32)[:,:,::-1]
-    affine = np.diag([spacing[0], spacing[1], spacing[2], 1.0])
+def convert_image_to_nifti(
+    input_path,
+    output_path,
+    shape: Tuple[int, int, int],
+    dtype: str,
+    system: str,
+    spacing: Tuple[float, float, float],
+    slope: float = 1.,
+    intercept: float = 0.
+):
+    def _interpret_coord_system(code):
+        cx, cy, cz = code.upper()
+        assert cx in 'LR', cx
+        assert cy in 'PA', cy
+        assert cz in 'IS', cz
+        return  (
+            1 if cx == 'R' else -1,
+            1 if cy == 'A' else -1,
+            1 if cz == 'S' else -1
+        )
+
+    signs = _interpret_coord_system(system)
+
+    array = fileio.load_binary_image(input_path, shape, dtype)
+    array = array.astype(np.float32) * slope + intercept
+
+    affine = np.diag([
+        signs[0] * spacing[0],
+        signs[1] * spacing[1],
+        signs[2] * spacing[2],
+        1.0
+    ])
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, array, affine)
 
 
-def resample_image_on_reference(
-    input_path,
-    output_path,
-    reference_path,
-    spacing=(1.0, 1.0, 1.0),
-    interp='bspline',
-    default=-1000.
-):
+def resample_image_spacing(input_path, output_path, ref_path, config):
+    utils.check_keys(
+        config,
+        valid={'spacing', 'interpolation', 'default_value'},
+        where='image_resampling'
+    )
     from . import resampling
-    input_image = fileio.load_simpleitk(input_path)
-    ref_image = fileio.load_simpleitk(reference_path)
 
-    utils.log('Creating reference grid')
-    grid = resampling.create_reference_grid(ref_image, spacing, anchor='center')
+    src_image = fileio.load_simpleitk(input_path)
+    ref_image = fileio.load_simpleitk(ref_path)
 
-    utils.log('Resampling image on grid')
-    output_image = resampling.resample_image(input_image, grid, interp, default)
+    utils.log('Resampling image using reference domain')
+    output_image = resampling.resample_image(src_image, ref_image, **config)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_simpleitk(output_path, output_image)
 
 
-def create_segmentation_masks(image_path, output_path):
+def create_segmentation_masks(input_path, segment_dir, output_path, config):
+    utils.check_keys(
+        config,
+        valid={'tasks', 'combine'},
+        where='image_segmentation'
+    )
     from . import segmentation
 
-    output_dir = output_path.parent
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    segment_dir.mkdir(parents=True, exist_ok=True)
 
-    utils.log('Running TotalSegmentator task: total')
-    ret = segmentation.run_total_segmentator(image_path, output_dir)
+    for task_kws in config.get('tasks', []):
+        task_name = task_kws['task_name']
+        utils.log(f'Running TotalSegmentator task: {task_name}')
+        segmentation.run_segmentation_task(input_path, segment_dir, **task_kws)
 
-    utils.log('Running TotalSegmentator task: lung_vessels')
-    ret = segmentation.run_vessel_segmentation(image_path, output_dir)
+    if config.get('combine'):
+        utils.log('Combining segmentation masks: lung')
+        nifti = segmentation.combine_segmentation_masks(segment_dir, class_type='lung')
 
-    utils.log('Combining segmentation masks: lung')
-    nifti = segmentation.combine_segmentation_masks(output_dir, class_type='lung')
-    fileio.save_nibabel(output_path, nifti.get_fdata(), nifti.affine)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fileio.save_nibabel(output_path, nifti.get_fdata(), nifti.affine)
 
 
-def create_lung_region_mask(mask_dir, output_path, min_count=30):
-    from . import segmentation, mask_cleanup
-    all_rois = list(segmentation.ALL_TASK_ROIS)
-    lobe_rois = set(segmentation.TOTAL_TASK_ROIS)
+def create_multi_region_map(input_dir, output_path, config):
+    utils.check_keys(
+        config,
+        valid={'roi_order', 'region_filter'},
+        where='region_mask'
+    )
+    from . import mask_cleanup
+    import scipy, skimage
 
-    if not mask_dir.is_dir():
-        raise RuntimeError(f'{mask_dir} is not a valid directory')
+    if not input_dir.is_dir():
+        raise RuntimeError(f'{input_dir} is not a valid directory')
 
+    roi_order = config['roi_order'] # required
+
+    utils.log(f'Assigning labels to regions')
     label_arrays = []
-    for label, roi in enumerate(all_rois, start=1): # reserve 0 for background
-
-        mask_path = mask_dir / f'{roi}.nii.gz'
+    for label, roi in enumerate(roi_order, start=1): # reserve 0 for background
+        mask_path = input_dir / f'{roi}.nii.gz'
         nifti = fileio.load_nibabel(mask_path)
-        mask_array, affine = nifti.get_fdata(), nifti.affine
+        raw_mask = (nifti.get_fdata() != 0)
+        label_arrays.append(raw_mask * label)
 
-        utils.log(f'Filtering segmentation mask: {roi}')
-        max_comps = 1 if roi in lobe_rois else None
-        filt_array = mask_cleanup.filter_connected_components(
-            (mask_array != 0),
-            min_count=min_count,
-            max_components=max_comps
-        ).astype(np.uint8)
-        label_arrays.append(filt_array * label)
+    raw_map = np.max(label_arrays, axis=0) # use roi order for priority
+    out_map = np.zeros_like(raw_map)
 
-    utils.log('Combining anatomical region masks')
-    multi_array = np.max(label_arrays, axis=0)
+    for label, roi in enumerate(roi_order, start=1):
+        utils.log(f'Filtering region: {roi}')
 
-    utils.log('Cleaning up anatomical region mask')
-    multi_array *= mask_cleanup.cleanup_binary_mask(multi_array > 0)
+        filter_kws = config.get('region_filter', {})
+        if 'max_components' not in filter_kws:
+            filter_kws['max_components'] = (1 if 'lobe' in roi.lower() else None)
 
-    fileio.save_nibabel(output_path, multi_array.astype(np.float32), affine)
+        filtered = mask_cleanup.filter_connected_components(
+            (raw_map == label), **filter_kws
+        )
+        out_map[filtered] = label
+
+    # reassign dropped voxels to nearest region
+    dropped = (raw_map != 0) & (out_map == 0)
+    if np.any(dropped):
+        _, indices = scipy.ndimage.distance_transform_edt(dropped, return_indices=True)
+        nearest_labels = out_map[tuple(indices)]
+        out_map[dropped] = nearest_labels[dropped]
+
+    fileio.save_nibabel(
+        output_path, out_map.astype(np.float32), nifti.affine
+    )
 
 
 def register_displacement_field(
-    fixed_path, moving_path, mask_path, output_path, device='cuda'
+    fixed_path, moving_path, mask_path, output_path, config
 ):
+    utils.check_keys(
+        config,
+        valid={},
+        where='image_registration'
+    )
     from . import registration
+    device = 'cuda'
 
     fixed_nifti  = fileio.load_nibabel(fixed_path)
     moving_nifti = fileio.load_nibabel(moving_path)
@@ -408,9 +440,9 @@ def register_displacement_field(
 
     utils.log('Estimating displacement field by registration')
     disp_voxel, warped_array = registration.register_corrfield(
-        image_mov=moving_array,
-        image_fix=fixed_array,
-        mask_fix=mask_array,
+        moving_image=moving_array,
+        fixed_image=fixed_array,
+        fixed_mask=mask_array,
         device=device
     )
 
@@ -421,3 +453,72 @@ def register_displacement_field(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, disp_world.astype(np.float32), affine)
 
+
+# ----- mesh processing -----
+
+
+def generate_tetrahedral_mesh(mask_path, output_path, config, random_seed=0):
+    utils.check_keys(
+        config,
+        valid={'use_affine_spacing', 'mesh_parameters'},
+        where='mesh_generation'
+    )
+    from . import volume_meshing
+
+    nifti = fileio.load_nibabel(mask_path)
+
+    use_affine = config.get('use_affine_spacing', False)
+    pygalmesh_kws = config.get('mesh_parameters', {})
+
+    utils.log('Generating tetrahedral mesh')
+    mesh = volume_meshing.generate_mesh_from_mask(
+        mask=nifti.get_fdata(),
+        affine=nifti.affine,
+        use_affine=use_affine,
+        random_seed=random_seed,
+        pygalmesh_kws=pygalmesh_kws
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_meshio(output_path, mesh)
+
+
+def interpolate_mesh_fields(
+    mesh_path, image_path, disp_path, output_path, config
+):
+    utils.check_keys(config, valid={}, where='mesh_interpolation')
+
+    from ..core import transforms
+    from . import image_generation
+    import scipy.ndimage
+
+    mesh = fileio.load_meshio(mesh_path)
+
+    nifti = fileio.load_nibabel(image_path)
+    image = nifti.get_fdata().astype(float)
+    affine = nifti.affine
+
+    disp = fileio.load_nibabel(disp_path).get_fdata()
+
+    utils.log('Interpolating fields onto mesh vertices')
+    pts_world = mesh.points
+    pts_voxel = transforms.world_to_voxel_coords(pts_world, affine)
+
+    img_values = image_generation.interpolate_volume(image, pts_voxel, **config)
+    mesh.point_data['image'] = img_values.astype(np.float32)
+
+    disp_values = image_generation.interpolate_volume(disp, pts_voxel, **config)
+    mesh.point_data['u_true'] = disp_values.astype(np.float32)
+
+    utils.log('Interpolating fields onto tet cell centers')
+    pts_world = mesh.points[mesh.cells_dict['tetra']].mean(axis=1)
+    pts_voxel = transforms.world_to_voxel_coords(pts_world, affine)
+
+    img_values = image_generation.interpolate_volume(image, pts_voxel, **config)
+    mesh.cell_data['image'] = [img_values.astype(np.float32)]
+
+    disp_values = image_generation.interpolate_volume(disp, pts_voxel, **config)
+    mesh.cell_data['u_true'] = [disp_values.astype(np.float32)]
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_meshio(output_path, mesh)

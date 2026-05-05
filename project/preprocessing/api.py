@@ -1,19 +1,33 @@
+# TODO rename module to pipelines.py
+from typing import List, Dict, Tuple, Optional, Any
+
 from ..core import utils
 from . import stages
 
 
-def _ensure_output(func, *args, force=False, **kwargs):
+def _ensure_output(func, *args, **kwargs) -> Tuple[bool, Any]:
     '''
-    Call a function if its output path does not already exist.
+    Call a function if the output path does not exist.
+
+    Args:
+        func: Function to call.
+        *args, **kwargs: Passed into function call.
+    Returns:
+        bool: True if the function was called.
+        Any: Returned from the function call.
     '''
     output_path = kwargs.get('output_path')
-    output_exists = False
+
+    run_stage = True
     if output_path is not None:
-        output_exists = output_path.is_file()
-    if force or not output_exists:
+        run_stage = not output_path.exists()
+
+    if run_stage:
         utils.log(f'INFO: {output_path} missing; Running stage {func.__name__}')
-        return func(*args, **kwargs)
+        return True, func(*args, **kwargs)
+
     utils.log(f'INFO: {output_path} exists; Skipping stage {func.__name__}')
+    return False, None
 
 
 def preprocess_example(ex, config):
@@ -22,12 +36,12 @@ def preprocess_example(ex, config):
         return preprocess_shapenet(ex, config)
     elif dataset == 'copdgene':
         return preprocess_copdgene(ex, config)
-    elif dataset == 'emory4dct':
+    elif dataset in {'emory4dct', 'emory-4dct'}:
         return preprocess_emory4dct(ex, config)
-    elif dataset == 'bmc4dct':
-        raise preprocess_bmc4dct(ex, config)
+    elif dataset in {'bmc4dct', 'bmc-4dct'}:
+        return preprocess_bmc4dct(ex, config)
     raise ValueError(f'Invalid dataset: {ex.dataset!r}')
-    
+
 
 def preprocess_shapenet(ex, config):
     utils.check_keys(
@@ -61,7 +75,7 @@ def preprocess_shapenet(ex, config):
         config=config.get('region_mask', {})
     )
     _ensure_output( # volume mesh
-        stages.create_volume_mesh_from_mask,
+        stages.generate_tetrahedral_mesh,
         mask_path=ex.paths['region_mask'],
         output_path=ex.paths['volume_mesh'],
         config=config.get('volume_mesh', {}),
@@ -109,11 +123,11 @@ def preprocess_shapenet(ex, config):
     )
 
 
-def preprocess_copdgene(ex, config):
+def preprocess_copdgene(ex, config): # TODO needs update
     utils.check_keys(
         config,
         {'image_resampling', 'image_segmentation'} |
-        {'region_mask', 'volume_mesh', 'deformable_registration'},
+        {'region_mask', 'volume_mesh', 'image_registration'},
         where='preprocessing[copdgene]'
     )
     _ensure_output(
@@ -125,7 +139,7 @@ def preprocess_copdgene(ex, config):
     )
     _ensure_output(
         stages.resample_image_on_reference,
-        reference_path=ex.paths['source_ref'],
+        ref_path=ex.paths['source_ref'],
         input_path=ex.paths['source_moving'],
         output_path=ex.paths['moving_image'],
         config=config.get('image_resampling', {})
@@ -143,7 +157,7 @@ def preprocess_copdgene(ex, config):
         config=config.get('region_mask', {})
     )
     _ensure_output(
-        stages.create_volume_mesh_from_mask,
+        stages.generate_tetrahedral_mesh,
         mask_path=ex.paths['region_mask'],
         output_path=ex.paths['volume_mesh'],
         config=config.get('volume_mesh', {})
@@ -161,22 +175,92 @@ def preprocess_copdgene(ex, config):
 def preprocess_emory4dct(ex, config):
     utils.check_keys(
         config,
-        {'image_resampling', 'image_segmentation', 'region_mask', 'volume_mesh', 'deformable_registration'},
+        {'image_resampling', 'image_segmentation', 'region_labeling'} |
+        {'image_registration', 'mesh_generation', 'mesh_interpolation'},
         where='preprocessing[emory4dct]'
     )
-    _ensure_output(
+    
+    # ----- image conversion -----
+
+    _ensure_output( # ref_nifti
         stages.convert_image_to_nifti,
-        input_path=ex.paths['fixed_source'],
-        output_path=ex.paths['fixed_nifti'],
-        shape=ex.metadata['source_shape'],
-        spacing=ex.metadata['source_spacing']
+        input_path=ex.paths['ref_source'],
+        output_path=ex.paths['ref_nifti'],
+        **ex.metadata['image_params']
     )
-    _ensure_output(
+    _ensure_output( # init_nifti
         stages.convert_image_to_nifti,
-        input_path=ex.paths['moving_source'],
-        output_path=ex.paths['moving_nifti'],
-        shape=ex.metadata['source_shape'],
-        spacing=ex.metadata['source_spacing']
+        input_path=ex.paths['init_source'],
+        output_path=ex.paths['init_nifti'],
+        **ex.metadata['image_params']
+    )
+    _ensure_output( # curr_nifti
+        stages.convert_image_to_nifti,
+        input_path=ex.paths['curr_source'],
+        output_path=ex.paths['curr_nifti'],
+        **ex.metadata['image_params']
+    )
+
+    # ----- image resampling -----
+
+    _ensure_output( # init_resample
+        stages.resample_image_spacing,
+        ref_path=ex.paths['ref_nifti'],
+        input_path=ex.paths['init_nifti'],
+        output_path=ex.paths['init_resample'],
+        config=config.get('image_resampling', {})
+    )
+    _ensure_output( # curr_resample
+        stages.resample_image_spacing,
+        ref_path=ex.paths['ref_nifti'],
+        input_path=ex.paths['curr_nifti'],
+        output_path=ex.paths['curr_resample'],
+        config=config.get('image_resampling', {})
+    )
+
+    # ----- image segmentation -----
+
+    _ensure_output( # segment_dir
+        stages.create_segmentation_masks,
+        input_path=ex.paths['init_resample'],
+        segment_dir=ex.paths['segment_dir'],
+        output_path=ex.paths['segment_mask'],
+        config=config.get('image_segmentation', {})
+    )
+    _ensure_output( # region_map
+        stages.create_multi_region_map,
+        input_dir=ex.paths['segment_dir'],
+        output_path=ex.paths['region_map'],
+        config=config.get('region_labeling', {})
+    )
+
+    # ----- image registration -----
+
+    _ensure_output( # disp_field
+        stages.register_displacement_field,
+        fixed_path=ex.paths['init_resample'],
+        moving_path=ex.paths['curr_resample'],
+        mask_path=ex.paths['segment_mask'],
+        output_path=ex.paths['disp_field'],
+        config=config.get('image_registration', {})
+    )
+
+    # ----- mesh construction -----
+
+    _ensure_output( # region_mesh
+        stages.generate_tetrahedral_mesh,
+        mask_path=ex.paths['region_map'],
+        output_path=ex.paths['region_mesh'],
+        config=config.get('mesh_generation', {})
+    )
+
+    _ensure_output( # interp_mesh
+        stages.interpolate_mesh_fields,
+        mesh_path=ex.paths['region_mesh'],
+        image_path=ex.paths['input_image'],
+        disp_path=ex.paths['disp_field'],
+        output_path=ex.paths['interp_mesh'],
+        config=config.get('mesh_interpolation', {})
     )
 
 

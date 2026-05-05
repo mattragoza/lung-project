@@ -1,213 +1,310 @@
 from typing import Dict, Set, Any
+import collections
 import numpy as np
-import scipy as sp
 import meshio
 
 from ..core import utils, transforms
 
 
-def _affine_linear(A):
-    return A[:3,:3]
-
-
-def _affine_origin(A):
-    return A[:3,3]
-
-
-def _affine_spacing(A):
-    return np.linalg.norm(_affine_linear(A), axis=0)
+def _get_pygalmesh_spacing(affine: np.ndarray, use_affine: bool):
+    if use_affine:
+        return transforms.get_affine_spacing(affine)
+    return np.ones(3, dtype=np.float32)
 
 
 def generate_mesh_from_mask(
     mask: np.ndarray,
     affine: np.ndarray,
-    use_affine_spacing: bool=False,
-    pygalmesh_kws: Dict[str, Any]=None,
-    random_seed: int=0,
-    label_key: str='label'
+    use_affine: bool = False,
+    random_seed: int = 0,
+    pygalmesh_kws: Dict[str, Any] = None,
+    raw_label_key: str = 'medit:ref',
+    new_label_key: str = 'region'
 ) -> meshio.Mesh:
     '''
-    Generate a tetrahedral mesh from a voxel mask with pygalmesh.
+    Generate a tetrahedral mesh from a voxel mask using pygalmesh.
 
     Args:
-        mask: (I, J, K) voxel mask (binary or region)
-        affine: (4, 4) voxel to world coordinate map
-        use_affine_spacing: If True, use affine spacing
-            when generating the mesh, otherwise mesh in
-            voxel coordinates. The returned mesh will be
-            in the world coordinate system either way.
-        pygalmesh_kws: Meshing params passed to pyglamesh
-        random_seed: int
+        mask: 3D input voxel mask (binary or region labels)
+        affine: (4, 4) voxel to world coordinate transform
+        use_affine: If True, use world spacing when generating the mesh,
+            otherwise mesh in voxel coordinates. The returned mesh will
+            be converted to world coordinates either way.
+        random_seed: int random seed passed to pygalmesh
+        pygalmesh_kws: mesh parameters passed to pyglamesh
     Returns:
-        meshio.Mesh, in world coordinates
+        meshio.Mesh: Generated mesh in world coordinates
     '''
+    spacing = _get_pygalmesh_spacing(affine, use_affine)
+
+    utils.log('Running pygalmesh generation')
+    raw_mesh = run_pygalmesh_generate(
+        mask=mask,
+        spacing=spacing,
+        random_seed=random_seed,
+        **(pygalmesh_kws or {})
+    )
+
+    utils.log('Extracting tetrahedral cells')
+    mesh = extract_cell_type(raw_mesh, cell_type='tetra')
+
+    utils.log('Inferring cell label map')
+    label_map = infer_label_map(mesh, mask, spacing, raw_label_key)
+
+    utils.log('Reindexing cell labels')
+    mesh = reindex_cell_labels(mesh, label_map, raw_label_key, new_label_key)
+
+    utils.log('Removing background cells')
+    mesh = remove_labeled_cells(mesh, 'tetra', new_label_key, label_val=0)
+
+    utils.log('Removing unreferenced points')
+    mesh = remove_unreferenced_points(mesh)
+
+    utils.log('Converting to world coordinates')
+    mesh = convert_to_world_coords(mesh, spacing, affine)
+
+    n_components = count_connected_components(mesh, cell_type='tetra')
+    if n_components != 1:
+        utils.warn(f'WARNING: mesh has {n_components} components')
+
+    utils.log(mesh)
+    return mesh
+
+
+def run_pygalmesh_generate(
+    mask: np.ndarray,
+    spacing: np.ndarray,
+    random_seed: int,
+    **pygalmesh_kws
+) -> meshio.Mesh:
     import pygalmesh
 
-    spacing = _affine_spacing(affine) if use_affine_spacing else np.ones(3)
+    if not np.issubdtype(mask.dtype, np.integer):
+        utils.log('WARNING: mask is not an integer dtype')
 
     mesh = pygalmesh.generate_from_array(
         mask.astype(np.uint16),
         voxel_size=spacing,
         seed=random_seed,
-        **(pygalmesh_kws or {})
+        **pygalmesh_kws
     )
-
-    # relabel and clean up generated mesh
-    mesh = split_mesh_by_cell_type(mesh)['tetra']
-    mesh = reindex_cell_labels(mesh, mask, label_key)
-    mesh = remove_background_cells(mesh, label_key)
-    mesh = remove_unreferenced_points(mesh)
-
-    # sanity check - no cells should be labeled as mask background
-    background_cells = count_labeled_cells(mesh, 'tetra', label_key, value=0)
-    assert background_cells == 0, background_cells
-
-    # pygalmesh uses voxel spacing to generate the mesh,
-    # not the full affine. To convert to world coords, we
-    # normalize by voxel spacing, then apply the affine.
-
-    mesh.points = transforms.voxel_to_world_coords(mesh.points / spacing, affine)
-
-    num_components = count_connected_components(mesh, cell_type='tetra')
-    utils.log(f'Mesh has {num_components} connected component(s)')
-    if num_components == 0:
-        utils.warn('WARNING: mesh has no connected components')
-
     utils.log(mesh)
 
-    # return only the tetra cells, not triangles
+    if len(mesh.points) == 0:
+        raise RuntimeError('mesh has zero vertices')
+
+    if count_cell_type(mesh, cell_type='tetra') == 0:
+        raise RuntimeError('mesh has no tetra cells')
+
     return mesh
 
 
-# --- cell region labels ---
+# ----- cell type filtering -----
 
 
-def reindex_cell_labels(
-    mesh: meshio.Mesh,
-    mask: np.ndarray,
-    new_key: str,
-    old_key: str='medit:ref'
-) -> meshio.Mesh:
-    '''
-    Reindex cell labels using mask interpolation and voting.
-    '''
-    # When pygalmesh generates a mesh from a multi-label mask,
-    # it produces cell labels that do not directly map to the
-    # labels in the input mask.
+def extract_cell_type(mesh: meshio.Mesh, cell_type: str) -> meshio.Mesh:
 
-    # We infer the mapping from generated cell labels to the
-    # original mask labels by interpolating the mask at each
-    # tetra barycenter and voting on the label assignment.
-
-    label_map = construct_label_map(mesh, mask, old_key)
+    cells = mesh.cells_dict.get(cell_type)
+    if cells is None:
+        raise RuntimeError(f'mesh has no {cell_type} cells')
 
     new_cell_data = {}
-    new_cell_data[old_key] = mesh.cell_data[old_key] # keep the old labels
-    new_cell_data[new_key] = [label_map[a] for a in mesh.cell_data[old_key]]
+    for key, data_by_type in mesh.cell_data_dict.items():
+        if cell_type in data_by_type:
+            new_cell_data[key] = [data_by_type[cell_type]]
 
-    mesh = meshio.Mesh(
+    return meshio.Mesh(
         points=mesh.points,
-        cells=mesh.cells,
-        cell_data=new_cell_data,
+        cells=[(cell_type, cells)],
         point_data=mesh.point_data,
+        cell_data=new_cell_data
     )
-    return mesh
 
 
-def construct_label_map(
+def count_cell_type(mesh: meshio.Mesh, cell_type: str) -> int:
+    return len(mesh.cells_dict.get(cell_type, []))
+
+
+# ----- cell label reindexing -----
+
+
+def infer_label_map(
     mesh: meshio.Mesh,
     mask: np.ndarray,
-    key: str='medit:ref'
+    spacing: np.ndarray,
+    label_key: str = 'medit:ref',
+    cell_type: str = 'tetra'
 ) -> np.ndarray:
     '''
     Infer a mapping from generated mesh cell labels to
     mask labels by majority vote at the cell centroids.
-    '''
-    utils.log('Constructing cell label map')
 
-    # interpolate mask values at tetra centers
-    points = _centroids(mesh, cell_type='tetra')
-    values = sp.ndimage.map_coordinates(
-        mask.astype(int), points.T, order=0, mode='nearest'
+    When pygalmesh generates a mesh from a region label map,
+    it produces cell labels that do not directly map to the
+    labels in the input mask.
+
+    We infer the mapping from generated cell labels to the
+    original mask labels by interpolating the mask at each
+    cell centroid and voting on the label assignment.
+    '''
+    import scipy as sp
+
+    raw_labels = mesh.cell_data_dict[label_key][cell_type]
+
+    if not np.issubdtype(raw_labels.dtype, np.integer):
+        raise RuntimeError('raw labels are not an integer dtype')
+    if np.any(raw_labels < 0):
+        raise RuntimeError('raw labels include negative value(s)')
+
+    # interpolate mask at cell centers
+    cells = mesh.cells_dict[cell_type]
+    centroids = mesh.points[cells].mean(axis=1)
+    vox_coords = centroids / spacing
+
+    mask_values = sp.ndimage.map_coordinates(
+        mask.astype(int),
+        coordinates=vox_coords.T,
+        order=0,
+        mode='nearest'
     )
 
-    # get most common mask label for each cell label
-    old_labels = mesh.cell_data_dict[key]['tetra'].astype(int)
-    label_map = -np.ones(old_labels.max() + 1, dtype=int)
+    # vote on the mapping from raw labels to mask labels
+    label_map = -np.ones(raw_labels.max() + 1, dtype=int)
 
-    for l, c in zip(*np.unique(old_labels, return_counts=True)):
-        counts = np.bincount(values[old_labels == l])
-        most_common = int(counts.argmax())
-        utils.log(f'{key} = {l} | total = {c} | region counts = {counts}')
-        label_map[l] = most_common
+    for label in np.unique(raw_labels):
+        counts = np.bincount(mask_values[raw_labels == label])
+        label_map[label] = int(counts.argmax())
 
     utils.log(label_map)
+    if np.any(label_map[np.unique(raw_labels)] < 0):
+        raise RuntimeError(f'raw label(s) were dropped from mapping')
+
     return label_map
 
 
-def count_labeled_cells(mesh, cell_type, key, value):
-    labels = mesh.cell_data_dict[key][cell_type]
-    return np.sum(labels == value)
+def reindex_cell_labels(
+    mesh: meshio.Mesh,
+    label_map: np.ndarray,
+    old_key: str = 'medit:ref',
+    new_key: str = 'label'
+) -> meshio.Mesh:
+
+    new_cell_data = {} # copy existing data
+    for key, data_list in mesh.cell_data.items():
+        new_cell_data[key] = [array.copy() for array in data_list]
+
+    new_cell_data[new_key] = [
+        label_map[np.asarray(array, dtype=int)]
+            for array in mesh.cell_data[old_key]
+    ]
+
+    return meshio.Mesh(
+        points=mesh.points,
+        cells=mesh.cells,
+        point_data=mesh.point_data,
+        cell_data=new_cell_data
+    )
 
 
-def _centroids(mesh, cell_type):
-    cells = mesh.cells_dict[cell_type]
-    return mesh.points[cells].mean(axis=1)
+# ----- cell label filtering -----
 
 
-# --- unreferenced points ---
+def remove_labeled_cells(
+    mesh: meshio.Mesh,
+    cell_type: str,
+    label_key: str,
+    label_val: int = 0
+) -> meshio.Mesh:
+
+    labels = mesh.cell_data_dict[label_key][cell_type]
+    to_remove = (labels == label_val)
+
+    if np.all(to_remove):
+        raise RuntimeError(f'all cells have label {label_val}')
+
+    if np.any(to_remove):
+        mesh = extract_selected_cells(mesh, cell_type, ~to_remove)
+
+    if count_labeled_cells(mesh, cell_type, label_key, label_val) > 0:
+        raise RuntimeError('failed to remove cells')
+
+    return mesh
 
 
-def get_referenced_point_indices(mesh: meshio.Mesh) -> np.ndarray:
-    '''
-    Return unique indices of points referenced by any cell.
-    '''
-    point_inds = np.concatenate([b.data.ravel() for b in mesh.cells])
-    return np.unique(point_inds)
+def extract_selected_cells(
+    mesh: meshio.Mesh,
+    cell_type: str,
+    sel: np.ndarray
+) -> meshio.Mesh:
+
+    cells = mesh.cells_dict.get(cell_type)
+    if cells is None:
+        raise RuntimeError(f'mesh has no {cell_type} cells')
+
+    if not np.any(sel):
+        raise RuntimeError('no cells were selected')
+    sel_cells = cells[sel]
+
+    new_cell_data = {}
+    for key, data_by_type in mesh.cell_data_dict.items():
+        if cell_type in data_by_type:
+            new_cell_data[key] = [data_by_type[cell_type][sel]]
+
+    return meshio.Mesh(
+        points=mesh.points,
+        cells=[(cell_type, sel_cells)],
+        point_data=mesh.point_data,
+        cell_data=new_cell_data
+    )
 
 
-def check_referenced_points(mesh: meshio.Mesh) -> np.ndarray:
-    '''
-    Return boolean mask indicating which points are referenced.
-    '''
-    point_used = np.zeros(len(mesh.points), dtype=bool)
-    point_inds = get_referenced_point_indices(mesh)
-    point_used[point_inds] = True
-    return point_used
+def count_labeled_cells(
+    mesh: meshio.Mesh,
+    cell_type: str,
+    label_key: str,
+    label_val: int
+) -> int:
+    values = mesh.cell_data_dict[label_key][cell_type]
+    return np.sum(values == label_val, dtype=int)
 
 
-def count_unreferenced_points(mesh: meshio.Mesh) -> int:
-    point_used = check_referenced_points(mesh)
-    return int((~point_used).sum())
+# ----- vertex filtering -----
 
 
 def remove_unreferenced_points(mesh: meshio.Mesh) -> meshio.Mesh:
     '''
     Return a new mesh with no unreferenced points.
     '''
-    c1 = count_unreferenced_points(mesh)
-
     point_inds = get_referenced_point_indices(mesh)
-    mesh = filter_mesh_points(mesh, point_inds)
+    mesh = extract_selected_points(mesh, point_inds)
 
-    c2 = count_unreferenced_points(mesh)
-    utils.log(f'Removed {c1 - c2} unreferenced point(s)')
-
-    assert c2 == 0, (c1, c2) # sanity check
+    if count_unreferenced_points(mesh) > 0:
+        raise RuntimeError('failed to remove points')
 
     return mesh
 
 
-def filter_mesh_points(mesh: meshio.Mesh, point_inds: np.ndarray) -> meshio.Mesh:
+def get_referenced_point_indices(mesh: meshio.Mesh) -> np.ndarray:
     '''
-    Return a new mesh containing only selected points,
+    Return unique indices of points referenced by any cell.
+    '''
+    point_inds = np.concatenate([cb.data.ravel() for cb in mesh.cells])
+    return np.unique(point_inds)
+
+
+def extract_selected_points(
+    mesh: meshio.Mesh, point_inds: np.ndarray
+) -> meshio.Mesh:
+    '''
+    Return a new mesh with only the selected points,
     reindexing its cells and cell data accordingly.
     '''
     # filter points and point data
     new_points = mesh.points[point_inds]
     new_point_data = {}
     for k, v in mesh.point_data.items():
-        assert v.shape[0] == len(mesh.points)
+        if len(v) != len(mesh.points):
+            raise RuntimeError(f'length mismatch: {len(v)} vs. {len(mesh.points)}')
         new_point_data[k] = v[point_inds]
     
     # build mapping from old to new point indices
@@ -222,14 +319,15 @@ def filter_mesh_points(mesh: meshio.Mesh, point_inds: np.ndarray) -> meshio.Mesh
         reindexed = index_map[block.data]
         valid = (reindexed >= 0).all(axis=1)
         if not np.any(valid):
-            utils.warn(f'WARNING: no valid {block.type} cells after filtering points')
+            utils.warn(f'WARNING: no {block.type} cells after filtering points')
         reindexed = reindexed[valid]
         new_cells.append(meshio.CellBlock(block.type, reindexed))
 
-        for k, v_list in mesh.cell_data.items():
-            vals = np.asarray(v_list[i])
-            assert vals.shape[0] == block.data.shape[0]
-            new_cell_data[k].append(vals[valid])
+        for key, data_list in mesh.cell_data.items():
+            vals = np.asarray(data_list[i])
+            if len(vals) != len(block.data):
+                raise RuntimeError(f'length mismatch: {len(vals)} vs. {len(block.data)}')
+            new_cell_data[key].append(vals[valid])
 
     return meshio.Mesh(
         points=new_points,
@@ -239,54 +337,52 @@ def filter_mesh_points(mesh: meshio.Mesh, point_inds: np.ndarray) -> meshio.Mesh
     )
 
 
-def remove_background_cells(mesh: meshio.Mesh, label_key, label_val=0):
-    labels = mesh.cell_data_dict[label_key]['tetra']
-    cell_inds = labels != label_val
-    n_before = labels.shape[0]
-    n_after  = int(cell_inds.sum())
-    n_drop   = n_before - n_after
-    if n_drop > 0:
-        ret = filter_mesh_cells(mesh, cell_inds)
-    else:
-        ret = mesh
-    utils.log(f'Removed {n_drop} background cell(s)')
-    return ret
+def count_unreferenced_points(mesh: meshio.Mesh) -> int:
+    point_used = check_referenced_points(mesh)
+    return int((~point_used).sum())
 
 
-def filter_mesh_cells(mesh: meshio.Mesh, cell_inds: np.ndarray) -> meshio.Mesh:
-    assert len(mesh.cells) == 1, 'Expected a single cell block'
-    new_cells = []
-    new_cell_data = {k: [] for k in mesh.cell_data.keys()}
+def check_referenced_points(mesh: meshio.Mesh) -> np.ndarray:
+    '''
+    Return boolean mask indicating which points are referenced.
+    '''
+    point_used = np.zeros(len(mesh.points), dtype=bool)
+    point_inds = get_referenced_point_indices(mesh)
+    point_used[point_inds] = True
+    return point_used
 
-    for i, block in enumerate(mesh.cells):
-        new_cells.append(meshio.CellBlock(block.type, block.data[cell_inds]))
-        for k, v_list in mesh.cell_data.items():
-            vals = np.asarray(v_list[i])
-            assert vals.shape[0] == block.data.shape[0]
-            new_cell_data[k].append(vals[cell_inds])
 
+# ----- geometric transformations -----
+
+
+def convert_to_world_coords(
+    mesh: meshio.Mesh, spacing: np.ndarray, affine: np.ndarray
+) -> meshio.Mesh:
+    vox_points = mesh.points / spacing
+    new_points = transforms.voxel_to_world_coords(vox_points, affine)
     return meshio.Mesh(
-        points=mesh.points,
-        cells=new_cells,
+        points=new_points,
+        cells=mesh.cells,
         point_data=mesh.point_data,
-        cell_data=new_cell_data
+        cell_data=mesh.cell_data
     )
 
 
-# --- connected components ---
+# ----- connected mesh components -----
 
 
 def count_connected_components(mesh: meshio.Mesh, cell_type='tetra') -> int:
     '''
     Count the number of connected mesh components.
     '''
-    import collections
-    cells = mesh.cells_dict[cell_type]
+    cells = mesh.cells_dict.get(cell_type)
+    if cells is None:
+        raise RuntimeError(f'mesh has no {cell_type} cells')
 
-    # build cell adjacency list
-    adjacent = build_cell_adjacency(mesh, cell_type)
+    # neighbors[cell_A] = {cell_B | cells A and B share a face}
+    neighbors = build_cell_adjacency(mesh, cell_type)
 
-    # traverse cell graph
+    # traverse cell graph via shared faces
     visited = np.zeros(len(cells), dtype=bool)
     num_components = 0
 
@@ -300,7 +396,7 @@ def count_connected_components(mesh: meshio.Mesh, cell_type='tetra') -> int:
             if visited[current]:
                 continue
             visited[current] = True
-            queue.extend(adjacent[current])
+            queue.extend(neighbors[current])
 
     return num_components
 
@@ -309,15 +405,16 @@ def build_cell_adjacency(mesh: meshio.Mesh, cell_type='tetra') -> Dict[int, Set]
     '''
     Build cell adjacency list for the provided mesh.
     '''
-    import collections
-    cells = mesh.cells_dict[cell_type]
+    cells = mesh.cells_dict.get(cell_type)
+    if cells is None:
+        raise RuntimeError(f'mesh has no {cell_type} cells')
 
     if cell_type == 'tetra':
         face_inds = [[0,1,2], [0,1,3], [0,2,3], [1,2,3]]
     elif cell_type == 'triangle':
         face_inds = [[0,1], [1,2], [2,0]]
     else:
-        raise ValueError(f'Unrecognized cell type: {cell_type}')
+        raise ValueError(f'Invalid cell type: {cell_type!r}')
 
     # build mapping from faces to incident cells
     face_to_cells = collections.defaultdict(list)
@@ -335,40 +432,4 @@ def build_cell_adjacency(mesh: meshio.Mesh, cell_type='tetra') -> Dict[int, Set]
             adjacent[b].add(a)
 
     return adjacent
-
-
-# --- mesh splitting ---
-
-
-def split_mesh_by_cell_type(mesh: meshio.Mesh) -> Dict[str, meshio.Mesh]:
-    split = {}
-    for block in mesh.cells:
-        block_data = {k: [mesh.cell_data_dict[k][block.type]] for k in mesh.cell_data}
-        split[block.type] = meshio.Mesh(
-            points=mesh.points,
-            cells=[block],
-            cell_data=block_data
-        )
-    return split
-
-
-def split_mesh_by_cell_label(
-    mesh: meshio.Mesh,
-    label_key='medit:ref',
-    cell_type='tetra'
-) -> Dict[str, meshio.Mesh]:
-
-    block_index = next(
-        i for i, b in enumerate(mesh.cells) if b.type == cell_type
-    )
-    labels = mesh.cell_data[label_key][block_index]
-    split = {}
-    for label in np.unique(labels):
-        mask = (labels == label)
-        sub_cells = mesh.cells[block_index].data[mask]
-        split[label] = meshio.Mesh(
-            points=mesh.points,
-            cells=[meshio.CellBlock(cell_type, sub_cells)]
-        )
-    return split
 
