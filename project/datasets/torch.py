@@ -20,9 +20,9 @@ class TorchDataset(torch.utils.data.Dataset):
         rand_rotate:  bool = False,
         rand_reflect: bool = False,
         sigma_trans: float = 0.0,
-        use_cache:  bool = False,
+        use_cache: bool = False,
         n_mat_labels: int = 5,
-        rgb: bool=False
+        rgb: bool = False
     ):
         self.examples = examples
 
@@ -65,8 +65,8 @@ class TorchDataset(torch.utils.data.Dataset):
 
     def load_example(self, ex):
         image = fileio.load_nibabel(ex.paths['input_image'])
-        matrl = fileio.load_nibabel(ex.paths['material_mask'])
         mesh  = fileio.load_meshio(ex.paths['interp_mesh'])
+        mask  = fileio.load_nibabel(ex.paths['region_map'])
 
         image_a = image.get_fdata()
         if self.rgb:
@@ -75,16 +75,14 @@ class TorchDataset(torch.utils.data.Dataset):
             assert image_a.ndim == 3
             image_a = image_a[...,None] # add channel dim
 
-        matrl_a = matrl.get_fdata()
-        assert matrl_a.ndim == 3
+        mask_a = mask.get_fdata()
 
         def _as_cpu_tensor(a, dtype):
             return torch.as_tensor(a, dtype=dtype, device='cpu')
 
         affine_t = _as_cpu_tensor(image.affine, dtype=torch.float)
         image_t  = _as_cpu_tensor(image_a, dtype=torch.float).permute(3,0,1,2)
-        matrl_t  = _as_cpu_tensor(matrl_a, dtype=torch.long).unsqueeze(0)
-        mask_t   = (matrl_t > 0)
+        mask_t   = _as_cpu_tensor(mask_a, dtype=torch.long).unsqueeze(0) > 0
 
         if self.normalize:
             image_t = (image_t - self.image_mean) / self.image_std
@@ -93,13 +91,16 @@ class TorchDataset(torch.utils.data.Dataset):
             image_t = image_t * mask_t
 
         sample = {
-            'example':    ex,
-            'affine':     affine_t,
-            'img_true':   image_t, 
-            'mat_true':   matrl_t,
-            'mask':       mask_t,
-            'mesh':       mesh
+            'example':  ex,
+            'affine':   affine_t,
+            'img_true': image_t,
+            'mask':     mask_t,
+            'mesh':     mesh
         }
+        if 'material_map' in ex.paths:
+            mat_a = fileio.load_nibabel(ex.paths['material_map']).get_fdata()
+            mat_t = _as_cpu_tensor(mat_a, dtype=torch.long).unsqueeze(0)
+            sample['mat_true'] = mat_t
 
         if 'elastic_field' in ex.paths:
             elastic_a = fileio.load_nibabel(ex.paths['elastic_field']).get_fdata()
@@ -130,9 +131,10 @@ class TorchDataset(torch.utils.data.Dataset):
     def add_derived_keys(self, sample, eps=1e-12):
         sample = sample.copy()
 
-        mat_label = sample['mat_true'][0].long() # (1, I, J, K) -> (I, J, K)
-        mat_onehot = F.one_hot(mat_label, self.n_mat_labels + 1) # (C, I, J, K)
-        sample['mat_onehot'] = mat_onehot.permute(3,0,1,2).float()
+        if 'mat_true' in sample:
+            mat_label = sample['mat_true'][0].long() # (1, I, J, K) -> (I, J, K)
+            mat_onehot = F.one_hot(mat_label, self.n_mat_labels + 1) # (C, I, J, K)
+            sample['mat_onehot'] = mat_onehot.permute(3,0,1,2).float()
 
         if 'E_true' in sample:
             sample['logE_true'] = torch.log10(sample['E_true'].clamp_min(eps))
@@ -195,8 +197,11 @@ def apply_data_augmentation(
         ).reshape(t.shape).to(t.device, dtype=t.dtype)
 
     sample['img_true'] = resample_volume(sample['img_true'], mode='linear')
-    sample['mat_true'] = resample_volume(sample['mat_true'], mode='nearest')
-    sample['mask'] = resample_volume(sample['mask'], mode='nearest')
+    sample['mask']     = resample_volume(sample['mask'], mode='nearest')
+
+    if 'mat_true' in sample:
+        sample['mat_true'] = resample_volume(sample['mat_true'], mode='nearest')
+
     for key in ['E_true', 'nu_true', 'rho_true']:
         if key in sample:
             sample[key] = resample_volume(sample[key], mode='linear')

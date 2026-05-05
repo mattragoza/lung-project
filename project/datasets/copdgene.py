@@ -52,8 +52,8 @@ class COPDGeneDataset(base.Dataset):
     DEFAULT_VISIT = 'Phase-1'
     DEFAULT_STATE = 'EXP'
     DEFAULT_KERNEL = 'STD'
-    EE_STATE = 'EXP'
-    EI_STATE = 'INSP'
+    EE_RESP_STATE = 'EXP'
+    EI_RESP_STATE = 'INSP'
 
     def load_metadata(self):
         import pandas as pd
@@ -123,11 +123,11 @@ class COPDGeneDataset(base.Dataset):
 
     def examples(
         self,
-        subjects: Optional[str|Path|List[str]] = None,
-        variant:  Optional[str] = None,
-        visit:    Optional[str] = None,
+        subjects:    Optional[str|Path|List[str]] = None,
+        variant:     Optional[str] = None,
+        visit:       Optional[str] = None,
         state_pairs: Optional[List[Tuple[str, str]]] = None,
-        selectors: Dict[str, str] = None
+        selectors:   Dict[str, str] = None
     ):
         from .base import _resolve_subject_list
         subject_iter = subjects or self.subjects()
@@ -145,7 +145,7 @@ class COPDGeneDataset(base.Dataset):
             site = m.ccenter
 
             for init_state, curr_state in state_pairs:
-                ref_state = self.EI_STATE
+                ref_state = self.EI_RESP_STATE
 
                 meta = {'raw': dict(m)}
                 meta['visit'] = visit

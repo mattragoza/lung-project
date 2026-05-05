@@ -52,8 +52,9 @@ class Emory4DCTDataset(base.Dataset):
     '''
     SUBJ_ID_COLUMN = 'case_id'
     STATE_ID_COLUMN = 'phase_name'
-    EI_STATE = 'T00'
-    EE_STATE = 'T50'
+    EI_RESP_STATE = 'T00'
+    EE_RESP_STATE = 'T50'
+    DEFAULT_UNIT = 1e-3
 
     def load_metadata(self):
         import pandas as pd
@@ -151,18 +152,18 @@ class Emory4DCTDataset(base.Dataset):
             variant = str(variant)
 
         selectors = selectors or {}
-        img_tag = selectors.get('image_resampling', 'std')
+        img_tag = selectors.get('image_resampling',   'std')
         seg_tag = selectors.get('image_segmentation', 'tseg')
         reg_tag = selectors.get('image_registration', 'corr')
-        map_tag = selectors.get('region_labeling', 'regions')
-        gen_tag = selectors.get('mesh_generation', 'pyg')
+        map_tag = selectors.get('region_labeling',    'regions')
+        gen_tag = selectors.get('mesh_generation',    'pyg')
         int_tag = selectors.get('mesh_interpolation', 'int')
 
         for sid in subject_list:
             m = self.subject_metadata(sid)
 
             for init_state, curr_state in state_pairs:
-                ref_state = self.EI_STATE
+                ref_state = self.EI_RESP_STATE
 
                 meta = {'raw': dict(m)}
                 meta['init_state'] = init_state
@@ -175,6 +176,8 @@ class Emory4DCTDataset(base.Dataset):
                     'slope': 1.0,
                     'intercept': -1024.
                 }
+                meta['unit'] = self.DEFAULT_UNIT
+
                 paths = {}
                 paths['ref_source'] = self.source_path(sid, ref_state, asset_type='image')
                 paths['init_source'] = self.source_path(sid, init_state, asset_type='image')
@@ -192,9 +195,11 @@ class Emory4DCTDataset(base.Dataset):
                     paths['segment_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{init_state}_{img_tag}_{seg_tag}_combined')
                     paths['region_map']   = self.derived_path(sid, variant, 'mask',  f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}')
 
-                    #paths['input_image']  = self.derived_path(sid, variant, 'image', f'{sid}_{init_state}_{image_tag}')
-                    #paths['disp_field']  = self.derived_path(sid, variant, 'field', f'{sid}_{init_state}_{curr_state}_{image_tag}_{mask_tag}')
-                    #paths['interp_mesh'] = self.derived_path(sid, variant, 'mesh',  f'{sid}_{init_state}_{curr_state}_{image_tag}_{mask_tag}_{mesh_tag}')
+                    paths['disp_field']  = self.derived_path(sid, variant, 'field', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{reg_tag}_{curr_state}')
+                    paths['region_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}')
+                    paths['interp_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}_{int_tag}')
+
+                    paths['input_image'] = paths['init_resample']
 
                 yield base.Example(
                     dataset='Emory-4DCT',
