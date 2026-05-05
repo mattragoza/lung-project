@@ -3,7 +3,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import ipywidgets
 
-from ..core import utils
+from ..core import utils, transforms
 
 
 class SliceViewer:
@@ -26,7 +26,11 @@ class SliceViewer:
     ):
         self._initialized = False
 
-        self.vox_spacing = vox_spacing or (1, 1, 1)
+        if vox_spacing is not None:
+            self.vox_spacing = tuple(float(d) for d in vox_spacing)
+        else:
+            self.vox_spacing = (1., 1., 1.)
+
         self.vox_size = tuple(abs(v) for v in self.vox_spacing)
         self.ax_signs = tuple(1 if v >= 0 else -1 for v in self.vox_spacing)
 
@@ -170,8 +174,9 @@ class SliceViewer:
         if interact:
             self.cid_click = self.fig.canvas.mpl_connect('button_press_event', self.on_click)
     
-        self.fig.canvas.draw()
-        self.fig.canvas.flush_events()
+        #self.fig.canvas.draw()
+        #self.fig.canvas.flush_events()
+        self.fig.canvas.draw_idle()
         self._initialized = True
 
     def update_images(self):
