@@ -355,11 +355,11 @@ def get_label_cmap(
     weights = (0.2, 0.7, 0.1),
     grayscale: bool = False,
     colorblind: bool = False,
-    include_background: bool = True
+    include_bg: bool = True
 ):
     import matplotlib.pyplot as plt
     from matplotlib.colors import ListedColormap
-    c = plt.get_cmap(base).colors
+    c = list(plt.get_cmap(base).colors)
     if select:
         c = [c[idx] for idx in select]
     w_r, w_g, w_b = weights
@@ -370,24 +370,32 @@ def get_label_cmap(
         gs = lambda r,g,b: (r*w_r + g*w_g + b*w_b)
         c = [(gs(r,g,b),)*3 for r,g,b in c]
     assert n_labels <= len(c), (n_labels, len(c))
-    if include_background:
+    if include_bg:
         return ListedColormap(['white'] + c[:n_labels])
     return ListedColormap(c[:n_labels])
 
 
-def get_color_kws(key: str, n_labels: int = 5):
-    k = key.lower()
-    if k in {'image', 'img_true', 'img_pred'}:
-        return dict(cmap='gray', clim=(-1, 1))
-    elif k in {'E', 'E_true', 'E_pred'}:
+def get_color_kws(key: str, n_labels: int = 5, include_bg: bool = True):
+
+    if key in {'image', 'img_true', 'img_pred'}:
+        return dict(cmap='gray', clim=(-1, 1), line_color='rgb')
+
+    elif key in {'E', 'E_true', 'E_pred'}:
         return dict(cmap='jet', clim=(0, 1e4), line_color='cmy')
-    elif k in {'logE', 'logE_true', 'logE_pred'}:
+
+    elif key in {'logE', 'logE_true', 'logE_pred'}:
         return dict(cmap='jet', clim=(2, 6), line_color='cmy')
-    elif k in {'nu', 'nu_true', 'nu_pred'}:
+
+    elif key in {'nu', 'nu_true', 'nu_pred'}:
         return dict(cmap='gray', clim=(0, 0.5), line_color='cmy')
-    elif k in {'rho', 'rho_true', 'rho_pred'}:
+
+    elif key in {'rho', 'rho_true', 'rho_pred'}:
         return dict(cmap='gray', clim=(0, 2e3), line_color='cmy')
-    elif k in {'material', 'mat_true'} or k.startswith('mat_pred'):
-        return dict(cmap=get_label_cmap(n_labels), clim=(1, n_labels))
-    return dict(cmap='seismic', clim=(-3, 3))
+
+    elif key in {'material', 'mat_true'} or key.startswith('mat_pred'):
+        cmap = get_label_cmap(n_labels, include_bg=include_bg)
+        clim = (0, n_labels) if include_bg else (1, n_labels)
+        return dict(cmap=cmap, clim=clim)
+
+    return {}
 
