@@ -134,6 +134,7 @@ def run_training(examples, config):
         where='training'
     )
     from . import datasets, models, training, evaluation, physics
+    from . import callbacks as callbacks_module
 
     import torch
     torch.backends.cudnn.enabled = True
@@ -197,11 +198,11 @@ def run_training(examples, config):
 
     evaluator_kws = config.get('evaluator', {})
     callbacks = [
-        evaluation.LoggerCallback(keys=task.metric_keys),
+        callbacks_module.LoggerCallback(keys=task.metric_keys),
         evaluation.PlotterCallback(keys=task.metric_keys),
         evaluation.ViewerCallback(keys=task.viewer_keys),
         evaluation.EvaluatorCallback(**evaluator_kws),
-        evaluation.TimerCallback()
+        callbacks_module.TimerCallback()
     ]
 
     trainer_kws = config.get('trainer', {}).copy()

@@ -19,7 +19,7 @@ class MeshField:
             return self.cells
         if degree == 1 and self.nodes is not None:
             return self.nodes
-        raise ValueError(f'No values for degree {degree}')
+        raise KeyError(f'No values for degree {degree}')
 
 
 class PhysicsContext:
@@ -52,24 +52,50 @@ class PhysicsContext:
         # generic mesh-attached fields
         self.fields: Dict[str, MeshField] = {}
 
-        def add_field(name, dtype):
-            cell_vals = None
-            node_vals = None
+        def _add_field(name, dtype) -> bool:
+            cell_vals = node_vals = None
             if 'tetra' in mesh.cell_data_dict.get(name, {}):
                 cell_vals = _cpu(mesh.cell_data_dict[name]['tetra'], dtype)
             if name in mesh.point_data:
                 node_vals = _cpu(mesh.point_data[name], dtype)
+            if cell_vals is None and node_vals is None:
+                return False
             self.fields[name] = MeshField(cell_vals, node_vals)
+            return True
 
-        # material labels
-        add_field('material', dtype=torch.int)
+        # categorical labels
+        for name in {'region', 'material'}:
+            _add_field(name, dtype=torch.int)
 
         # material parameters
         for name in {'rho', 'E', 'nu', 'G', 'K', 'mu', 'lam'}:
-            add_field(name, dtype=torch.float)
+            _add_field(name, dtype=torch.float)
 
-        # boundary condition cache
-        self.bc_cache = {}
+        # observation cache: bc_spec -> (u_bc, u_obs)
+        self.obs_cache: Dict[Any, Tuple[MeshField, MeshField]] = {}
+
+        if _add_field('u_true', dtype=torch.float):
+            u_bc_field = u_obs_field = self.fields['u_true']
+            self.obs_cache[None] = (u_bc_field, u_obs_field)
+
+
+def _as_mesh_field(
+    ctx: PhysicsContext,
+    values: torch.Tensor,
+    degree: int
+) -> MeshField:
+    '''
+    Convert values at cell or node dofs into both representations.
+    '''
+    if degree == 0:
+        cell_vals = values.detach().cpu()
+        node_vals = transforms.cell_to_node_values(ctx.verts, ctx.cells, cell_vals, ctx.volume)
+    elif degree == 1:
+        node_vals = values.detach().cpu()
+        cell_vals = transforms.node_to_cell_values(ctx.cells, node_vals)
+    else:
+        raise ValueError(f'Cannot convert degree {degree}')
+    return MeshField(cell_vals, node_vals)
 
 
 class PhysicsAdapter:
@@ -137,6 +163,13 @@ class PhysicsAdapter:
 
     # ----- material parameters -----
 
+    def has_material_params(self, ctx: PhysicsContext) -> bool:
+        try:
+            self.get_material_params(ctx)
+            return True
+        except KeyError:
+            return False
+
     def get_material_params(
         self,
         ctx: PhysicsContext
@@ -175,7 +208,7 @@ class PhysicsAdapter:
         elif elast_keys == ('E', 'K'):
             E, K = params['E'], params['K']
             mu = 3*K*E /  (9*K - E)
-            lam = K - (2/3)*G
+            lam = K - (2/3)*mu
 
         elif elast_keys == ('G', 'K'):
             G, K = params['G'], params['K']
@@ -202,15 +235,22 @@ class PhysicsAdapter:
         bc_spec: Any
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        if bc_spec not in ctx.bc_cache: # cache clean only
+        if bc_spec not in ctx.obs_cache: # cache clean only
             params = self.get_material_params(ctx)
             mu, lam, rho = self.get_canonical_params(ctx, params)
+
             u_bc = self.get_boundary_condition(ctx, bc_spec)
             self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
-            u_true = self.pde_solver.solve(mu, lam, rho, u_bc)
-            ctx.bc_cache[bc_spec] = (u_bc.cpu(), u_true.detach().cpu())
+            u_obs = self.pde_solver.solve(mu, lam, rho, u_bc)
 
-        u_bc, u_obs = ctx.bc_cache[bc_spec]
+            ctx.obs_cache[bc_spec] = (
+                _as_mesh_field(ctx, u_bc, self.vector_degree),
+                _as_mesh_field(ctx, u_obs, self.vector_degree),
+            )
+
+        u_bc_field, u_obs_field = ctx.obs_cache[bc_spec]
+        u_bc  = u_bc_field[self.vector_degree]
+        u_obs = u_obs_field[self.vector_degree]
 
         if self.snr_db is not None:
             u_obs = self.add_observation_noise(u_obs, self.snr_db, self.seed)
@@ -237,9 +277,11 @@ class PhysicsAdapter:
     ) -> torch.Tensor:
 
         ctx = self.get_pde_context(mesh, unit_m)
-        params = self.get_material_params(ctx)
-        template = next(iter(params.values()))
-        return torch.full_like(template, fill_value, requires_grad=True)
+        if self.scalar_degree == 0:
+            shape = ctx.cells.shape[:1]
+        elif self.scalar_degree == 1:
+            shape = ctx.verts.shape[:1]
+        return torch.full(shape, fill_value, requires_grad=True)
 
     def simulate(
         self,
@@ -288,8 +330,12 @@ class PhysicsAdapter:
         if not ret_outputs:
             return loss
 
-        true_params = self.get_material_params(ctx)
-        mu_t, lam_t, rho_t = self.get_canonical_params(ctx, true_params)
+        if self.has_material_params(ctx):
+            true_params = self.get_material_params(ctx)
+            mu_t, lam_t, rho_t = self.get_canonical_params(ctx, true_params)
+        else:
+            true_params = {}
+            mu_t = lam_t = rho_t = None
     
         return loss, self._package_outputs(
             ctx,
@@ -361,21 +407,25 @@ class PhysicsAdapter:
         u_true: torch.Tensor,
         u_pred: torch.Tensor,
         pde_res: torch.Tensor
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, MeshField]:
 
         ret = {
             'volume':   ctx.volume,
             'material': ctx.fields.get('material'),
             'mu_pred':  _as_mesh_field(ctx, mu_pred, self.scalar_degree),
-            'mu_true':  _as_mesh_field(ctx, mu_true, self.scalar_degree),
             'lam_pred': _as_mesh_field(ctx, lam_pred, self.scalar_degree),
-            'lam_true': _as_mesh_field(ctx, lam_true, self.scalar_degree),
             'rho_pred': _as_mesh_field(ctx, rho_pred, self.scalar_degree),
-            'rho_true': _as_mesh_field(ctx, rho_true, self.scalar_degree),
             'u_pred':   _as_mesh_field(ctx, u_pred, self.vector_degree),
             'u_true':   _as_mesh_field(ctx, u_true, self.vector_degree),
             'residual': _as_mesh_field(ctx, pde_res, self.vector_degree)
         }
+        if mu_true is not None:
+            ret['mu_true'] = _as_mesh_field(ctx, mu_true, self.scalar_degree)
+        if lam_true is not None:
+            ret['lam_true'] = _as_mesh_field(ctx, lam_true, self.scalar_degree)
+        if rho_true is not None:
+            ret['rho_true'] = _as_mesh_field(ctx, rho_true, self.scalar_degree)
+
         for name in pred_native:
             ret[f'{name}_pred'] = _as_mesh_field(ctx, pred_native[name], self.scalar_degree)
         for name in true_native:
@@ -384,21 +434,5 @@ class PhysicsAdapter:
         return ret
 
 
-def _as_mesh_field(
-    ctx: PhysicsContext,
-    values: torch.Tensor,
-    degree: int
-) -> MeshField:
-    '''
-    Convert values at cell or node dofs into both representations.
-    '''
-    if degree == 0:
-        cell_vals = values.detach().cpu()
-        node_vals = transforms.cell_to_node_values(ctx.verts, ctx.cells, cell_vals, ctx.volume)
-    elif degree == 1:
-        node_vals = values.detach().cpu()
-        cell_vals = transforms.node_to_cell_values(ctx.cells, node_vals)
-    else:
-        raise ValueError(f'Cannot convert degree {degree}')
-    return MeshField(cell_vals, node_vals)
+
 

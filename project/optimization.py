@@ -86,10 +86,11 @@ def optimize_example(ex, config, output_path, raster_base):
     outputs = {
         'example': [ex],
         'mask': mask.cpu().unsqueeze(0),
-        'mat_true': sample['mat_true'].cpu().unsqueeze(0),
         'sim': [sim_output],
         'loss': loss
     }
+    if 'mat_true' in sample:
+        outputs['mat_true'] = sample['mat_true'].cpu().unsqueeze(0)
 
     # ----- rasterize parameters -----
     if raster_base:
@@ -116,8 +117,10 @@ def optimize_example(ex, config, output_path, raster_base):
     evaluator.on_phase_end(epoch=0, phase='optimize')
 
     def _assign_mesh_field(m, name):
-        m.point_data[name] = sim_output[name].nodes.numpy()
-        m.cell_data[name] = [sim_output[name].cells.numpy()]
+        field = sim_output.get(name)
+        if field is not None:
+            m.point_data[name] = field.nodes.numpy()
+            m.cell_data[name] = [field.cells.numpy()]
 
     output_mesh = mesh.copy()
     _assign_mesh_field(output_mesh, 'E_true')
@@ -132,7 +135,7 @@ def optimize_example(ex, config, output_path, raster_base):
     _assign_mesh_field(output_mesh, 'u_pred')
     _assign_mesh_field(output_mesh, 'residual')
 
-    print(output_mesh)
+    utils.log(output_mesh)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_meshio(output_path, output_mesh)
@@ -281,7 +284,7 @@ class OptimizationHistory:
             f'\t{curr_norm:.4e} ({param_delta:.4e})'
         )
         if np.isnan(curr_loss) or np.isnan(curr_grad) or np.isnan(curr_norm):
-            raise RuntimeExcepton('Optimization encountered nan value')
+            raise RuntimeError('Optimization encountered nan value')
 
         return loss_delta < tol or grad_delta < tol or param_delta < tol
 

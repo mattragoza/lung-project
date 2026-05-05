@@ -1,16 +1,14 @@
 from typing import List, Dict, Any
 from collections import defaultdict
 from pathlib import Path
-import time
 import numpy as np
 import pandas as pd
 import torch
-import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
 
 from .core import utils, transforms
 from .core import metrics as mm
 from .visual import matplotlib as mpl_viz
+from .callbacks import Callback
 
 
 def _to_numpy(t):
@@ -22,110 +20,6 @@ def _evaluate(pred, target, weight=None, name=None, profile=None):
         profile = name.split('_')[0]
     metrics = mm.evaluate_metrics(pred, target, weight, profile)
     return utils.namespace(metrics, name) if name else metrics
-
-
-class Callback:
-
-    @property
-    def name(self):
-        return self.__class__.__name__[:-8].lower() or None
-
-    def on_train_start(self, **kwargs):
-        return
-
-    def on_train_end(self, **kwargs):
-        return
-
-    def on_epoch_start(self, epoch, **kwargs):
-        return
-
-    def on_epoch_end(self, epoch, **kwargs):
-        return
-
-    def on_phase_start(self, epoch, phase, **kwargs):
-        return
-
-    def on_phase_end(self, epoch, phase, **kwargs):
-        return
-
-    def on_batch_start(self, epoch, phase, batch, step, **kwargs):
-        return
-
-    def on_batch_end(self, epoch, phase, batch, step, **kwargs):
-        return
-
-    def on_forward_start(self, *args, **kwargs):
-        return
-
-    def on_forward_end(self, *args, **kwargs):
-        return
-
-    def on_backward_start(self, *args, **kwargs):
-        return
-
-    def on_backward_end(self, *args, **kwargs):
-        return
-
-
-class TimerCallback(Callback):
-
-    def __init__(self):
-        self.timer = utils.Timer()
-
-    def on_phase_start(self, *args, **kwargs):
-        self.timer.tick(sync=False)
-
-    def on_batch_start(self, *args, **kwargs):
-        stats = self.timer.tick(sync=False)
-        utils.log(f'load_data: {stats}')
-
-    def on_forward_start(self, *args, **kwargs):
-        self.timer.tick(sync=False)
-
-    def on_forward_end(self, *args, **kwargs):
-        stats = self.timer.tick(sync=True)
-        utils.log(f'forward:   {stats}')
-
-    def on_backward_start(self, *args, **kwargs):
-        self.timer.tick(sync=False)
-
-    def on_backward_end(self, *args, **kwargs):
-        stats = self.timer.tick(sync=True)
-        utils.log(f'backward:  {stats}')
-
-    def on_batch_end(self, *args, **kwargs):
-        self.timer.tick(sync=False)
-
-
-class LoggerCallback(Callback):
-
-    def __init__(self, keys):
-        self.keys = keys
-
-    def on_train_start(self, *args, **kwargs):
-        utils.log('Start training')
-
-    def on_epoch_start(self, epoch, *args, **kwargs):
-        utils.log(f'Start epoch {epoch}')
-
-    def on_phase_start(self, epoch, phase, *args, **kwargs):
-        utils.log(f'Start epoch {epoch} {phase} phase')
-
-    def on_batch_start(self, epoch, phase, batch, *args, **kwargs):
-        utils.log(f'[Epoch {epoch} | {phase.capitalize()} batch {batch}] start')
-
-    def on_batch_end(self, epoch, phase, batch, step, outputs):
-        metrics = {k: round(outputs[k].item(), 4) for k in self.keys if k in outputs}
-        utils.log(f'[Epoch {epoch} | {phase.capitalize()} batch {batch}] {metrics}')
-
-    def on_phase_end(self, epoch, phase, *args, **kwargs):
-        utils.log(f'End epoch {epoch} {phase} phase')
-
-    def on_epoch_end(self, epoch, *args, **kwargs):
-        utils.log(f'End epoch {epoch}')
-
-    def on_train_end(self, *args, **kwargs):
-        utils.log('Training complete')
 
 
 class PlotterCallback(Callback):
@@ -146,7 +40,7 @@ class PlotterCallback(Callback):
         phase = str(phase).lower()
         for key in self.history:
             if key == 'mat_pred':
-                outputs = ensure_material_map(outputs)
+                outputs = ensure_material_preds(outputs)
             if key in outputs:
                 val = float(outputs[key].float().norm().item())
                 self.history[key][phase][step].append(val)
@@ -245,7 +139,7 @@ class ViewerCallback(Callback):
 
         for key, viewer in self.viewers.items():
             if key.startswith('mat_pred'):
-                outputs = ensure_material_map(outputs)
+                outputs = ensure_material_preds(outputs)
 
             if key not in outputs:
                 continue
@@ -305,11 +199,13 @@ class EvaluatorCallback(Callback):
             'step': int(step),
             'loss': float(outputs['loss'].item())
         }
-        if 'loss_base' in outputs:
+        if _has_output(outputs, 'loss_ratio'):
             base['loss_base'] = float(outputs['loss_base'].item()),
             base['loss_ratio'] = float(outputs['loss_ratio'].item())
 
-        outputs = ensure_material_map(outputs)
+        has_material_labels = _has_output(outputs, 'mat_true')
+        if has_material_labels:
+            outputs = ensure_material_preds(outputs)
 
         for k in range(batch_size):
             ex = outputs['example'][k]
@@ -318,16 +214,19 @@ class EvaluatorCallback(Callback):
             ex_metrics = self.compute_metrics(outputs, index=k)
             self.example_rows[phase].append(ex_base | ex_metrics)
 
-            for l in _material_labels(outputs, index=k):
+            if not has_material_labels:
+                continue
+
+            for l in get_material_labels(outputs, index=k):
                 mat_base = {**ex_base, 'material': int(l)}
                 mat_metrics = self.compute_metrics(outputs, index=k, label=l)
                 self.material_rows[phase].append(mat_base | mat_metrics)
 
     def compute_metrics(self, outputs, index, label=None):
         ret = {}
-        if 'mask' in outputs:
+        if _has_output(outputs, 'mask'):
             ret |= self.compute_voxel_metrics(outputs, index, label)
-        if 'sim' in outputs:
+        if _has_output(outputs, 'sim'):
             ret |= self.compute_mesh_metrics(outputs, index, label)
         return ret
 
@@ -335,12 +234,12 @@ class EvaluatorCallback(Callback):
         ex = outputs['example'][index]
 
         mask = _to_numpy(outputs['mask'][index].bool()).reshape(-1, 1)
-        mat_true = _to_numpy(outputs['mat_true'][index]).reshape(-1, 1)
 
-        if label is None:
-            sel = mask
-        else:
+        if label is not None:
+            mat_true = _to_numpy(outputs['mat_true'][index]).reshape(-1, 1)
             sel = mask & (mat_true == label)
+        else:
+            sel = mask
 
         num_voxels = int(np.count_nonzero(sel))
         if num_voxels == 0:
@@ -367,22 +266,22 @@ class EvaluatorCallback(Callback):
                 if outputs.get(key) is not None:
                     mat_pred_ = _to_numpy(outputs[key][index]).reshape(-1, 1)
                     ret |= _evaluate(mat_pred_ == label, mat_true == label, name=key)
-
         return ret
 
     def compute_mesh_metrics(self, outputs, index, label=None):
         ex = outputs['example'][index]
+
         sim_output = outputs['sim'][index]
         if sim_output is None:
             return {}
 
         vol_cells = _to_numpy(sim_output['volume'])
-        mat_cells = _to_numpy(sim_output['material'].cells)
 
-        if mat_cells is None:
-            sel = np.ones_like(vol_cells, dtype=bool)
+        if label is not None:
+            mat_cells = _to_numpy(sim_output['material'].cells)
+            sel = (mat_cells == label)
         else:
-            sel = (mat_cells != 0) if label is None else (mat_cells == label)
+            sel = np.ones_like(vol_cells, dtype=bool)
 
         num_cells = int(np.count_nonzero(sel))
         if num_cells == 0:
@@ -422,14 +321,14 @@ class EvaluatorCallback(Callback):
         return ret
 
     def summarize(self, epoch, phase):
-        ex_df_all = pd.concat(
-            [pd.DataFrame(rows) for rows in self.example_rows.values()],
-            ignore_index=True
-        )
-        mat_df_all = pd.concat(
-            [pd.DataFrame(rows) for rows in self.material_rows.values()],
-            ignore_index=True
-        )
+
+        def _concat_rows(dct):
+            dfs = [pd.DataFrame(rows) for rows in dct.values() if rows]
+            return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+        ex_df_all = _concat_rows(self.example_rows)
+        mat_df_all = _concat_rows(self.material_rows)
+
         for df, path in [(ex_df_all, self.ex_path), (mat_df_all, self.mat_path)]:
             if df.empty:
                 continue
@@ -446,52 +345,64 @@ class EvaluatorCallback(Callback):
         utils.log(f'{phase.capitalize()} metrics @ epoch {epoch}: \n{m}')
 
 
-def _get_new_path(path: Path):
+def _get_new_path(path: Path) -> Path:
     while path.is_file():
         path = Path(str(path) + '.new')
     return path
 
 
-def _material_labels(outputs, index):
-    labels = set()
-    if 'mat_true' in outputs:
-        mat_mask = _to_numpy(outputs['mat_true'][index]).reshape(-1, 1)
-        labels |= set(np.unique(mat_mask[mat_mask > 0]))
-    if outputs.get('sim') is not None:
-        sim_output = outputs['sim'][index]
-        if sim_output and sim_output.get('material') is not None:
-            mat_cells = _to_numpy(sim_output['material'].cells)
-            labels |= set(np.unique(mat_cells[mat_cells > 0]))
-    return sorted(labels)
+def _has_output(outputs, key) -> bool:
+    return outputs.get(key) is not None
 
 
-def _voxel_param_fields(outputs):
+PARAM_NAMES = {'E', 'nu', 'G', 'K', 'mu', 'lam', 'rho'}
+
+
+def _voxel_param_fields(outputs) -> List[str]:
     names = []
     for k, v in outputs.items():
         if not k.endswith('_pred'):
             continue
         name = k[:-5]
-        if name not in {'E', 'nu', 'G', 'K', 'mu', 'lam', 'rho'}:
+        if name not in PARAM_NAMES:
             continue
         if torch.is_tensor(v) and v.ndim == 5 and v.shape[1] == 1:
             names.append(name)
     return sorted(set(names))
 
 
-def _mesh_param_fields(sim_output):
+def _mesh_param_fields(sim_output) -> List[str]:
     names = []
     for k, v in sim_output.items():
         if not k.endswith('_pred'):
             continue
         name = k[:-5]
-        if name not in {'E', 'nu', 'G', 'K', 'mu', 'lam', 'rho'}:
+        if name not in PARAM_NAMES:
             continue
         if getattr(v, 'cells') is not None:
             names.append(name)
     return sorted(set(names))
 
 
-def ensure_material_map(outputs):
+def get_material_labels(outputs, index):
+    labels = set()
+    if _has_output(outputs, 'mat_true'):
+        mat_tensor = outputs['mat_true'][index]
+        mat_voxels = _to_numpy(mat_tensor).reshape(-1, 1)
+        labels |= set(np.unique(mat_voxels[mat_voxels > 0]))
+
+    if _has_output(outputs, 'sim'):
+        sim_output = outputs['sim'][index]
+        if sim_output and _has_output(sim_output, 'material'):
+            mat_field = sim_output['material']
+            if getattr(mat_field, 'cells') is not None:
+                mat_cells = _to_numpy(mat_field.cells)
+                labels |= set(np.unique(mat_cells[mat_cells > 0]))
+
+    return sorted(labels)
+
+
+def ensure_material_preds(outputs):
     if 'mat_pred' in outputs:
         return outputs
 
@@ -501,9 +412,10 @@ def ensure_material_map(outputs):
         outputs['mat_pred'] = mat_pred.unsqueeze(1).cpu() # (B,1,I,J,K)
         return outputs
 
-    if 'E_true' not in outputs or 'E_pred' not in outputs:
-        utils.warn('Cannot estimate material map from provided outputs.')
-        return outputs
+    for key in ['mat_true', 'E_true', 'E_pred']:
+        if key not in outputs:
+            utils.warn('WARNING: Cannot estimate material map from provided outputs.')
+            return outputs
 
     batch_size = len(outputs['example'])
     outputs['mat_pred'] = [None] * batch_size
