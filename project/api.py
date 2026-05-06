@@ -3,7 +3,7 @@ from .core import utils, fileio
 
 class RunOutputs:
 
-    def __init__(self, stage: str, root: str='outputs'):
+    def __init__(self, stage: str, root: str = 'outputs'):
         from pathlib import Path
         self.root = Path(root)
         self.stage = str(stage)
@@ -21,11 +21,11 @@ class RunOutputs:
     def nifti_path(self, ex, name):
         return self.base_dir / ex.subject / 'niftis' / (name + '.nii.gz')
 
-    def raster_base(self, ex):
+    def raster_dir(self, ex):
         return self.base_dir / ex.subject / 'rasters'
 
     def raster_path(self, ex, name):
-        return self.base_dir / ex.subject / 'rasters' / (name + '.nii.gz')
+        return self.raster_dir(ex) / (name + '.nii.gz')
 
 
 def get_examples(config):
@@ -60,6 +60,7 @@ def run_validate(examples, config):
             result = validation.validate_example(ex)
             if result is not None:
                 rows.append(result)
+
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
             continue
@@ -84,6 +85,7 @@ def run_preprocess(examples, config):
             result = preprocessing.api.preprocess_example(ex, config)
             if result is not None:
                 rows.append(result)
+
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
             raise e
@@ -103,14 +105,16 @@ def run_optimize(examples, config):
 
     all_metrics = []
     failed_sids = []
+
     for ex in examples:
         utils.log(f'Optimizing subject: {ex.subject}')
         try:
             output_path = outputs.mesh_path(ex, name='optimized')
-            raster_base = outputs.raster_base(ex)
-            metrics = optimization.optimize_example(ex, config, output_path, raster_base)
+            raster_dir = outputs.raster_dir(ex)
+            metrics = optimization.optimize_example(ex, config, output_path, raster_dir)
             if metrics is not None:
                 all_metrics.append(metrics)
+
         except Exception as e:
             utils.log(f'ERROR: {e}; Skipping subject {ex.subject}')
             failed_sids.append(ex.subject)

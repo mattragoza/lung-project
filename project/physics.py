@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 from typing import Optional, List, Dict, Tuple, Iterable, Any
 from dataclasses import dataclass
+
 import numpy as np
 import meshio
 import torch
@@ -44,10 +46,10 @@ class PhysicsContext:
         self.adjacency = transforms.compute_node_adjacency(self.verts, self.cells, self.volume)
 
         # points used for voxel interpolation (world units)
-        cell_points = mesh.points[cells_np].mean(axis=1)
-        node_points = mesh.points
+        cell_points = _cpu(mesh.points[cells_np].mean(axis=1))
+        node_points = _cpu(mesh.points)
 
-        self.points = MeshField(_cpu(cell_points), _cpu(node_points))
+        self.points = MeshField(cell_points, node_points)
 
         # generic mesh-attached fields
         self.fields: Dict[str, MeshField] = {}
@@ -95,6 +97,7 @@ def _as_mesh_field(
         cell_vals = transforms.node_to_cell_values(ctx.cells, node_vals)
     else:
         raise ValueError(f'Cannot convert degree {degree}')
+
     return MeshField(cell_vals, node_vals)
 
 
@@ -113,8 +116,8 @@ class PhysicsAdapter:
         scalar_degree: int,
         vector_degree: int,
         pde_solver_cls: str,
-        pde_solver_kws=None,
-        use_cache: bool=True,
+        pde_solver_kws = None,
+        use_cache: bool = True,
         device: str='cuda',
         snr_db: float = None,
         seed: int = 0

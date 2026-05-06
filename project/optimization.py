@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, List, Dict, Tuple
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -22,14 +22,14 @@ class OptimizerSpec:
 
 @dataclass
 class InitializeSpec:
-    num_trials: int = 1
+    num_restarts: int = 1
     noise_std: float = 0
 
 
 # ----- public entry point -----
 
 
-def optimize_example(ex, config, output_path, raster_base=None):
+def optimize_example(ex, config, output_path, raster_dir=None):
     utils.check_keys(
         config,
         valid={
@@ -51,8 +51,6 @@ def optimize_example(ex, config, output_path, raster_base=None):
     optim_spec   = build_optimizer_spec(config)
     init_spec    = build_initialize_spec(config)
     phys_adapter = build_physics_adapter(config)
-
-    utils.log(optim_spec)
 
     bc_spec = None
 
@@ -79,7 +77,7 @@ def optimize_example(ex, config, output_path, raster_base=None):
     utils.log(f'Final loss: {loss.item()}')
     utils.pprint(sim_output)
 
-    if raster_base:
+    if raster_dir:
         utils.log('Rasterizing parameters')
         shape = sample['mask'].shape[1:]
         affine = sample['affine']
@@ -102,8 +100,8 @@ def optimize_example(ex, config, output_path, raster_base=None):
     evaluate_outputs(evaluator, outputs)
 
     save_output_mesh(mesh, sim_output, output_path)
-    if raster_base:
-        save_output_rasters(rasters, affine, raster_base)
+    if raster_dir:
+        save_output_rasters(rasters, affine, raster_dir)
 
 
 # ----- context configuration -----
@@ -166,8 +164,8 @@ def optimize_params(
     best_loss = None
     best_params = None
 
-    for trial in range(init_spec.num_trials):
-        utils.log(f'Trial {trial + 1} / {init_spec.num_trials}')
+    for trial in range(init_spec.num_restarts):
+        utils.log(f'Trial {trial + 1} / {init_spec.num_restarts}')
 
         param_dofs = initialize_param_dofs(
             phys=phys,
@@ -419,7 +417,7 @@ def save_output_rasters(rasters, affine, output_dir):
 
     for name, pred_vox in rasters.items():
         output_path = output_dir / f'{name}_pred.nii.gz'
-        output_array = pred_vox.detach().cpu().numpy()
+        output_array = pred_vox.detach().cpu().numpy()[0]
         fileio.save_nibabel(output_path, output_array, affine)
 
 
