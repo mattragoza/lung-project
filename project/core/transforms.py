@@ -150,28 +150,49 @@ def normalize_voxel_coords(points, shape, align_corners=True, flip_order=False):
     return output
 
 
-def get_grid_bounds(shape, affine, unit_m, align_corners=True):
-    '''
-    Return the upper and lower bounding corners of a grid
-    in world coordinates (in *meters*, NOT world units) using
-    the provided world affine matrix, 3D shape, and world unit.
-    '''
-    origin  = get_affine_origin(affine)
-    spacing = get_affine_spacing(affine)
+def get_grid_bounds(shape, affine, align_corners=True):
+    use_torch = torch.is_tensor(affine)
 
-    if torch.is_tensor(affine):
-        shape = torch.as_tensor(shape)
-    else:
-        shape = np.asarray(shape)
+    I, J, K = shape
 
     if align_corners:
-        lo = origin
-        hi = origin + (shape - 1.0) * spacing
+        lo = [0, 0, 0]
+        hi = [I - 1, J - 1, K - 1]
     else:
-        lo = origin - 0.5 * spacing
-        hi = origin + (shape - 0.5) * spacing
-    
-    return lo * unit_m, hi * unit_m
+        lo = [-0.5, -0.5, -0.5]
+        hi = [I - 0.5, J - 0.5, K - 0.5]
+
+    corners_data = [
+        [lo[0], lo[1], lo[2]],
+        [lo[0], lo[1], hi[2]],
+        [lo[0], hi[1], lo[2]],
+        [lo[0], hi[1], hi[2]],
+        [hi[0], lo[1], lo[2]],
+        [hi[0], lo[1], hi[2]],
+        [hi[0], hi[1], lo[2]],
+        [hi[0], hi[1], hi[2]],
+    ]
+
+    if use_torch:
+        corners = torch.tensor(
+            corners_data, dtype=affine.dtype, device=affine.device
+        )
+        ones = torch.ones((8, 1), dtype=affine.dtype, device=affine.device)
+    else:
+        corners = np.asarray(corners_data, dtype=float)
+        ones = np.ones((8, 1), dtype=float)
+
+    if use_torch:
+        corners_h = torch.cat([corners, ones], dim=1)
+    else:
+        corners_h = np.concatenate([corners, ones], axis=1)
+
+    world = (affine @ corners_h.T).T[:, :3]
+
+    if use_torch:
+        return world.min(axis=0).values, world.max(axis=0).values
+    else:
+        return world.min(axis=0), world.max(axis=0)
 
 
 def compute_cell_volume(verts, cells):

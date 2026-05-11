@@ -349,6 +349,8 @@ def rasterize_params(
             shape=shape,
             affine=affine
         )
+        if torch.all(vox == 0):
+            utils.warn('WARNING: Rasterized field is all zero')
         rasters[name] = vox.cpu()
     return rasters
 

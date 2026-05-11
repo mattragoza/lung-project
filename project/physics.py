@@ -391,8 +391,29 @@ class PhysicsAdapter:
 
         ctx = self.get_pde_context(mesh, unit_m)
         self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
-        bounds = transforms.get_grid_bounds(shape, affine, unit_m)
-        return self.pde_solver.rasterize_scalar_field(dofs, shape, bounds).cpu()
+
+        # ctx.verts contains the mesh points in world meters
+        bbox = transforms.compute_bbox(ctx.verts.numpy())
+        print(f'verts bbox: {bbox}')
+
+        # shape and affine are from grid (same as mesh gen)
+        # but the affine should be in native "world units"
+        print(f'grid shape: {shape}')
+        print(f'grid affine:\n{affine}')
+
+        # grid bound should now be in world meters
+        lo, hi = transforms.get_grid_bounds(shape, affine)
+        bounds = (lo * unit_m, hi * unit_m)
+        print(f'grid bounds: {bounds}')
+
+        vox = self.pde_solver.rasterize_scalar_field(dofs, shape, bounds).cpu()
+
+        # Warp rasterization doesn't understand the full affine
+        #   so we need to flip dims to match affine orientation
+        flip_dims = [i+1 for i,s in enumerate(torch.diag(affine)) if s < 0]
+        vox = torch.flip(vox, dims=flip_dims)
+
+        return vox
 
     # ----- output packaging -----
 
