@@ -177,18 +177,18 @@ class Trainer:
         task: TaskSpec,
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
-        physics_adapter: project.physics.PhysicsAdapter,
+        phys_adapter: project.physics.PhysicsAdapter,
         train_loader: torch.utils.data.DataLoader,
-        test_loader: torch.utils.data.DataLoader=None,
-        val_loader: torch.utils.data.DataLoader=None,
-        callbacks: torch.utils.data.DataLoader=None,
-        output_dir='checkpoints',
-        device='cuda'
+        test_loader: torch.utils.data.DataLoader = None,
+        val_loader: torch.utils.data.DataLoader = None,
+        callbacks: torch.utils.data.DataLoader = None,
+        output_dir: str = 'checkpoints',
+        device: str = 'cuda'
     ):
         self.task = task
         self.model = model.to(device)
         self.optimizer = optimizer
-        self.physics_adapter = physics_adapter
+        self.phys_adapter = phys_adapter
 
         self.train_loader = train_loader
         self.test_loader = test_loader
@@ -207,6 +207,9 @@ class Trainer:
 
     # ----- training loop / phases -----
 
+    def check_epoch(self, interval: int):
+        return interval and self.epoch % interval == 0
+
     def train(self, num_epochs, val_every=1, test_every=5, save_every=5):
         self.start_train()
         start_step = self.step
@@ -214,13 +217,13 @@ class Trainer:
         while self.epoch < num_epochs:
             self.start_epoch()
 
-            if self.output_dir and save_every and self.epoch % save_every == 0:
+            if self.output_dir and self.check_epoch(save_every):
                 self.save_state()
 
-            if self.val_loader and val_every and self.epoch % val_every == 0:
+            if self.val_loader and self.check_epoch(val_every):
                 self.run_val_phase()
 
-            if self.test_loader and test_every and self.epoch % test_every == 0:
+            if self.test_loader and self.check_epoch(test_every):
                 self.run_test_phase()
 
             self.run_train_phase()
@@ -341,7 +344,7 @@ class Trainer:
                     name: preds[self.task.output_key(name)][k]
                     for name in self.task.physics_outputs
                 }
-                sim_loss[k], sim_outputs[k] = self.physics_adapter.voxel_simulation_loss(
+                sim_loss[k], sim_outputs[k] = self.phys_adapter.voxel_simulation_loss(
                     mesh=batch['mesh'][k],
                     unit_m=batch['example'][k].metadata['unit'],
                     affine=batch['affine'][k],
@@ -502,25 +505,31 @@ class Trainer:
     def _checkpoint_path(self, epoch: int):
         return self.output_dir / f'checkpoint{epoch:05d}.pt'
 
-    def _latest_checkpoint(self, by_mtime=False):
+    def _latest_checkpoint(self, by_mtime: bool = False):
         ckpts = self._list_checkpoints(by_mtime)
         if not ckpts:
             return None
         return ckpts[-1]
 
-    def _list_checkpoints(self, by_mtime=False):
+    def _list_checkpoints(self, by_mtime: bool = False):
         if not self.output_dir.exists():
             return []
+
         import re
-        ckpt_re = re.compile(r'^checkpoint(\d{5})\.pt$')
+        pat = re.compile(r'^checkpoint(\d{5})\.pt$')
+
+        def is_ckpt(p):
+            return p.is_file() and pat.match(p.name)
+
+        paths = [p for p in self.output_dir.iterdir() if is_ckpt(p)]
+
         if by_mtime:
-            key = lambda p: p.stat().st_mtime
+            sort_key = lambda p: p.stat().st_mtime
         else:
-            key = lambda p: p.name
-        return sorted(
-            [p for p in self.output_dir.iterdir() if p.is_file() and ckpt_re.match(p.name)],
-            key=key
-        )
+            sort_key = lambda p: p.name
+
+        return sorted(paths, key=sort_key)
+
 
 
 @torch.no_grad()

@@ -20,6 +20,7 @@ class TorchDataset(torch.utils.data.Dataset):
         rand_rotate:  bool = False,
         rand_reflect: bool = False,
         sigma_trans: float = 0.0,
+        use_pseudo: bool = False,
         use_cache: bool = False,
         n_mat_labels: int = 5,
         rgb: bool = False
@@ -42,6 +43,7 @@ class TorchDataset(torch.utils.data.Dataset):
         self.n_mat_labels = n_mat_labels
         self.rgb = rgb
 
+        self.use_pseudo = use_pseudo
         self.use_cache = use_cache
         self._cache = {}
 
@@ -102,7 +104,12 @@ class TorchDataset(torch.utils.data.Dataset):
             mat_t = _as_cpu_tensor(mat_a, dtype=torch.long).unsqueeze(0)
             sample['mat_true'] = mat_t
 
-        if 'elastic_field' in ex.paths:
+        if self.use_pseudo:
+            elastic_a = fileio.load_nibabel(ex.paths['elastic_pseudo']).get_fdata()
+            elastic_t = _as_cpu_tensor(elastic_a, dtype=torch.float).unsqueeze(0)
+            sample['E_true'] = elastic_t
+
+        elif 'elastic_field' in ex.paths:
             elastic_a = fileio.load_nibabel(ex.paths['elastic_field']).get_fdata()
             elastic_t = _as_cpu_tensor(elastic_a, dtype=torch.float).unsqueeze(0)
             sample['E_true'] = elastic_t
@@ -136,11 +143,9 @@ class TorchDataset(torch.utils.data.Dataset):
             mat_onehot = F.one_hot(mat_label, self.n_mat_labels + 1) # (C, I, J, K)
             sample['mat_onehot'] = mat_onehot.permute(3,0,1,2).float()
 
-        if 'E_true' in sample:
-            sample['logE_true'] = torch.log10(sample['E_true'].clamp_min(eps))
-
-        if 'rho_true' in sample:
-            sample['logrho_true'] = torch.log10(sample['rho_true'].clamp_min(eps))
+        for key in ['E_true', 'rho_true']:
+            if key in sample:
+                sample[f'log{key}'] = torch.log10(sample[key].clamp_min(eps))
 
         return sample
 

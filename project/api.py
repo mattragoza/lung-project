@@ -47,6 +47,34 @@ def get_examples(config):
     return dataset.list_examples(selectors=selector_kws, **examples_kws)
 
 
+def attach_pseudo_labels(examples, path_list):
+    import pandas as pd
+    import dataclasses
+
+    def read_paths(path_list):
+        from pathlib import Path
+        paths, subjs = [], []
+        with open(path_list) as f:
+            for line in f:
+                p = line.strip()
+                paths.append(Path(p))
+                subjs.append(p.split('/')[-3])
+        return dict(zip(subjs, paths))
+
+    paths_by_subject = read_paths(path_list)
+
+    out = []
+    for ex in examples:
+        ex = dataclasses.replace(ex)
+        ex.paths = dict(ex.paths)
+        ex.paths['elastic_pseudo'] = paths_by_subject[ex.subject]
+        if ex.paths['elastic_pseudo'].is_file():
+            out.append(ex)
+        else:
+            utils.warn(f'WARNING: No pseudo-label for example {ex.subject}')
+    return out
+
+
 def run_validate(examples, config):
     from . import validation
 
@@ -134,7 +162,8 @@ def run_training(examples, config):
     utils.check_keys(
         config,
         {'split', 'transform', 'loader', 'model', 'optimizer', 'evaluator'} |
-        {'physics_adapter', 'pde_solver', 'trainer', 'task', 'random_seed'},
+        {'physics_adapter', 'pde_solver', 'trainer', 'task', 'random_seed'} |
+        {'use_pseudo', 'pseudo_path'},
         where='training'
     )
     from . import datasets, models, training, evaluation, physics
@@ -151,6 +180,11 @@ def run_training(examples, config):
     outputs_kws = config.pop('outputs', {})
     outputs = RunOutputs(stage='training', **outputs_kws)
 
+    use_pseudo = config.get('use_pseudo', False)
+    pseudo_path = config.get('pseudo_path', '.')
+    if use_pseudo:
+        examples = attach_pseudo_labels(examples, pseudo_path)
+
     split_kws = config.get('split', {})
     train_ex, test_ex, val_ex = training.split_on_metadata(examples, **split_kws)
 
@@ -158,10 +192,11 @@ def run_training(examples, config):
     img = fileio.load_nibabel(examples[0].paths['input_image']).get_fdata()
     rgb = (img.ndim == 4 and img.shape[-1] == 3)
 
+
     transform_kws = config.get('transform', {})
-    train_set  = datasets.torch.TorchDataset(train_ex, rgb=rgb, **transform_kws)
-    test_set   = datasets.torch.TorchDataset(test_ex, rgb=rgb, **transform_kws)
-    val_set    = datasets.torch.TorchDataset(val_ex, rgb=rgb, **transform_kws)
+    train_set  = datasets.torch.TorchDataset(train_ex, use_pseudo=use_pseudo, rgb=rgb, **transform_kws)
+    test_set   = datasets.torch.TorchDataset(test_ex, use_pseudo=False, rgb=rgb, **transform_kws)
+    val_set    = datasets.torch.TorchDataset(val_ex, use_pseudo=False, rgb=rgb, **transform_kws)
     collate_fn = datasets.torch.collate_fn
 
     loader_kws = config.get('loader', {})
@@ -214,7 +249,7 @@ def run_training(examples, config):
         task=task,
         model=model,
         optimizer=optimizer,
-        physics_adapter=physics_adapter,
+        phys_adapter=physics_adapter,
         train_loader=train_loader,
         test_loader=test_loader,
         val_loader=val_loader,
@@ -226,4 +261,3 @@ def run_training(examples, config):
         utils.warn('Checkpoint not found.')
 
     trainer.train(**trainer_kws)
-
