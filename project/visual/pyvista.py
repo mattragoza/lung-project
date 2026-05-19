@@ -96,7 +96,8 @@ def plot_mesh(
     if glyph_factor and glyph_factor > 0:
         kws = kwargs | (glyph_kws or {})
         vector = kws.pop('scalars', 'u')
-        g = m.glyph(scale=vector, orient=vector, factor=glyph_factor)
+        mm = m.extract_points(np.arange(0, m.n_points, 4), adjacent_cells=False)
+        g = mm.glyph(scale=vector, orient=vector, factor=glyph_factor)
         plot_mesh(g, plotter=p, **kws)
 
     return p

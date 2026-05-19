@@ -14,7 +14,7 @@ def _ensure_output(func, *args, **kwargs) -> Tuple[bool, Any]:
         *args, **kwargs: Passed into function call.
     Returns:
         bool: True if the function was called.
-        Any: Returned from the function call.
+        Any: Return value from function call.
     '''
     output_path = kwargs.get('output_path')
 
@@ -182,65 +182,54 @@ def preprocess_emory4dct(ex, config):
     
     # ----- image conversion -----
 
-    _ensure_output( # ref_nifti
-        stages.convert_image_to_nifti,
-        input_path=ex.paths['ref_source'],
-        output_path=ex.paths['ref_nifti'],
-        **ex.metadata['image_params']
-    )
-    _ensure_output( # init_nifti
-        stages.convert_image_to_nifti,
-        input_path=ex.paths['init_source'],
-        output_path=ex.paths['init_nifti'],
-        **ex.metadata['image_params']
-    )
-    _ensure_output( # curr_nifti
-        stages.convert_image_to_nifti,
-        input_path=ex.paths['curr_source'],
-        output_path=ex.paths['curr_nifti'],
-        **ex.metadata['image_params']
-    )
+    for state in ['ref_state', 'init_state', 'curr_state']:
+
+        _ensure_output( # converted_image
+            stages.convert_image_to_nifti,
+            input_path=ex.paths[state]['source_image'],
+            output_path=ex.paths[state]['converted_image'],
+            **ex.metadata['image_params']
+        )
 
     # ----- image resampling -----
 
-    _ensure_output( # init_resample
-        stages.resample_image_spacing,
-        ref_path=ex.paths['ref_nifti'],
-        input_path=ex.paths['init_nifti'],
-        output_path=ex.paths['init_resample'],
-        config=config.get('image_resampling', {})
-    )
-    _ensure_output( # curr_resample
-        stages.resample_image_spacing,
-        ref_path=ex.paths['ref_nifti'],
-        input_path=ex.paths['curr_nifti'],
-        output_path=ex.paths['curr_resample'],
-        config=config.get('image_resampling', {})
-    )
+    for state in ['init_state', 'curr_state']:
+
+        _ensure_output( # resampled_image
+            stages.resample_image_spacing,
+            ref_path=ex.paths['ref_state']['converted_image'],
+            input_path=ex.paths[state]['converted_image'],
+            output_path=ex.paths[state]['resampled_image'],
+            config=config.get('image_resampling', {})
+        )
 
     # ----- image segmentation -----
 
-    _ensure_output( # segment_dir
-        stages.create_segmentation_masks,
-        input_path=ex.paths['init_resample'],
-        segment_dir=ex.paths['segment_dir'],
-        output_path=ex.paths['segment_mask'],
-        config=config.get('image_segmentation', {})
-    )
-    _ensure_output( # region_map
-        stages.create_multi_region_map,
-        input_dir=ex.paths['segment_dir'],
-        output_path=ex.paths['region_map'],
-        config=config.get('region_labeling', {})
-    )
+    for state in ['init_state', 'curr_state']:
+
+        _ensure_output( # combined_mask
+            stages.create_segmentation_masks,
+            input_path=ex.paths[state]['resampled_image'],
+            segment_dir=ex.paths[state]['segment_dir'],
+            output_path=ex.paths[state]['combined_mask'],
+            config=config.get('image_segmentation', {})
+        )
+
+        _ensure_output( # region_map
+            stages.create_multi_region_map,
+            input_dir=ex.paths[state]['segment_dir'],
+            output_path=ex.paths[state]['region_map'],
+            config=config.get('region_labeling', {})
+        )
 
     # ----- image registration -----
 
     _ensure_output( # disp_field
         stages.register_displacement_field,
-        fixed_path=ex.paths['init_resample'],
-        moving_path=ex.paths['curr_resample'],
-        mask_path=ex.paths['segment_mask'],
+        fixed_image=ex.paths['init_state']['resampled_image'],
+        moving_image=ex.paths['curr_state']['resampled_image'],
+        fixed_mask=ex.paths['init_state']['combined_mask'],
+        moving_mask=ex.paths['curr_state']['combined_mask'],
         output_path=ex.paths['disp_field'],
         config=config.get('image_registration', {})
     )

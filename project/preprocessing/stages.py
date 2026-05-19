@@ -1,4 +1,4 @@
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any
 from pathlib import Path
 import numpy as np
 from ..core import fileio, utils
@@ -293,8 +293,8 @@ def simulate_displacement_field(
 
 
 def convert_image_to_nifti(
-    input_path,
-    output_path,
+    input_path: Path,
+    output_path: Path,
     shape: Tuple[int, int, int],
     dtype: str,
     system: str,
@@ -420,38 +420,48 @@ def create_multi_region_map(input_dir, output_path, config):
 
 
 def register_displacement_field(
-    fixed_path, moving_path, mask_path, output_path, config
+    fixed_image: Path,
+    moving_image: Path,
+    fixed_mask: Path,
+    moving_mask: Path,
+    output_path: Path,
+    config: Dict[str, Any]
 ):
     utils.check_keys(
         config,
-        valid={},
+        valid={'method', 'args'},
         where='image_registration'
     )
     from . import registration
-    device = 'cuda'
 
-    fixed_nifti  = fileio.load_nibabel(fixed_path)
-    moving_nifti = fileio.load_nibabel(moving_path)
-    mask_nifti   = fileio.load_nibabel(mask_path)
+    method = config.get('method', 'corrfield').lower()
+    kwargs = config.get('args', {})
 
-    fixed_array  = fixed_nifti.get_fdata()
-    moving_array = moving_nifti.get_fdata()
-    mask_array   = mask_nifti.get_fdata() > 0 # ensure binary
+    if method == 'corrfield':
+        utils.log('Running CorrField registration')
 
-    utils.log('Estimating displacement field by registration')
-    disp_voxel, warped_array = registration.register_corrfield(
-        moving_image=moving_array,
-        fixed_image=fixed_array,
-        fixed_mask=mask_array,
-        device=device
-    )
+        registration.run_corrfield_registration(
+            fixed_image=fixed_image,
+            moving_image=moving_image,
+            fixed_mask=fixed_mask,
+            output_path=output_path,
+            **kwargs
+        )
 
-    utils.log('Mapping displacement field to world coordinates')
-    affine = fixed_nifti.affine # apply linear transform only
-    disp_world = np.einsum('wv,ijkv->ijkw', affine[:3,:3], disp_voxel)
+    elif method == 'unigradicon':
+        utils.log('Running uniGradICON registration')
+    
+        registration.run_unigradicon_registration(
+            fixed_image=fixed_image,
+            moving_image=moving_image,
+            fixed_mask=fixed_mask,
+            moving_mask=moving_mask,
+            output_path=output_path,
+            **kwargs
+        )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_nibabel(output_path, disp_world.astype(np.float32), affine)
+    else:
+        raise ValueError(f'Invalid registration method: {method!r}')
 
 
 # ----- mesh processing -----
@@ -510,7 +520,7 @@ def interpolate_mesh_fields(
     disp_values = image_generation.interpolate_volume(disp, pts_voxel, **config)
     mesh.point_data['u_true'] = disp_values.astype(np.float32)
 
-    utils.log('Interpolating fields onto tet cell centers')
+    utils.log('Interpolating fields onto cell centers')
     pts_world = mesh.points[mesh.cells_dict['tetra']].mean(axis=1)
     pts_voxel = transforms.world_to_voxel_coords(pts_world, affine)
 
@@ -522,3 +532,4 @@ def interpolate_mesh_fields(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_meshio(output_path, mesh)
+

@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ..core import utils
+from ..core import utils, fileio
 
 
 def _as_tensor(a, device):
@@ -32,9 +32,156 @@ def _correlation_r2(a, b, m):
     return (numer / denom * m).mean()**2
 
 
+# ----- unigradicon backend -----
+
+
+def run_unigradicon_registration(
+    fixed_image: Path,
+    moving_image: Path,
+    fixed_mask: Path,
+    moving_mask: Path,
+    output_path: Path,
+    **kwargs
+):
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        transform_path = Path(tmpdir) / 'transform.hdf5'
+        raw_disp_path = Path(tmpdir) / 'raw_disp.nii.gz'
+
+        run_unigradicon_command(
+            fixed_image=fixed_image,
+            fixed_mask=fixed_mask,
+            moving_image=moving_image,
+            moving_mask=moving_mask,
+            output_path=transform_path,
+            **kwargs
+        )
+        convert_itk_transform(
+            input_path=transform_path,
+            output_path=raw_disp_path,
+            ref_path=fixed_image
+        )
+        canonicalize_itk_disp(
+            input_path=raw_disp_path,
+            output_path=output_path
+        )
+
+
+def run_unigradicon_command(
+    fixed_image: Path,
+    fixed_mask: Path,
+    moving_image: Path,
+    moving_mask: Path,
+    output_path: Path,
+    model: str = 'unigradicon',
+    io_sim: str = 'lncc2',
+    io_iterations: int = 50,
+    io_sigma: int = 1,
+    loss_function_masking: bool = False,
+    intensity_conservation: bool = False,
+    executable: str = 'unigradicon-register'
+):
+    import subprocess
+
+    if model not in {'unigradicon', 'multigradicon', 'gradiconlung'}:
+        raise ValueError(f'Invalid model: {model!r}')
+    if io_sim not in {'lncc', 'lncc2', 'mind'}:
+        raise ValueError(f'Invalid io_sim: {io_sim!r}')
+
+    cmd = [
+        str(executable),
+        f'--fixed={fixed_image}',
+        f'--fixed_modality=ct',
+        f'--fixed_segmentation={fixed_mask}',
+        f'--moving={moving_image}',
+        f'--moving_segmentation={moving_mask}',
+        f'--moving_modality=ct',
+        f'--transform_out={output_path}',
+        f'--model={model}',
+        f'--io_sim={io_sim}',
+        f'--io_iterations={io_iterations}',
+        f'--sigma={io_sigma}'
+    ]
+    if loss_function_masking:
+        cmd.append('--loss_function_masking')
+    if intensity_conservation:
+        cmd.append('--intensity_conservation_loss')
+
+    subprocess.run(cmd, check=True)
+
+
+def convert_itk_transform(
+    input_path: Path, output_path: Path, ref_path: Path
+):
+    import itk
+
+    transform = itk.transformread(str(input_path))[0]
+    ref_image = itk.imread(str(ref_path))
+
+    disp_image = itk.transform_to_displacement_field_filter(
+        transform,
+        reference_image=ref_image,
+        use_reference_image=True
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    itk.imwrite(disp_image, str(output_path))
+
+
+def canonicalize_itk_disp(input_path: Path, output_path: Path):
+
+    nifti = fileio.load_nibabel(input_path)
+    array = nifti.get_fdata()
+
+    if array.ndim == 5 and array.shape[-2] == 1:
+        array = array[...,0,:]
+
+    # ITK displacement vectors use LPS world coordinate system.
+    # Convert vector components to RAS basis expected by NIFTI.
+    #   Reference: itk::NiftiImageIO::ConvertRASVectorsOn()
+    array[...,0] *= -1
+    array[...,1] *= -1
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(output_path, array.astype(np.float32), nifti.affine)
+
+
+# ----- corrfield backend -----
+
+
+def run_corrfield_registration(
+    fixed_image: Path,
+    moving_image: Path,
+    fixed_mask: Path,
+    output_path: Path,
+    device: str='cuda'
+):
+    fixed_nifti  = fileio.load_nibabel(fixed_image)
+    moving_nifti = fileio.load_nibabel(moving_image)
+    mask_nifti   = fileio.load_nibabel(fixed_mask)
+
+    fixed_array  = fixed_nifti.get_fdata()
+    moving_array = moving_nifti.get_fdata()
+    mask_array   = mask_nifti.get_fdata() > 0 # ensure binary
+
+    disp_voxel, warped_array = register_corrfield(
+        fixed_image=fixed_array,
+        moving_image=moving_array,
+        fixed_mask=mask_array,
+        device=device
+    )
+
+    affine = fixed_nifti.affine # apply linear transform only
+    disp_world = np.einsum('wv,ijkv->ijkw', affine[:3,:3], disp_voxel)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(output_path, disp_world.astype(np.float32), affine)
+
+
 def register_corrfield(
-    moving_image: np.ndarray,
     fixed_image: np.ndarray,
+    moving_image: np.ndarray,
     fixed_mask: np.ndarray,
     evaluate: bool = True,
     device: str = 'cuda'
@@ -126,7 +273,7 @@ def deform_image(image: torch.Tensor, disp: torch.Tensor):
     return warped
 
 
-## DEPRECATED
+# ----- simpleitk backend -----
 
 
 def register_simpleitk(
