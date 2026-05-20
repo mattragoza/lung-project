@@ -10,11 +10,11 @@ def preprocess_binary_mask(mask_path, mesh_path, output_path, config):
         valid={'foreground_filter', 'background_filter', 'center_mask', 'pad_amount'},
         where='binary_mask'
     )
-    from . import affine_fitting, mask_cleanup
+    from . import binvox_affine, mask_cleanup
 
     mesh   = fileio.load_meshio(mesh_path)
     binvox = fileio.load_binvox(mask_path)
-    affine = affine_fitting.infer_binvox_affine(binvox, mesh.points)
+    affine = binvox_affine.infer_binvox_affine(binvox, mesh.points)
 
     foreground_kws = config.get('foreground_filter', {})
     background_kws = config.get('background_filter', {})
@@ -177,7 +177,7 @@ def generate_volumetric_image(mask_path, output_path, config, random_seed=0):
         valid={'material_catalog', 'texture_source', 'intensity_model', 'noise_model', 'use_simple'},
         where='image_generation'
     )
-    from . import materials, textures, image_generation
+    from . import materials, textures, image_synthesis
 
     nifti = fileio.load_nibabel(mask_path)
     mask = nifti.get_fdata().astype(int)
@@ -211,12 +211,12 @@ def generate_volumetric_image(mask_path, output_path, config, random_seed=0):
     utils.log('Generating volumetric image')
     if config.get('use_simple', False):
         rgb = not proc_spec.grayscale
-        image = image_generation.generate_simple_image(
+        image = image_synthesis.generate_simple_image(
             mask, texture_map, seed=random_seed, rgb=rgb
         )
     else:
         noise_kws = config.get('noise_model', {})
-        image = image_generation.generate_volumetric_image(
+        image = image_synthesis.generate_volumetric_image(
             mask, nifti.affine, mat_df, tex_cache, **noise_kws, random_seed=random_seed
         )
 
@@ -227,7 +227,7 @@ def generate_volumetric_image(mask_path, output_path, config, random_seed=0):
 def interpolate_image_fields(image_path, mesh_path, output_path, config):
     utils.check_keys(config, valid={'order', 'mode'}, where='image_interpolation')
     from ..core import transforms
-    from . import image_generation
+    from . import image_synthesis
     import scipy.ndimage
 
     nifti = fileio.load_nibabel(image_path)
@@ -239,13 +239,13 @@ def interpolate_image_fields(image_path, mesh_path, output_path, config):
     utils.log('Interpolating image at mesh vertices')
     pts_world = mesh.points
     pts_voxel = transforms.world_to_voxel_coords(pts_world, affine)
-    values = image_generation.interpolate_volume(image, pts_voxel, **config)
+    values = image_synthesis.interpolate_volume(image, pts_voxel, **config)
     mesh.point_data['image'] = values.astype(np.float32)
 
     utils.log('Interpolating image at tetra cell centroids')
     pts_world = mesh.points[mesh.cells_dict['tetra']].mean(axis=1)
     pts_voxel = transforms.world_to_voxel_coords(pts_world, affine)
-    values = image_generation.interpolate_volume(image, pts_voxel, **config)
+    values = image_synthesis.interpolate_volume(image, pts_voxel, **config)
     mesh.cell_data['image'] = [values.astype(np.float32)]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -499,7 +499,7 @@ def interpolate_mesh_fields(
     utils.check_keys(config, valid={}, where='mesh_interpolation')
 
     from ..core import transforms
-    from . import image_generation
+    from . import image_synthesis
     import scipy.ndimage
 
     mesh = fileio.load_meshio(mesh_path)
@@ -514,20 +514,20 @@ def interpolate_mesh_fields(
     pts_world = mesh.points
     pts_voxel = transforms.world_to_voxel_coords(pts_world, affine)
 
-    img_values = image_generation.interpolate_volume(image, pts_voxel, **config)
+    img_values = image_synthesis.interpolate_volume(image, pts_voxel, **config)
     mesh.point_data['image'] = img_values.astype(np.float32)
 
-    disp_values = image_generation.interpolate_volume(disp, pts_voxel, **config)
+    disp_values = image_synthesis.interpolate_volume(disp, pts_voxel, **config)
     mesh.point_data['u_true'] = disp_values.astype(np.float32)
 
     utils.log('Interpolating fields onto cell centers')
     pts_world = mesh.points[mesh.cells_dict['tetra']].mean(axis=1)
     pts_voxel = transforms.world_to_voxel_coords(pts_world, affine)
 
-    img_values = image_generation.interpolate_volume(image, pts_voxel, **config)
+    img_values = image_synthesis.interpolate_volume(image, pts_voxel, **config)
     mesh.cell_data['image'] = [img_values.astype(np.float32)]
 
-    disp_values = image_generation.interpolate_volume(disp, pts_voxel, **config)
+    disp_values = image_synthesis.interpolate_volume(disp, pts_voxel, **config)
     mesh.cell_data['u_true'] = [disp_values.astype(np.float32)]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

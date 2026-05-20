@@ -1,2 +1,2 @@
-from . import api, stages
+from . import api, pipelines, stages
 
