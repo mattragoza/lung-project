@@ -137,6 +137,9 @@ def canonicalize_itk_disp(input_path: Path, output_path: Path):
     if array.ndim == 5 and array.shape[-2] == 1:
         array = array[...,0,:]
 
+    if array.ndim != 4 or array.shape[-1] != 3:
+        raise ValueError(f'Invalid DVF shape: {nifti.shape}')
+
     # ITK displacement vectors use LPS world coordinate system.
     # Convert vector components to RAS basis expected by NIFTI.
     #   Reference: itk::NiftiImageIO::ConvertRASVectorsOn()

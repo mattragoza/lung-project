@@ -173,7 +173,7 @@ class Emory4DCTDataset(base.Dataset):
                 meta['image_params'] = {
                     'shape': (m.shape_x, m.shape_y, m.shape_z),
                     'dtype': 'h',
-                    'system': 'LPI',
+                    'axcodes': 'LPI',
                     'spacing': (m.spacing_x, m.spacing_y, m.spacing_z),
                     'slope': 1.0,
                     'intercept': -1024.

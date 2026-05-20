@@ -297,13 +297,13 @@ def convert_image_to_nifti(
     output_path: Path,
     shape: Tuple[int, int, int],
     dtype: str,
-    system: str,
+    axcodes: str,
     spacing: Tuple[float, float, float],
-    slope: float = 1.,
-    intercept: float = 0.
+    slope: float = 1.0,
+    intercept: float = 0.0
 ):
-    def _interpret_coord_system(code):
-        cx, cy, cz = code.upper()
+    def _interpret_axis_codes(codes):
+        cx, cy, cz = codes.upper()
         assert cx in 'LR', cx
         assert cy in 'PA', cy
         assert cz in 'IS', cz
@@ -313,7 +313,7 @@ def convert_image_to_nifti(
             1 if cz == 'S' else -1
         )
 
-    signs = _interpret_coord_system(system)
+    signs = _interpret_axis_codes(axcodes)
 
     array = fileio.load_binary_image(input_path, shape, dtype)
     array = array.astype(np.float32) * slope + intercept

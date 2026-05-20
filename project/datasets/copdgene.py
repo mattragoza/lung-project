@@ -6,7 +6,7 @@ from . import base
 
 
 def _parse_raw_name(name: str) -> Dict[str, str]:
-    # expected format: <subject>_<state>_<kernel>_<site>_COPD
+    # Expected format: <subject>_<state>_<kernel>_<site>_COPD
     parts = name.split('_')
     if len(parts) == 5 and parts[4] == 'COPD':
         return {
@@ -33,7 +33,7 @@ class COPDGeneDataset(base.Dataset):
                     <subject>_<state>_<kernel>_<site>_COPD.nii.gz
                     <subject>_<state>_<kernel>_<site>_COPD.json
         ClinicalData/
-            ...
+            .../.../Final10000_Phase1_Rev_28oct16.txt
         Processed/
             <variant>/
                 <subject>/
@@ -82,22 +82,18 @@ class COPDGeneDataset(base.Dataset):
         from itertools import permutations
         return permutations(self.states(), 2)
 
-    def source_path(
-        self,
-        subject: str,
-        visit: str,
-        state: str,
-        kernel: str,
-        site: str,
-        asset_type: str
-    ):
+    def source_path(self, subject: str, visit: str, state: str, asset_type: str):
+        meta = self.subject_metadata(subject)
+        kernel = meta.kernel.replace('.', 'STD')
+        site = meta.ccenter
+
         base_dir = self.root / 'Images' / subject / visit
-        asset_name = _format_raw_name(subject, state, kernel, site)
+        raw_name = _format_raw_name(subject, state, kernel, site)
 
         if asset_type == 'image':
-            return base_dir / 'RAW' / f'{asset_name}.nii.gz'
+            return base_dir / 'RAW' / f'{raw_name}.nii.gz'
         elif asset_type == 'json':
-            return base_dir / 'RAW' / f'{asset_name}.json'
+            return base_dir / 'RAW' / f'{raw_name}.json'
 
         raise ValueError(f'Invalid source asset type: {asset_type!r}')
 
@@ -123,41 +119,44 @@ class COPDGeneDataset(base.Dataset):
 
     def examples(
         self,
-        subjects:    Optional[str|Path|List[str]] = None,
-        variant:     Optional[str] = None,
-        visit:       Optional[str] = None,
+        subjects: Optional[str|Path|List[str]] = None,
+        variant: Optional[str] = None,
+        visit: Optional[str] = None,
         state_pairs: Optional[List[Tuple[str, str]]] = None,
-        selectors:   Dict[str, str] = None
+        selectors: Dict[str, str] = None
     ):
         from .base import _resolve_subject_list
         subject_iter = subjects or self.subjects()
         subject_list = _resolve_subject_list(subject_iter)
 
-        visit = str(visit or self.DEFAULT_VISIT)
-        state_pairs = list(state_pairs or self.state_pairs())
-
         if variant is not None:
             variant = str(variant)
 
+        visit = str(visit or self.DEFAULT_VISIT)
+        state_pairs = list(state_pairs or self.state_pairs())
+
+        selectors = selectors or {}
+
         for sid in subject_list:
             m = self.subject_metadata(sid)
-            kernel = m.kernel.replace('.', 'STD')
-            site = m.ccenter
 
             for init_state, curr_state in state_pairs:
                 ref_state = self.EI_RESP_STATE
 
                 meta = {'raw': dict(m)}
                 meta['visit'] = visit
+                meta['ref_state']  = ref_state
                 meta['init_state'] = init_state
                 meta['curr_state'] = curr_state
-                meta['kernel'] = kernel
-                meta['site'] = site
 
-                paths = {}
-                paths['ref_source'] = self.source_path(sid, visit, ref_state, kernel, site, 'image')
-                paths['init_source'] = self.source_path(sid, visit, init_state, kernel, site, 'image')
-                paths['curr_source'] = self.source_path(sid, visit, curr_state, kernel, site, 'image')
+                paths = {
+                    'ref_state': {},
+                    'init_state': {},
+                    'curr_state': {}
+                }
+                paths['ref_state']['source_image'] = self.source_path(sid, visit, ref_state, asset_type='image')
+                paths['init_state']['source_image'] = self.source_path(sid, visit, init_state, asset_type='image')
+                paths['curr_state']['source_image'] = self.source_path(sid, visit, curr_state, asset_type='image')
 
                 if variant:
                     raise NotImplementedError('TODO update this block')
