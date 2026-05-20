@@ -1,10 +1,12 @@
 from typing import List, Dict, Any
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 from .base import Example
-from ..core import utils, fileio
+
+from ..core import fileio, paths
 
 
 class TorchDataset(torch.utils.data.Dataset):
@@ -66,6 +68,8 @@ class TorchDataset(torch.utils.data.Dataset):
         self._cache.clear()
 
     def load_example(self, ex):
+        paths.require_paths(ex, keys=['input_image', 'interp_mesh', 'region_map'])
+
         image = fileio.load_nibabel(ex.paths['input_image'])
         mesh  = fileio.load_meshio(ex.paths['interp_mesh'])
         mask  = fileio.load_nibabel(ex.paths['region_map'])

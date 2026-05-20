@@ -1,5 +1,4 @@
-from __future__ import annotations
-from typing import Optional, Any, Dict, List, Tuple, Iterable
+from typing import Optional, List, Dict, Iterable, Any
 from dataclasses import dataclass
 from pathlib import Path
 

@@ -18,7 +18,7 @@ def get_examples(config):
         valid={'name', 'root', 'examples', 'selectors'},
         where='dataset'
     )
-    from .datasets import Dataset
+    from . import datasets
 
     dataset_name = config['name'] # required
     dataset_root = config['root'] # required
@@ -26,7 +26,7 @@ def get_examples(config):
     selector_kws = config.get('selectors', {})
 
     utils.log('Gathering examples')
-    dataset_cls = Dataset.get_subclass(dataset_name)
+    dataset_cls = datasets.base.Dataset.get_subclass(dataset_name)
     dataset = dataset_cls(dataset_root)
     return dataset.list_examples(selectors=selector_kws, **examples_kws)
 
