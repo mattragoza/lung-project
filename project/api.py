@@ -1,31 +1,4 @@
-from .core import utils, fileio
-
-
-class RunOutputs:
-
-    def __init__(self, stage: str, root: str = 'outputs'):
-        from pathlib import Path
-        self.root = Path(root)
-        self.stage = str(stage)
-
-    @property
-    def base_dir(self):
-        return self.root / self.stage
-
-    def csv_path(self, name):
-        return self.base_dir / (name + '.csv')
-
-    def mesh_path(self, ex, name):
-        return self.base_dir / ex.subject / 'meshes' / (name + '.xdmf')
-
-    def nifti_path(self, ex, name):
-        return self.base_dir / ex.subject / 'niftis' / (name + '.nii.gz')
-
-    def raster_dir(self, ex):
-        return self.base_dir / ex.subject / 'rasters'
-
-    def raster_path(self, ex, name):
-        return self.raster_dir(ex) / (name + '.nii.gz')
+from .core import paths, utils, fileio
 
 
 def get_examples(config):
@@ -79,7 +52,7 @@ def run_validate(examples, config):
     from . import validation
 
     config = config.copy()
-    outputs = RunOutputs(stage='validate', **config.pop('outputs', {}))
+    outputs = paths.RunOutputs(stage='validate', **config.pop('outputs', {}))
 
     rows = []
     for ex in examples:
@@ -104,7 +77,7 @@ def run_preprocess(examples, config):
     from . import preprocessing
 
     config = config.copy()
-    outputs = RunOutputs(stage='preprocess', **config.pop('outputs', {}))
+    outputs = paths.RunOutputs(stage='preprocess', **config.pop('outputs', {}))
 
     rows = []
     for ex in examples:
@@ -129,7 +102,7 @@ def run_optimize(examples, config):
     from . import optimization
 
     config = config.copy()
-    outputs = RunOutputs(stage='optimize', **config.pop('outputs', {}))
+    outputs = paths.RunOutputs(stage='optimize', **config.pop('outputs', {}))
 
     all_metrics = []
     failed_sids = []
@@ -178,7 +151,7 @@ def run_training(examples, config):
     config = config.copy()
 
     outputs_kws = config.pop('outputs', {})
-    outputs = RunOutputs(stage='training', **outputs_kws)
+    outputs = paths.RunOutputs(stage='training', **outputs_kws)
 
     use_pseudo = config.get('use_pseudo', False)
     pseudo_path = config.get('pseudo_path', '.')
