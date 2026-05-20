@@ -27,3 +27,12 @@ class RunOutputs:
         return self.raster_dir(ex) / (name + '.nii.gz')
 
 
+def require_paths(ex, keys):
+    missing = sorted(set(keys) - set(ex.paths))
+    if missing:
+        raise KeyError(f'Example is missing paths: {missing}')
+
+
+def ensure_parent_directory(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+

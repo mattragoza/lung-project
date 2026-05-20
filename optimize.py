@@ -1,9 +1,8 @@
-import sys, os
-import project
+import sys, project
 
 
 def main(argv):
-    config = project.core.cli.get_config_from_argv(argv)
+    config = project.api.get_config(argv)
     examples = project.api.get_examples(config['dataset'])
     project.api.run_optimize(examples, config['optimization'])
 

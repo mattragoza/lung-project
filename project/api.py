@@ -1,4 +1,15 @@
-from .core import paths, utils, fileio
+from .core import paths, utils
+
+
+def get_config(argv):
+    from .core import cli, fileio
+
+    args = cli.parse_args(argv)
+    config = fileio.load_config(args.config)
+    config = cli.apply_overrides(config, args.set)
+
+    utils.pprint(config, 4, 20)
+    return config
 
 
 def get_examples(config):
@@ -69,8 +80,10 @@ def run_validate(examples, config):
     if rows:
         import pandas as pd
         csv_path = outputs.csv_path(name='metrics')
-        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_parent_directory(csv_path)
         df = pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+    utils.log('Done')
 
 
 def run_preprocess(examples, config):
@@ -94,8 +107,10 @@ def run_preprocess(examples, config):
     if rows:
         import pandas as pd
         csv_path = outputs.csv_path(name='metrics')
-        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_parent_directory(csv_path)
         df = pd.DataFrame(rows).to_csv(csv_path, index=False)
+
+    utils.log('Done')
 
 
 def run_optimize(examples, config):
