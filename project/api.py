@@ -124,6 +124,5 @@ def run_training(examples, config):
     outputs = paths.RunOutputs(stage='training', **config.pop('outputs', {}))
 
     training.api.run_training(examples, config, outputs)
-
     utils.log('Done')
 

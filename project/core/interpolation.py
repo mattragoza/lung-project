@@ -1,3 +1,5 @@
+# TODO: consider moving or deprecating.
+
 import numpy as np
 import torch
 

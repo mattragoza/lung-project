@@ -1,6 +1,8 @@
 from typing import List, Dict, Any
+
 from collections import defaultdict
 from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import torch
@@ -24,7 +26,12 @@ def _evaluate(pred, target, weight=None, name=None, profile=None):
 
 class PlotterCallback(Callback):
 
-    def __init__(self, keys, update_interval=1):
+    def __init__(
+        self,
+        keys,
+        output_dir='plotter',
+        update_interval=1
+    ):
         self.update_interval = update_interval
 
         # history[key][phase][step] = [values]
@@ -32,7 +39,7 @@ class PlotterCallback(Callback):
             key: {p: defaultdict(list) for p in ['train', 'test', 'val']}
                 for key in keys
         }
-        self.output_dir = Path('./outputs')
+        self.output_dir = Path(outputs)
         self.output_dir.mkdir(exist_ok=True, parents=True)
         self._init_plot()
 
@@ -108,6 +115,7 @@ class ViewerCallback(Callback):
         shift_rgb=True,
         scale_rgb=1.0,
         n_labels=5,
+        output_dir='views',
         **kwargs
     ):
         assert len(keys) > 0
@@ -117,7 +125,7 @@ class ViewerCallback(Callback):
         self.shift_rgb = shift_rgb
         self.scale_rgb = scale_rgb
 
-        self.output_dir = Path('./outputs')
+        self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
         self._init_viewers(keys, n_labels)
@@ -170,11 +178,11 @@ class ViewerCallback(Callback):
 
 class EvaluatorCallback(Callback):
 
-    def __init__(self):
+    def __init__(self, output_dir: str = 'metrics'):
         self.example_rows  = defaultdict(list)
         self.material_rows = defaultdict(list)
 
-        self.output_dir = Path('./outputs')
+        self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
         self.ex_path = _get_new_path(self.output_dir / 'example_metrics.csv')

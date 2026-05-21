@@ -1,3 +1,5 @@
+# TODO: consider splitting geometry vs other.
+
 import numpy as np
 import torch
 
