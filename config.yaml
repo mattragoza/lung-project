@@ -147,4 +147,4 @@ training:
         _class: AdamW
         lr: 0.001
     trainer:
-        um_epochs: 100
+        num_epochs: 100
