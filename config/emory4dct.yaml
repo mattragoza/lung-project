@@ -89,7 +89,7 @@ training:
         inputs: ["image"]
         targets: ["E"]
         losses:
-          E: "sim"
+            E: "sim"
     split:
         key: "category"
         test_ratio: 0.2

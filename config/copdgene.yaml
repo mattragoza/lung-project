@@ -1,16 +1,18 @@
 dataset:
-    name: "Emory-4DCT"
-    root: "data/Emory-4DCT"
+    name: "COPDGene"
+    root: "data/COPDGene"
     examples:
-        subjects: ["case1", "case2", "case3", "case4", "case5", "case6", "case7", "case8", "case9", "case10"]
         variant: "TEST"
         state_pairs:
-          - ["T50", "T00"]
+          - ["EXP", "INSP"]
+    selectors:
+        image_segmentation: "tseg"
+        image_registration: "corr"
 
 preprocessing:
     random_seed: 0
     image_resampling:
-        spacing: [1.0, 1.0, 2.5]
+        spacing: [1.0, 1.0, 1.0]
         interpolation: "linear"
         default_value: -1024.0
     image_segmentation:
@@ -89,7 +91,7 @@ training:
         inputs: ["image"]
         targets: ["E"]
         losses:
-          E: "sim"
+            E: "sim"
     split:
         key: "category"
         test_ratio: 0.2
