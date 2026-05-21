@@ -211,12 +211,12 @@ class Emory4DCTDataset(base.Dataset):
                     paths['curr_state']['combined_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{curr_state}_{img_tag}_{seg_tag}_combined')
                     paths['curr_state']['region_map'] = self.derived_path(sid, variant, 'mask',  f'{sid}_{curr_state}_{img_tag}_{seg_tag}_{map_tag}')
 
-                    paths['disp_field']  = self.derived_path(sid, variant, 'field', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{reg_tag}_{curr_state}')
+                    paths['disp_field'] = self.derived_path(sid, variant, 'field', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{reg_tag}_{curr_state}')
                     paths['region_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}')
                     paths['interp_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}_{reg_tag}_{curr_state}_{int_tag}')
 
-                    paths['input_image']  = paths['init_state']['resampled_image']
-                    paths['region_map']   = paths['init_state']['region_map']
+                    paths['input_image'] = paths['init_state']['resampled_image']
+                    paths['region_map'] = paths['init_state']['region_map']
 
                 yield base.Example(
                     dataset='Emory-4DCT',

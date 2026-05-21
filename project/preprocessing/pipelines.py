@@ -110,52 +110,73 @@ def preprocess_shapenet(ex, config):
     )
 
 
-def preprocess_copdgene(ex, config): # TODO needs update
+def preprocess_copdgene(ex, config):
     utils.check_keys(
         config,
-        {'image_resampling', 'image_segmentation'} |
-        {'region_mask', 'volume_mesh', 'image_registration'},
+        {'image_resampling', 'image_segmentation', 'region_labeling'} |
+        {'image_registration', 'mesh_generation', 'mesh_interpolation'},
         where='preprocessing[copdgene]'
     )
-    _ensure_output(
-        stages.resample_image_on_reference,
-        reference_path=ex.paths['source_ref'],
-        input_path=ex.paths['source_fixed'],
-        output_path=ex.paths['fixed_image'],
-        config=config.get('image_resampling', {})
-    )
-    _ensure_output(
-        stages.resample_image_on_reference,
-        ref_path=ex.paths['source_ref'],
-        input_path=ex.paths['source_moving'],
-        output_path=ex.paths['moving_image'],
-        config=config.get('image_resampling', {})
-    )
-    _ensure_output(
-        stages.create_segmentation_masks,
-        image_path=ex.paths['fixed_image'],
-        output_path=ex.paths['binary_mask'],
-        config=config.get('image_segmentation', {})
-    )
-    _ensure_output(
-        stages.create_lung_region_mask,
-        mask_dir=ex.paths['binary_mask'].parent,
-        output_path=ex.paths['region_mask'],
-        config=config.get('region_mask', {})
-    )
-    _ensure_output(
-        stages.generate_tetrahedral_mesh,
-        mask_path=ex.paths['region_mask'],
-        output_path=ex.paths['volume_mesh'],
-        config=config.get('volume_mesh', {})
-    )
-    _ensure_output(
+
+    # ----- image resampling -----
+
+    for state in ['init_state', 'curr_state']:
+
+        _ensure_output( # resampled_image
+            stages.resample_image_spacing,
+            ref_path=ex.paths['ref_state']['source_image'],
+            input_path=ex.paths[state]['source_image'],
+            output_path=ex.paths[state]['resampled_image'],
+            config=config.get('image_resampling', {})
+        )
+
+    # ----- image segmentation -----
+
+    for state in ['init_state', 'curr_state']:
+
+        _ensure_output( # combined_mask
+            stages.create_segmentation_masks,
+            input_path=ex.paths[state]['resampled_image'],
+            segment_dir=ex.paths[state]['segment_dir'],
+            output_path=ex.paths[state]['combined_mask'],
+            config=config.get('image_segmentation', {})
+        )
+
+        _ensure_output( # region_map
+            stages.create_multi_region_map,
+            input_dir=ex.paths[state]['segment_dir'],
+            output_path=ex.paths[state]['region_map'],
+            config=config.get('region_labeling', {})
+        )
+
+    # ----- image registration -----
+
+    _ensure_output( # disp_field
         stages.register_displacement_field,
-        fixed_path=ex.paths['fixed_image'],
-        moving_path=ex.paths['moving_image'],
-        mask_path=ex.paths['region_mask'],
+        fixed_image=ex.paths['init_state']['resampled_image'],
+        moving_image=ex.paths['curr_state']['resampled_image'],
+        fixed_mask=ex.paths['init_state']['combined_mask'],
+        moving_mask=ex.paths['curr_state']['combined_mask'],
         output_path=ex.paths['disp_field'],
-        config=config.get('deformable_registration', {})
+        config=config.get('image_registration', {})
+    )
+
+    # ----- mesh construction -----
+
+    _ensure_output( # region_mesh
+        stages.generate_tetrahedral_mesh,
+        mask_path=ex.paths['region_map'],
+        output_path=ex.paths['region_mesh'],
+        config=config.get('mesh_generation', {})
+    )
+
+    _ensure_output( # interp_mesh
+        stages.interpolate_mesh_fields,
+        mesh_path=ex.paths['region_mesh'],
+        image_path=ex.paths['input_image'],
+        disp_path=ex.paths['disp_field'],
+        output_path=ex.paths['interp_mesh'],
+        config=config.get('mesh_interpolation', {})
     )
 
 

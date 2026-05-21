@@ -1,8 +1,10 @@
-from typing import Optional, Any, Dict, List, Tuple, Iterable
+from typing import List, Dict, Tuple, Iterable, Optional, Any
 from pathlib import Path
 from functools import lru_cache
 
 from . import base
+
+from ..core import utils
 
 
 def _parse_raw_name(name: str) -> Dict[str, str]:
@@ -20,6 +22,20 @@ def _parse_raw_name(name: str) -> Dict[str, str]:
 
 def _format_raw_name(subject, state, kernel, site) -> str:
     return f'{subject}_{state}_{kernel}_{site}_COPD'
+
+
+def _resolve_kernel(kernel: Optional[str], default='STD') -> str:
+    if utils.missing_value(kernel, strings={'.'}):
+        return default
+    elif isinstance(kernel, str):
+        return kernel
+    raise ValueError(f'Invalid kernel: {kernel!r}')
+
+
+def _resolve_site(site: Optional[str]) -> str:
+    if utils.missing_value(site) or not isinstance(site, str):
+        raise ValueError(f'Invalid site: {site!r}')
+    return site
 
 
 class COPDGeneDataset(base.Dataset):
@@ -54,6 +70,7 @@ class COPDGeneDataset(base.Dataset):
     DEFAULT_KERNEL = 'STD'
     EE_RESP_STATE = 'EXP'
     EI_RESP_STATE = 'INSP'
+    DEFAULT_UNIT = 1e-3
 
     def load_metadata(self):
         import pandas as pd
@@ -84,8 +101,8 @@ class COPDGeneDataset(base.Dataset):
 
     def source_path(self, subject: str, visit: str, state: str, asset_type: str):
         meta = self.subject_metadata(subject)
-        kernel = meta.kernel.replace('.', 'STD')
-        site = meta.ccenter
+        kernel = _resolve_kernel(meta[self.KERNEL_COLUMN])
+        site = _resolve_site(meta[self.SITE_COLUMN])
 
         base_dir = self.root / 'Images' / subject / visit
         raw_name = _format_raw_name(subject, state, kernel, site)
@@ -110,6 +127,8 @@ class COPDGeneDataset(base.Dataset):
             return base_dir / 'images' / f'{asset_name}.nii.gz'
         elif asset_type == 'mask':
             return base_dir / 'masks' / f'{asset_name}.nii.gz'
+        elif asset_type == 'mask_dir':
+            return base_dir / 'masks' / f'{asset_name}'
         elif asset_type == 'mesh':
             return base_dir / 'meshes' /  f'{asset_name}.xdmf'
         elif asset_type == 'field':
@@ -127,7 +146,7 @@ class COPDGeneDataset(base.Dataset):
     ):
         from .base import _resolve_subject_list
         subject_iter = subjects or self.subjects()
-        subject_list = _resolve_subject_list(subject_iter)
+        subject_list = _resolve_subject_list(subject_iter, col=self.SUBJ_COLUMN)
 
         if variant is not None:
             variant = str(variant)
@@ -136,6 +155,12 @@ class COPDGeneDataset(base.Dataset):
         state_pairs = list(state_pairs or self.state_pairs())
 
         selectors = selectors or {}
+        img_tag = selectors.get('image_resampling',   'std')
+        seg_tag = selectors.get('image_segmentation', 'tseg')
+        reg_tag = selectors.get('image_registration', 'corr')
+        map_tag = selectors.get('region_labeling',    'regions')
+        gen_tag = selectors.get('mesh_generation',    'pyg')
+        int_tag = selectors.get('mesh_interpolation', 'int')
 
         for sid in subject_list:
             m = self.subject_metadata(sid)
@@ -144,10 +169,11 @@ class COPDGeneDataset(base.Dataset):
                 ref_state = self.EI_RESP_STATE
 
                 meta = {'raw': dict(m)}
-                meta['visit'] = visit
                 meta['ref_state']  = ref_state
                 meta['init_state'] = init_state
                 meta['curr_state'] = curr_state
+                meta['visit'] = visit
+                meta['unit'] = self.DEFAULT_UNIT
 
                 paths = {
                     'ref_state': {},
@@ -158,27 +184,28 @@ class COPDGeneDataset(base.Dataset):
                 paths['init_state']['source_image'] = self.source_path(sid, visit, init_state, asset_type='image')
                 paths['curr_state']['source_image'] = self.source_path(sid, visit, curr_state, asset_type='image')
 
+                paths['ref_state']['source_json'] = self.source_path(sid, visit, ref_state, asset_type='json')
+                paths['init_state']['source_json'] = self.source_path(sid, visit, init_state, asset_type='json')
+                paths['curr_state']['source_json'] = self.source_path(sid, visit, curr_state, asset_type='json')
+
                 if variant:
-                    raise NotImplementedError('TODO update this block')
+                    paths['init_state']['resampled_image'] = self.derived_path(sid, variant, 'image', f'{sid}_{init_state}_{img_tag}')
+                    paths['curr_state']['resampled_image'] = self.derived_path(sid, variant, 'image', f'{sid}_{curr_state}_{img_tag}')
 
-                    fixed_args = (sid, variant, visit, fixed, recon)
-                    moving_args = (sid, variant, visit, moving, recon)
+                    paths['init_state']['segment_dir'] = self.derived_path(sid, variant, 'mask_dir', f'{sid}_{init_state}_{img_tag}_{seg_tag}')
+                    paths['init_state']['combined_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{init_state}_{img_tag}_{seg_tag}_combined')
+                    paths['init_state']['region_map'] = self.derived_path(sid, variant, 'mask',  f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}')
 
-                    paths['fixed_image']  = self.path(*fixed_args, asset_type='image')
-                    paths['moving_image'] = self.path(*moving_args, asset_type='image')
+                    paths['curr_state']['segment_dir'] = self.derived_path(sid, variant, 'mask_dir', f'{sid}_{curr_state}_{img_tag}_{seg_tag}')
+                    paths['curr_state']['combined_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{curr_state}_{img_tag}_{seg_tag}_combined')
+                    paths['curr_state']['region_map'] = self.derived_path(sid, variant, 'mask',  f'{sid}_{curr_state}_{img_tag}_{seg_tag}_{map_tag}')
 
-                    paths['binary_mask'] = self.path(*fixed_args, asset_type='mask', mask_tag='lung_combined')
-                    paths['region_mask'] = self.path(*fixed_args, asset_type='mask', mask_tag='lung_regions')
+                    paths['disp_field'] = self.derived_path(sid, variant, 'field', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{reg_tag}_{curr_state}')
+                    paths['region_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}')
+                    paths['interp_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}_{reg_tag}_{curr_state}_{int_tag}')
 
-                    paths['surface_mesh'] = self.path(*fixed_args, asset_type='mesh', mesh_tag='lung_surface')
-                    paths['volume_mesh']  = self.path(*fixed_args, asset_type='mesh', mesh_tag='lung_volume')
-
-                    paths['disp_field']  = self.path(*fixed_args, asset_type='disp', fixed_state=fixed, moving_state=moving)
-                    paths['input_image'] = paths['fixed_image']
-
-                    paths['node_values'] = self.path(*fixed_args, asset_type='mesh', mesh_tag='node_values')
-                    paths['node_values_opt'] = self.path(*fixed_args, asset_type='mesh', mesh_tag='node_values_opt')
-                    paths['elastic_field_opt'] = self.path(*fixed_args, asset_type='field', field_tag='elasticity_opt')
+                    paths['input_image'] = paths['init_state']['resampled_image']
+                    paths['region_map'] = paths['init_state']['region_map']
 
                 yield base.Example(
                     dataset='COPDGene',

@@ -2,6 +2,7 @@ dataset:
     name: "COPDGene"
     root: "data/COPDGene"
     examples:
+        subjects: "data/COPDGene/sample1000_2025-07-22.csv"
         variant: "TEST"
         state_pairs:
           - ["EXP", "INSP"]

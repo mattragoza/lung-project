@@ -20,16 +20,16 @@ def _resolve_dataset_name(name: str):
     raise ValueError(f'Invalid dataset name: {name!r}')
 
 
-def _resolve_subject_list(val: str|Path|List[str]) -> List[str]:
+def _resolve_subject_list(val: str|Path|List[str], col='subject') -> List[str]:
     from ..core import fileio
-    if isinstance(val, Path):
-        return fileio.load_subject_list(val)
-    elif isinstance(val, str):
+    if isinstance(val, str):
         if val.endswith('.csv'):
-            return fileio.load_subject_list(val, key='subject')
+            return fileio.load_subject_list(val, key=col)
         elif val.endswith('.txt'):
             return fileio.load_subject_list(val, key=0, header=None)
         return val.split(',')
+    elif isinstance(val, Path):
+        return fileio.load_subject_list(val, key=col)
     elif hasattr(val, '__iter__'):
         return [str(v) for v in val]
     return [str(val)]
@@ -55,6 +55,10 @@ class Dataset:
         if not self.root.is_dir():
             raise RuntimeError(f'Invalid directory: {root}')
         self._metadata_loaded = False
+
+    def __repr__(self):
+        cls = self.__class__
+        return f'{cls.__module__}.{cls.__name__}({str(self.root)!r})'
 
     def require_metadata(self):
         if not self._metadata_loaded:
