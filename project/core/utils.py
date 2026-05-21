@@ -44,9 +44,9 @@ def namespace(dct, name):
     return {f'{name}.{k}': v for k, v in dct.items()}
 
 
-def missing_value(val):
+def missing_value(val, strings=('',)):
     import pandas as pd
-    return pd.isna(val) or str(val).strip() == ''
+    return pd.isna(val) or str(val).strip() in set(strings)
 
 
 def check_keys(config, valid, where=None):

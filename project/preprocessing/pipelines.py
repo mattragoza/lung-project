@@ -7,7 +7,7 @@ from . import stages
 
 def _ensure_output(func, *args, **kwargs) -> Tuple[bool, Any]:
     '''
-    Call a function if the output path does not exist.
+    Call function if output path does not exist.
 
     Args:
         func: Function to call.

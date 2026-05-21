@@ -117,5 +117,9 @@ def load_xyz(path, dtype=float):
 def load_subject_list(path, key='subject', **csv_kws):
     import pandas as pd
     df = pd.read_csv(path, **csv_kws)
-    return df[key].to_list()
+    try:
+        return df[key].to_list()
+    except Exception:
+        print(df.columns)
+        raise
 

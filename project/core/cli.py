@@ -1,10 +1,10 @@
 from typing import List, Dict, Tuple, Any
+import argparse
 
 from . import utils
 
 
-def parse_args(argv: List[str]):
-    import argparse
+def parse_args(argv: List[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument('config', help='path to config file (JSON/YAML)')
     p.add_argument(
