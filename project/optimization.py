@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Any, List, Dict, Tuple
 from dataclasses import dataclass
 
@@ -8,8 +6,7 @@ import torch
 
 from .core import utils, fileio
 
-from .models import ParameterSpec
-from .physics import PhysicsAdapter
+from . import models, physics
 
 
 @dataclass
@@ -29,7 +26,7 @@ class InitializeSpec:
 # ----- public entry point -----
 
 
-def optimize_example(ex, config, output_path, raster_dir=None):
+def optimize_example(ex, config, outputs):
     utils.check_keys(
         config,
         valid={
@@ -43,6 +40,10 @@ def optimize_example(ex, config, output_path, raster_dir=None):
         },
         where='optimization'
     )
+
+    output_path = outputs.mesh_path(ex, name='optimized')
+    raster_dir = outputs.raster_dir(ex)
+
     unit_m = float(ex.metadata['unit'])
     sample = load_example(ex)
     mesh = sample['mesh']
@@ -54,7 +55,7 @@ def optimize_example(ex, config, output_path, raster_dir=None):
 
     bc_spec = None
 
-    utils.log('Optimizing parameters')
+    utils.log('Start optimization')
 
     params = optimize_params(
         phys=phys_adapter,
@@ -107,18 +108,18 @@ def optimize_example(ex, config, output_path, raster_dir=None):
 # ----- context configuration -----
 
 
-def load_example(ex: Example) -> Dict[str, Any]:
+def load_example(ex) -> Dict[str, Any]:
     from . import datasets
     return datasets.torch.TorchDataset([ex])[0]
 
 
-def build_parameter_specs(config) -> Dict[str, ParameterSpec]:
+def build_parameter_specs(config) -> Dict[str, models.ParameterSpec]:
     target_list = config.get('targets', ['E'])
     utils.log(f'Targets: {target_list}')
     param_specs_cfg = config.get('param_specs', {})
     param_specs = {}
     for name in target_list:
-        param_specs[name] = ParameterSpec(**param_specs_cfg[name])
+        param_specs[name] = models.ParameterSpec(**param_specs_cfg[name])
     return param_specs
 
 
@@ -138,26 +139,26 @@ def build_initialize_spec(config) -> InitializeSpec:
     return InitializeSpec(**initialize_kws)
 
 
-def build_physics_adapter(config) -> PhysicsAdapter:
+def build_physics_adapter(config) -> physics.adapter.PhysicsAdapter:
     physics_adapter_kws = config.get('physics_adapter', {})
     pde_solver_kws = config.get('pde_solver', {}).copy()
     pde_solver_cls = pde_solver_kws.pop('_class')
-    return PhysicsAdapter(
+    return physics.adapter.PhysicsAdapter(
         pde_solver_cls=pde_solver_cls,
         pde_solver_kws=pde_solver_kws,
         **physics_adapter_kws
     )
 
 
-# ----- optimization functions -----
+# ----- optimization loops -----
 
 
 def optimize_params(
-    phys: PhysicsAdapter,
+    phys: physics.adapter.PhysicsAdapter,
     mesh: meshio.Mesh,
     unit_m: float,
     bc_spec: Any,
-    param_specs: Dict[str, ParameterSpec],
+    param_specs: Dict[str, models.ParameterSpec],
     optim_spec: OptimizerSpec,
     init_spec: InitializeSpec,
 ):
@@ -194,10 +195,10 @@ def optimize_params(
 
 
 def initialize_param_dofs(
-    phys: PhysicsAdapter,
+    phys: physics.adapter.PhysicsAdapter,
     mesh: meshio.Mesh,
     unit_m: float,
-    param_specs: Dict[str, ParameterSpec],
+    param_specs: Dict[str, models.ParameterSpec],
     init_spec: InitializeSpec
 ) -> Dict[str, torch.nn.Parameter]:
 
@@ -215,11 +216,11 @@ def initialize_param_dofs(
 
 
 def run_optimization_trial(
-    phys: PhysicsAdapter,
+    phys: physics.adapter.PhysicsAdapter,
     mesh: meshio.Mesh,
     unit_m: float,
     bc_spec: Any,
-    param_specs: Dict[str, ParameterSpec],
+    param_specs: Dict[str, models.ParameterSpec],
     param_dofs: Dict[str, torch.nn.Parameter],
     optim_spec: OptimizerSpec
 ) -> Tuple[dict, dict]:
@@ -315,7 +316,7 @@ def clone_params(params: Dict[str, torch.Tensor]):
 
 
 def evaluate_loss(
-    phys: PhysicsAdapter,
+    phys: physics.adapter.PhysicsAdapter,
     mesh: meshio.Mesh,
     unit_m: float,
     bc_spec: Any,
@@ -333,12 +334,12 @@ def evaluate_loss(
 
 
 def rasterize_params(
-    phys: PhysicsAdapter,
+    phys: physics.adapter.PhysicsAdapter,
     mesh: meshio.Mesh,
     unit_m: float,
     params: Dict[str, torch.Tensor],
-    shape,
-    affine
+    shape: Tuple[int, int, int],
+    affine: np.ndarray
 ):
     rasters = {}
     for name, field in params.items():
@@ -490,5 +491,4 @@ class OptimizationHistory:
             raise RuntimeError('Optimization encountered nan value')
 
         return loss_delta < tol or grad_delta < tol or param_delta < tol
-
 

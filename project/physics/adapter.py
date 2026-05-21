@@ -1,91 +1,19 @@
-from __future__ import annotations
+from typing import Dict, Tuple, Any
 
-from typing import Optional, List, Dict, Tuple, Iterable, Any
-from dataclasses import dataclass
-
-import numpy as np
 import meshio
+import numpy as np
 import torch
 
-from .core import utils, transforms, interpolation
-from . import solvers
+from ..core import transforms, utils
 
-
-@dataclass
-class MeshField:
-    cells: Optional[torch.Tensor] = None
-    nodes: Optional[torch.Tensor] = None
-
-    def __getitem__(self, degree: int) -> torch.Tensor:
-        if degree == 0 and self.cells is not None:
-            return self.cells
-        if degree == 1 and self.nodes is not None:
-            return self.nodes
-        raise KeyError(f'No values for degree {degree}')
-
-
-class PhysicsContext:
-    '''
-    Stores immutable CPU tensors derived from mesh data.
-    '''
-    def __init__(self, mesh: meshio.Mesh, unit_m: float):
-
-        # domain geometry
-        cells_np = mesh.cells_dict['tetra']
-        verts_np = mesh.points * unit_m # meters
-
-        volume_np = transforms.compute_cell_volume(verts_np, cells_np)
-
-        def _cpu(a: np.ndarray, dtype=torch.float):
-            return torch.as_tensor(a, dtype=dtype, device='cpu')
-
-        self.cells = _cpu(cells_np, dtype=torch.int)
-        self.verts = _cpu(verts_np, dtype=torch.float)
-
-        self.volume = _cpu(volume_np)
-        self.adjacency = transforms.compute_node_adjacency(self.verts, self.cells, self.volume)
-
-        # points used for voxel interpolation (world units)
-        cell_points = _cpu(mesh.points[cells_np].mean(axis=1))
-        node_points = _cpu(mesh.points)
-
-        self.points = MeshField(cell_points, node_points)
-
-        # generic mesh-attached fields
-        self.fields: Dict[str, MeshField] = {}
-
-        def _add_field(name, dtype) -> bool:
-            cell_vals = node_vals = None
-            if 'tetra' in mesh.cell_data_dict.get(name, {}):
-                cell_vals = _cpu(mesh.cell_data_dict[name]['tetra'], dtype)
-            if name in mesh.point_data:
-                node_vals = _cpu(mesh.point_data[name], dtype)
-            if cell_vals is None and node_vals is None:
-                return False
-            self.fields[name] = MeshField(cell_vals, node_vals)
-            return True
-
-        # categorical labels
-        for name in {'region', 'material'}:
-            _add_field(name, dtype=torch.int)
-
-        # material parameters
-        for name in {'rho', 'E', 'nu', 'G', 'K', 'mu', 'lam'}:
-            _add_field(name, dtype=torch.float)
-
-        # observation cache: bc_spec -> (u_bc, u_obs)
-        self.obs_cache: Dict[Any, Tuple[MeshField, MeshField]] = {}
-
-        if _add_field('u_true', dtype=torch.float):
-            u_bc_field = u_obs_field = self.fields['u_true']
-            self.obs_cache[None] = (u_bc_field, u_obs_field)
+from . import context, solvers
 
 
 def _as_mesh_field(
-    ctx: PhysicsContext,
+    ctx: context.PhysicsContext,
     values: torch.Tensor,
     degree: int
-) -> MeshField:
+) -> context.MeshField:
     '''
     Convert values at cell or node dofs into both representations.
     '''
@@ -98,7 +26,7 @@ def _as_mesh_field(
     else:
         raise ValueError(f'Cannot convert degree {degree}')
 
-    return MeshField(cell_vals, node_vals)
+    return context.MeshField(cell_vals, node_vals)
 
 
 class PhysicsAdapter:
@@ -118,15 +46,17 @@ class PhysicsAdapter:
         pde_solver_cls: str,
         pde_solver_kws = None,
         use_cache: bool = True,
-        device: str='cuda',
+        device: str = 'cuda',
         snr_db: float = None,
         seed: int = 0
     ):
         self.default_nu  = float(default_nu)
         self.default_rho = float(default_rho)
 
-        assert scalar_degree in {0, 1}, scalar_degree
-        assert vector_degree in {0, 1}, vector_degree
+        if scalar_degree not in {0, 1}:
+            raise ValueError(f'Invalid scalar degree: {scalar_degree}')
+        if vector_degree not in {0, 1}:
+            raise ValueError(f'Invalid vector degree: {vector_degree}')
 
         self.scalar_degree = scalar_degree
         self.vector_degree = vector_degree
@@ -136,12 +66,12 @@ class PhysicsAdapter:
         self.snr_db = None if snr_db is None else float(snr_db)
         self.seed = int(seed)
 
-        self.pde_solver_cls = solvers.base.PDESolver.get_subclass(pde_solver_cls)
+        self.pde_solver_cls = solvers.PDESolver.get_subclass(pde_solver_cls)
         self.pde_solver_kws = pde_solver_kws or {}
         self.pde_solver = self.make_pde_solver()
 
         self.use_cache = use_cache
-        self._cache: Dict[Any, PhysicsContext] = {}
+        self._cache: Dict[Any, context.PhysicsContext] = {}
 
     # ----- solver / context lifecycle -----
 
@@ -153,12 +83,12 @@ class PhysicsAdapter:
             **self.pde_solver_kws
         )
 
-    def get_pde_context(self, mesh: meshio.Mesh, unit_m: float) -> PhysicsContext:
+    def get_pde_context(self, mesh: meshio.Mesh, unit_m: float) -> context.PhysicsContext:
         if not self.use_cache:
-            return PhysicsContext(mesh, unit_m)
+            return context.PhysicsContext(mesh, unit_m)
         key = (str(mesh.path), round(unit_m, 4))
         if key not in self._cache:
-            self._cache[key] = PhysicsContext(mesh, unit_m)
+            self._cache[key] = context.PhysicsContext(mesh, unit_m)
         return self._cache[key]
 
     def clear_cache(self):
@@ -166,17 +96,14 @@ class PhysicsAdapter:
 
     # ----- material parameters -----
 
-    def has_material_params(self, ctx: PhysicsContext) -> bool:
+    def has_material_params(self, ctx: context.PhysicsContext) -> bool:
         try:
             self.get_material_params(ctx)
             return True
-        except KeyError:
+        except (KeyError, IndexError):
             return False
 
-    def get_material_params(
-        self,
-        ctx: PhysicsContext
-    ) -> Dict[str, torch.Tensor]:
+    def get_material_params(self, ctx: context.PhysicsContext) -> Dict[str, torch.Tensor]:
         return {
             'E': ctx.fields['E'][self.scalar_degree],
             'rho': ctx.fields['rho'][self.scalar_degree]
@@ -184,7 +111,7 @@ class PhysicsAdapter:
 
     def get_canonical_params(
         self,
-        ctx: PhysicsContext,
+        ctx: context.PhysicsContext,
         params: Dict[str, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
@@ -226,7 +153,12 @@ class PhysicsAdapter:
 
     # ----- boundary conditions -----
 
-    def get_boundary_condition(self, ctx: PhysicsContext, bc_spec: Any) -> torch.Tensor:
+    def get_boundary_condition(
+        self,
+        ctx: context.PhysicsContext,
+        bc_spec: Any
+    ) -> torch.Tensor:
+
         template = ctx.points[self.vector_degree]
         return torch.zeros_like(template) # TODO implement different BCs
 
@@ -234,7 +166,7 @@ class PhysicsAdapter:
 
     def get_observations(
         self,
-        ctx: PhysicsContext,
+        ctx: context.PhysicsContext,
         bc_spec: Any
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
@@ -369,10 +301,11 @@ class PhysicsAdapter:
 
     def interpolate_voxel_params(
         self,
-        ctx: PhysicsContext,
+        ctx: context.PhysicsContext,
         affine: torch.Tensor,
         params: Dict[str, torch.Tensor]
     ) -> Dict[str, torch.Tensor]:
+        from ..core import interpolation
 
         points = ctx.points[self.scalar_degree].to(self.device) # world units
         affine = affine.to(self.device) # voxel -> world mapping
@@ -419,7 +352,7 @@ class PhysicsAdapter:
 
     def _package_outputs(
         self,
-        ctx: PhysicsContext,
+        ctx: context.PhysicsContext,
         true_native: Dict[str, torch.Tensor],
         pred_native: Dict[str, torch.Tensor],
         mu_true: torch.Tensor,
@@ -431,7 +364,7 @@ class PhysicsAdapter:
         u_true: torch.Tensor,
         u_pred: torch.Tensor,
         pde_res: torch.Tensor
-    ) -> Dict[str, MeshField]:
+    ) -> Dict[str, context.MeshField]:
 
         ret = {
             'volume':   ctx.volume,
@@ -456,7 +389,4 @@ class PhysicsAdapter:
             ret[f'{name}_true'] = _as_mesh_field(ctx, true_native[name], self.scalar_degree)
 
         return ret
-
-
-
 

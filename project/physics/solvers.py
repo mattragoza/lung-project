@@ -1,5 +1,5 @@
-from __future__ import annotations
-from typing import Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
+
 import torch
 
 
@@ -7,12 +7,15 @@ class PDESolver:
 
     @classmethod
     def get_subclass(cls, name: str):
+
         if name in {'warp', 'warp.fem', 'WarpFEMSolver'}:
             from . import warp
             return warp.WarpFEMSolver
+
         elif name in {'fenics', 'dolfin', 'FenicsFEMSolver'}:
             from . import fenics
             return fenics.FenicsFEMSolver
+
         raise ValueError(f'Invalid solver class: {name}')
 
     def bind_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
@@ -52,7 +55,7 @@ class PDELossFn(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        ctx,
+        ctx: Any,
         solver: PDESolver,
         mu: torch.Tensor,
         lam: torch.Tensor,
@@ -73,10 +76,10 @@ class PDELossFn(torch.autograd.Function):
 
     @staticmethod
     def backward(
-        ctx,
+        ctx: Any,
         loss_grad: torch.Tensor,
-        res_grad: Optional[torch.Tensor]=None,
-        u_sim_grad: Optional[torch.Tensor]=None
+        res_grad: Optional[torch.Tensor] = None,
+        u_sim_grad: Optional[torch.Tensor] = None
     ):
         input_grads = ctx.solver.backward(loss_grad, ctx.context)
         mu, lam, rho, u_bc, u_obs = ctx.tensors
