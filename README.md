@@ -1,4 +1,4 @@
-# Lung biomechanical deep learning project
+# Lung elasticity estimation using physics-constrained learning
 
 ## Summary of procedure
 
