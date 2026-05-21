@@ -1,39 +1,32 @@
-name: lung-project
+name: warp
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
 dependencies:
-  - python=3.10
-  - numpy
+  - python>=3.10
+  - numpy>=2
+  - pandas
   - scipy
   - scikit-image
-  - pandas
-  - xarray
+  - scikit-learn
+  - pytorch::pytorch
+  - pytorch::pytorch-cuda=12.4
+  - pytorch::torchvision
   - nibabel
-  - h5py
-  - pytorch
-  - cudatoolkit=11.7
-  - torchvision
-  - fenics
-  - trame
+  - simpleitk
   - meshio
-  - eigen
-  - cgal
+  - pygalmesh
+  - warp-lang
   - matplotlib
   - seaborn
-  - hvplot
-  - notebook
   - ipython
   - ipykernel
   - ipywidgets
-  - tqdm
-  - parse
-  - requests>=2.31
+  - ipympl
+  - pyvista
+  - trame
+  - trame-vtk
+  - trame-vuetify
+  - pytest
   - pip
   - pip:
     - TotalSegmentator
-    - pygalmesh
-    - git+https://github.com/barkm/torch-fenics.git@master
-    - torch-fem
-

@@ -1,130 +1,150 @@
 dataset:
-  name: "Emory-4DCT"
-  root: "data/Emory-4DCT"
-  examples:
-    subjects: ["case1", "case2", "case3", "case4", "case5", "case6", "case7", "case8", "case9", "case10"]
-    variant: "TEST"
-    state_pairs:
-      - ["T00", "T50"]
-  selectors:
-    material_mask: "uniform-seed"
-    input_image: "no-noise"
+    name: "Emory-4DCT"
+    root: "data/Emory-4DCT"
+    examples:
+        subjects: ["case1", "case2", "case3", "case4", "case5", "case6", "case7", "case8", "case9", "case10"]
+        variant: "TEST"
+        state_pairs:
+          - ["T50", "T00"]
 
 preprocessing:
-  random_seed: 0
-  image_resampling:
-    spacing: [1.0, 1.0, 2.5]
-    interpolation: "linear"
-    default_value: -1024.0
-  image_segmentation:
-    task_rois:
-      total: ["lung_upper_lobe_right", "lung_middle_lobe_right", "lung_lower_lobe_right", "lung_upper_lobe_left", "lung_lower_lobe_left"]
-      lung_vessels: ["lung_airways", "lung_airways_wall", "lung_arteries", "lung_veins"]
-    combine: true
-  mesh_generation:
-    use_affine_spacing: false
-    meshing_parameters:
-      max_facet_distance: 0.75
-      max_cell_circumradius: 5.0
-      lloyd: true
-      odt: true
+    random_seed: 0
+    image_resampling:
+        spacing: [1.0, 1.0, 2.5]
+        interpolation: "linear"
+        default_value: -1024.0
+    image_segmentation:
+        tasks:
+            - task_name: "total"
+              roi_subset:
+                - "lung_upper_lobe_right"
+                - "lung_middle_lobe_right"
+                - "lung_lower_lobe_right"
+                - "lung_upper_lobe_left"
+                - "lune_lower_lobe_left"
+        combine: true
+    image_registration:
+        method: "unigradicon"
+        args:
+            model: "gradiconlung"
+            io_sim: "lncc2"
+            io_iterations: 50
+            io_sigma: 1
+            loss_function_masking: true
+            intensity_conservation: true
+    region_labeling:
+        roi_order:
+            - "lung_upper_lobe_right"
+            - "lung_middle_lobe_right"
+            - "lung_lower_lobe_right"
+            - "lung_upper_lobe_left"
+            - "lune_lower_lobe_left"
+        region_filter:
+            min_voxels: 30
+            keep_largest: true
+    mesh_generation:
+        use_affine_spacing: true
+        mesh_parameters:
+            max_facet_distance: 0.75
+            max_cell_circumradius: 5.0
+            lloyd: true
+            odt: true
 
 optimization:
-  targets: ["E"]
-  param_specs:
-    E:
-      mode: "log10"
-      mean: 3.4863
-      std: 0.3271
-    nu:
-      mode: "logit"
-      min: 0.0001
-      max: 0.4999
-    rho:
-      mode: "log10"
-      mean: 3.0
-      std: 0.1
-  physics_adapter:
-    default_nu: 0.4
-    default_rho: 1000
-    scalar_degree: 1
-    vector_degree: 1
-  pde_solver:
-    _class: WarpFEMSolver
-    relative_loss: true
-    tv_reg_weight: 0.0001
-  optimizer:
-    _class: LBFGS
-    lr: 1.0
-    max_iter: 100
-    history_size: 10
-    line_search_fn: "strong_wolfe"
-    global_steps: 10
-    local_steps: 10
-
-training:
-  random_seed: 0
-  task:
-    inputs: ["image"]
     targets: ["E"]
-    losses:
-      E: "sim"
-  split:
-    key: "category"
-    test_ratio: 0.2
-    val_ratio: 0.1
-    seed: 0
-  transform:
-    normalize: true
-    image_mean: 0.0
-    image_std: 1.0
-    apply_mask: true
-    do_augment: true
-    rand_rotate: true
-    rand_reflect: true
-    sigma_trans: 4.0
-  loader:
-    batch_size: 1
-    shuffle: true
-    num_workers: 0
-  model:
-    backbone:
-      _class: UNet3Dv2
-      out_channels: 16
-      conv_channels: 16
-      n_conv_units: 2
-      n_sub_levels: 2
-      kernel_size: 3
-      relu_leak: 0.1
-      norm_type: "group"
-      num_groups: 4
-      pooling_type: "max"
-      upsample_mode: "trilinear"
     param_specs:
-      E:
+    E:
         mode: "log10"
         mean: 3.4863
         std: 0.3271
-      nu:
+    nu:
         mode: "logit"
         min: 0.0001
         max: 0.4999
-      rho:
+    rho:
         mode: "log10"
-        mean: 3.0
+        mean: 2.4
         std: 0.1
-  physics_adapter:
-    default_nu: 0.4
-    default_rho: 1000
-    scalar_degree: 1
-    vector_degree: 1
-  pde_solver:
-    _class: WarpFEMSolver
-    relative_loss: true
-    tv_reg_weight: 0.0001
-  optimizer:
-    _class: AdamW
-    lr: 0.001
-  trainer:
-    num_epochs: 100
+    physics_adapter:
+        default_nu: 0.4
+        default_rho: 250
+        scalar_degree: 1
+        vector_degree: 1
+    pde_solver:
+        _class: WarpFEMSolver
+        relative_loss: true
+        tv_reg_weight: 0.0001
+    optimizer:
+        _class: LBFGS
+        lr: 1.0
+        max_iter: 1
+        history_size: 10
+        line_search_fn: "strong_wolfe"
+        global_steps: 1
+        local_steps: 1
 
+training:
+    random_seed: 0
+    task:
+        inputs: ["image"]
+        targets: ["E"]
+        losses:
+          E: "sim"
+    split:
+        key: "category"
+        test_ratio: 0.2
+        val_ratio: 0.1
+        seed: 0
+    transform:
+        normalize: true
+        image_mean: 0.0
+        image_std: 1.0
+        apply_mask: true
+        do_augment: true
+        rand_rotate: true
+        rand_reflect: true
+        sigma_trans: 4.0
+    loader:
+        batch_size: 1
+        shuffle: true
+        num_workers: 0
+    model:
+        backbone:
+            _class: UNet3Dv2
+            out_channels: 16
+            conv_channels: 16
+            n_conv_units: 2
+            n_sub_levels: 2
+            kernel_size: 3
+            relu_leak: 0.1
+            norm_type: "group"
+            num_groups: 4
+            pooling_type: "max"
+            upsample_mode: "trilinear"
+        param_specs:
+            E:
+                mode: "log10"
+                mean: 3.4863
+                std: 0.3271
+            nu:
+                mode: "logit"
+                min: 0.0001
+                max: 0.4999
+            rho:
+                mode: "log10"
+                mean: 2.4
+                std: 0.1
+    physics_adapter:
+        default_nu: 0.4
+        default_rho: 250
+        scalar_degree: 1
+        vector_degree: 1
+    pde_solver:
+        _class: WarpFEMSolver
+        relative_loss: true
+        tv_reg_weight: 0.0001
+    optimizer:
+        _class: AdamW
+        lr: 0.001
+    trainer:
+        um_epochs: 100
