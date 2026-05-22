@@ -179,7 +179,7 @@ class ShapeNetDataset(base.Dataset):
         self,
         subjects: Optional[str|Path|List[str]] = None,
         variant:  Optional[str] = None,
-        selectors: Dict[str, str] = None,
+        pipeline_tags: Dict[str, str] = None,
         parse_metadata: bool = True,
         unit_policy: str = 'prefer_metadata',
         default_unit: float = 1e-2
@@ -195,7 +195,7 @@ class ShapeNetDataset(base.Dataset):
         if parse_metadata is None:
             parse_metadata = (variant is not None)
 
-        names = _resolve_names_from_tags(selectors)
+        names = _resolve_names_from_tags(pipeline_tags)
 
         for sid in subject_list:
             m = self.subject_metadata(sid)

@@ -90,7 +90,7 @@ class Dataset:
         subjects: Optional[List[str]] = None,
         variant:  Optional[str] = None,
         *, # source selectors (e.g. visit, state, etc.)
-        selectors: Dict[str, str] = None, # pipeline tags
+        pipeline_tags: Dict[str, str] = None,
         **kwargs
     ) -> Iterable[Example]:
         raise NotImplementedError

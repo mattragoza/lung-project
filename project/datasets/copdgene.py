@@ -142,7 +142,7 @@ class COPDGeneDataset(base.Dataset):
         variant: Optional[str] = None,
         visit: Optional[str] = None,
         state_pairs: Optional[List[Tuple[str, str]]] = None,
-        selectors: Dict[str, str] = None
+        pipeline_tags: Dict[str, str] = None
     ):
         from .base import _resolve_subject_list
         subject_iter = subjects or self.subjects()
@@ -154,13 +154,13 @@ class COPDGeneDataset(base.Dataset):
         visit = str(visit or self.DEFAULT_VISIT)
         state_pairs = list(state_pairs or self.state_pairs())
 
-        selectors = selectors or {}
-        img_tag = selectors.get('image_resampling',   'std')
-        seg_tag = selectors.get('image_segmentation', 'tseg')
-        reg_tag = selectors.get('image_registration', 'corr')
-        map_tag = selectors.get('region_labeling',    'regions')
-        gen_tag = selectors.get('mesh_generation',    'pyg')
-        int_tag = selectors.get('mesh_interpolation', 'int')
+        pipeline_tags = pipeline_tags or {}
+        img_tag = pipeline_tags.get('image_resampling',   'std')
+        seg_tag = pipeline_tags.get('image_segmentation', 'tseg')
+        reg_tag = pipeline_tags.get('image_registration', 'corr')
+        map_tag = pipeline_tags.get('region_labeling',    'regions')
+        gen_tag = pipeline_tags.get('mesh_generation',    'pyg')
+        int_tag = pipeline_tags.get('mesh_interpolation', 'int')
 
         for sid in subject_list:
             m = self.subject_metadata(sid)

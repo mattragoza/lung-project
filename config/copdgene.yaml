@@ -3,12 +3,12 @@ dataset:
     root: "data/COPDGene"
     examples:
         subjects: "data/COPDGene/sample1000_2025-07-22.csv"
-        variant: "TEST"
         state_pairs:
-          - ["EXP", "INSP"]
-    selectors:
-        image_segmentation: "tseg"
-        image_registration: "corr"
+            - ["EXP", "INSP"]
+        variant: "TEST"
+        pipeline_tags:
+            image_segmentation: "tseg"
+            image_registration: "lung"
 
 preprocessing:
     random_seed: 0

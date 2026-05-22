@@ -143,7 +143,7 @@ class Emory4DCTDataset(base.Dataset):
         subjects: Optional[List[str]] = None,
         variant: Optional[str] = None,
         state_pairs: Optional[List[Tuple[str, str]]] = None,
-        selectors: Dict[str, str] = None
+        pipeline_tags: Dict[str, str] = None
     ):
         subject_list = list(subjects or self.subjects())
         state_pairs = list(state_pairs or self.state_pairs())
@@ -151,13 +151,13 @@ class Emory4DCTDataset(base.Dataset):
         if variant is not None:
             variant = str(variant)
 
-        selectors = selectors or {}
-        img_tag = selectors.get('image_resampling',   'std')
-        seg_tag = selectors.get('image_segmentation', 'tseg')
-        reg_tag = selectors.get('image_registration', 'corr')
-        map_tag = selectors.get('region_labeling',    'regions')
-        gen_tag = selectors.get('mesh_generation',    'pyg')
-        int_tag = selectors.get('mesh_interpolation', 'int')
+        pipeline_tags = pipeline_tags or {}
+        img_tag = pipeline_tags.get('image_resampling',   'std')
+        seg_tag = pipeline_tags.get('image_segmentation', 'tseg')
+        reg_tag = pipeline_tags.get('image_registration', 'corr')
+        map_tag = pipeline_tags.get('region_labeling',    'regions')
+        gen_tag = pipeline_tags.get('mesh_generation',    'pyg')
+        int_tag = pipeline_tags.get('mesh_interpolation', 'int')
 
         for sid in subject_list:
             m = self.subject_metadata(sid)
