@@ -15,20 +15,16 @@ def get_config(argv):
 def get_examples(config):
     utils.check_keys(
         config,
-        valid={'name', 'root', 'examples', 'selectors'},
+        valid={'name', 'root', 'examples'},
         where='dataset'
     )
     from . import datasets
 
-    dataset_name = config['name'] # required
-    dataset_root = config['root'] # required
-    examples_kws = config.get('examples', {})
-    selector_kws = config.get('selectors', {})
-
     utils.log('Gathering examples')
-    dataset_cls = datasets.base.Dataset.get_subclass(dataset_name)
-    dataset = dataset_cls(dataset_root)
-    return dataset.list_examples(selectors=selector_kws, **examples_kws)
+    dataset = datasets.api.get_dataset(config)
+
+    example_kws = config.get('examples', {})
+    return dataset.list_examples(**example_kws)
 
 
 def run_validate(examples, config):
