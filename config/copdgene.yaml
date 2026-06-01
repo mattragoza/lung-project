@@ -11,7 +11,6 @@ dataset:
             image_registration: "lung"
 
 preprocessing:
-    random_seed: 0
     image_resampling:
         spacing: [1.0, 1.0, 1.0]
         interpolation: "linear"
@@ -24,7 +23,7 @@ preprocessing:
                 - "lung_middle_lobe_right"
                 - "lung_lower_lobe_right"
                 - "lung_upper_lobe_left"
-                - "lune_lower_lobe_left"
+                - "lung_lower_lobe_left"
         combine: true
     image_registration:
         method: "unigradicon"
@@ -41,7 +40,7 @@ preprocessing:
             - "lung_middle_lobe_right"
             - "lung_lower_lobe_right"
             - "lung_upper_lobe_left"
-            - "lune_lower_lobe_left"
+            - "lung_lower_lobe_left"
         region_filter:
             min_voxels: 30
             keep_largest: true
