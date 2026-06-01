@@ -81,14 +81,23 @@ def run_unigradicon_command(
     io_sigma: int = 1,
     loss_function_masking: bool = False,
     intensity_conservation: bool = False,
-    executable: str = 'unigradicon-register'
+    executable: str = 'unigradicon-register',
+    weights: str = 'network_weights/gradicon_lung1.0/Step_2_final.trch'
 ):
-    import subprocess
+    import os, subprocess
+    from pathlib import Path
 
     if model not in {'unigradicon', 'multigradicon', 'gradiconlung'}:
         raise ValueError(f'Invalid model: {model!r}')
     if io_sim not in {'lncc', 'lncc2', 'mind'}:
         raise ValueError(f'Invalid io_sim: {io_sim!r}')
+
+    rel_path = Path(weights)
+    abs_path = Path(os.environ['LP']) / weights
+
+    if not rel_path.exists():
+        rel_path.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(abs_path, rel_path)
 
     cmd = [
         str(executable),
