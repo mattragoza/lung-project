@@ -7,10 +7,8 @@ import warp as wp
 import warp.fem
 import warp.optim.linear
 
-wp.init()
-wp.config.quiet = True
-
-from . import solvers
+from . import forms
+from .. import solvers
 
 
 def _as_warp_array(t: torch.Tensor, **kwargs) -> wp.array:
@@ -150,15 +148,16 @@ class WarpFEMSolver(solvers.PDESolver):
             mu, lam, rho, u_bc = self.make_input_fields(mu, lam, rho, u_bc)
 
             K = self.assemble_stiffness(mu, lam)
-            f = self.assemble_forcing(rho)
+            f = self.assemble_load(rho)
 
-            M = self.get_preconditioner(K)
             P = self.assemble_projector()
             u0 = self.apply_lifting(P, u_bc)
-            fs = self.shift_rhs(f, K, u0)
+            fs = self.shift_load(f, K, u0)
+            M = self.get_preconditioner(K)
 
             u = self.make_vector_field()
-            self.solve_forward(K, u, fs, P, M, u0)
+            self.solve_forward(K, u, fs, P, M)
+            u.dof_values += u0
 
         return wp.to_torch(u.dof_values)
 
@@ -168,15 +167,16 @@ class WarpFEMSolver(solvers.PDESolver):
             mu, lam, rho, u_bc = self.make_input_fields(mu, lam, rho, u_bc)
 
             K = self.assemble_stiffness(mu, lam)
-            f = self.assemble_forcing(rho)
+            f = self.assemble_load(rho)
 
-            M = self.get_preconditioner(K)
             P = self.assemble_projector()
             u0 = self.apply_lifting(P, u_bc)
-            fs = self.shift_rhs(f, K, u0)
+            fs = self.shift_load(f, K, u0)
+            M = self.get_preconditioner(K)
 
             u_sim = self.make_vector_field(requires_grad=True)
-            self.solve_forward(K, u_sim, fs, P, M, u0)
+            self.solve_forward(K, u_sim, fs, P, M)
+            u_sim.dof_values += u0
 
             u_obs = self.make_vector_field(u_obs)
             mask = self.make_scalar_field(mask)
@@ -184,14 +184,14 @@ class WarpFEMSolver(solvers.PDESolver):
             tape = wp.Tape()
             with tape:
                 res = self.make_vector_field(requires_grad=True)
-                self.compute_residual(mu, lam, rho, u_sim, res)
+                self.evaluate_residual(mu, lam, rho, u_sim, res)
 
             tape.record_func(
                 backward=lambda: self.solve_adjoint(K, res, u_sim, P, M),
                 arrays=[res.dof_values, u_sim.dof_values]
             )
             with tape:
-                loss = self.compute_loss(mu, lam, rho, u_sim, u_obs, mask)
+                loss = self.evaluate_loss(mu, lam, rho, u_sim, u_obs, mask)
 
         outputs = {
             'u_sim': wp.to_torch(u_sim.dof_values),
@@ -231,62 +231,17 @@ class WarpFEMSolver(solvers.PDESolver):
         return input_grads
 
     def zero_grad(self):
-        if hasattr(self, 'tape'):
+        if getattr(self, 'tape', None) is not None:
             self.tape.reset()
-
-    # ----- internal assembly methods -----
-
-    def assemble_stiffness(self, mu: wp.fem.Field, lam: wp.fem.Field):
-        K = wp.fem.integrate(
-            pde_bilinear_form,
-            fields={
-                'u': self.u_trial,
-                'v': self.v_test,
-                'mu': mu,
-                'lam': lam
-            },
-            values={'I': self.I},
-            domain=self.interior,
-            output_dtype=self.scalar_dtype
-        )
-        return K
-
-    def assemble_forcing(self, rho: wp.fem.Field):
-        f = wp.fem.integrate(
-            pde_linear_form,
-            fields={'v': self.v_test, 'rho': rho},
-            values={'g': self.g},
-            domain=self.interior,
-            output_dtype=self.vector_dtype
-        )
-        return f
-
-    def get_preconditioner(self, K):
-        return wp.optim.linear.preconditioner(K, ptype='diag')
-
-    def assemble_projector(self):
-        P = wp.fem.integrate(
-            inner_form,
-            fields={'u': self.ub_trial, 'v': self.vb_test},
-            domain=self.boundary,
-            assembly='nodal',
-            output_dtype=self.scalar_dtype
-        )
-        wp.fem.normalize_dirichlet_projector(P)
-        return P
-
-    def apply_lifting(self, P, u_bc):
-        return P @ u_bc.dof_values
-
-    def shift_rhs(self, f, K, u0):
-        return f - (K @ u0)
 
     # ----- solving linear systems -----
 
-    def solve_forward(self, J, u, f, P, M, u0):
-        return self.solve_forward_newton(J, u, f, P, M, u0)
+    def solve_forward(self, K, u, f, P, M):
+        if self.max_newton_iters > 0:
+            return self.solve_forward_newton(K, u, f, P, M)
+        return self.solve_forward_linear(K, u, f, P, M)
 
-    def solve_forward_newton(self, J, u, f, P, M, u0):
+    def solve_forward_newton(self, J, u, f, P, M):
 
         for newton_it in range(self.max_newton_iters):
             r = f - (J @ u.dof_values)
@@ -301,12 +256,10 @@ class WarpFEMSolver(solvers.PDESolver):
                 tol=self.cg_tol
             )
             if not np.isfinite(cg_res):
-                raise RuntimeError('Non-finite CG residual')
-
+                raise RuntimeError('Non-finite CG residual in forward solve')
             u.dof_values += du.dof_values
-        u.dof_values += u0
 
-    def solve_forward_linear(self, K, u, f, P, M, u0):
+    def solve_forward_linear(self, K, u, f, P, M):
         wp.fem.project_linear_system(K, f, P, normalize_projector=False)
         it, cg_res, tol = wp.optim.linear.cg(
             A=K,
@@ -316,8 +269,7 @@ class WarpFEMSolver(solvers.PDESolver):
             tol=self.cg_tol
         )
         if not np.isfinite(cg_res):
-            raise RuntimeError('Non-finite CG residual on forward solve')
-        u.dof_values += u0
+            raise RuntimeError('Non-finite CG residual in forward solve')
 
     def solve_adjoint(self, K, r, u, P, M):
         wp.fem.project_linear_system(K, u.dof_values.grad, P, normalize_projector=False)
@@ -329,13 +281,60 @@ class WarpFEMSolver(solvers.PDESolver):
             tol=self.cg_tol
         )
         if not np.isfinite(cg_res):
-            raise RuntimeError('Non-finite CG residual on adjoint solve')
+            raise RuntimeError('Non-finite CG residual in adjoint solve')
 
-    # ----- residual and loss evaluation -----
+    # ----- internal assembly methods -----
 
-    def compute_residual(self, mu, lam, rho, u_sim, r):
+    def assemble_stiffness(self, mu: wp.fem.Field, lam: wp.fem.Field):
+        K = wp.fem.integrate(
+            forms.pde_bilinear_form,
+            fields={
+                'u': self.u_trial,
+                'v': self.v_test,
+                'mu': mu,
+                'lam': lam
+            },
+            values={'I': self.I},
+            domain=self.interior,
+            output_dtype=self.scalar_dtype
+        )
+        return K
+
+    def assemble_load(self, rho: wp.fem.Field):
+        f = wp.fem.integrate(
+            forms.pde_linear_form,
+            fields={'v': self.v_test, 'rho': rho},
+            values={'g': self.g},
+            domain=self.interior,
+            output_dtype=self.vector_dtype
+        )
+        return f
+
+    def assemble_projector(self):
+        P = wp.fem.integrate(
+            forms.inner_product_form,
+            fields={'u': self.ub_trial, 'v': self.vb_test},
+            domain=self.boundary,
+            assembly='nodal',
+            output_dtype=self.scalar_dtype
+        )
+        wp.fem.normalize_dirichlet_projector(P)
+        return P
+
+    def apply_lifting(self, P, u_bc):
+        return P @ u_bc.dof_values
+
+    def shift_load(self, f, K, u0):
+        return f - (K @ u0)
+
+    def get_preconditioner(self, K, type='diag'):
+        return wp.optim.linear.preconditioner(K, ptype=type)
+
+    # ----- PDE residual and loss -----
+
+    def evaluate_residual(self, mu, lam, rho, u_sim, r):
         wp.fem.integrate(
-            pde_residual_form,
+            forms.pde_residual_form,
             fields={
                 'u': u_sim,
                 'v': self.v_test,
@@ -348,43 +347,46 @@ class WarpFEMSolver(solvers.PDESolver):
             output=r.dof_values
         )
 
-    def compute_loss(self, mu, lam, rho, u_sim, u_obs, mask):
+    def evaluate_loss(self, mu, lam, rho, u_sim, u_obs, mask):
+
+        # loss numerator, denominator, and regularization term
         num = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
         den = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
+        reg = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
 
         wp.fem.integrate(
-            error_form,
+            forms.squared_error_form,
             fields={'u': u_sim, 'v': u_obs, 'w': mask},
             domain=self.interior,
             output=num
         )
+
         if self.relative_loss:
             wp.fem.integrate(
-                norm2_form,
+                forms.squared_norm_form,
                 fields={'u': u_obs, 'w': mask},
                 domain=self.interior,
                 output=den
             )
         else:
             wp.fem.integrate(
-                volume_form,
+                forms.volume_form,
                 fields={'w': mask},
                 domain=self.interior,
                 output=den
             )
 
-        err = num / (den + self.eps_div)
-        reg = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
+        error = num / (den + self.eps_div)
 
         wp.fem.integrate(
-            tv_reg_form,
+            forms.tv_regularization_form,
             fields={'mu': mu, 'lam': lam, 'rho': rho},
             values={'eps_reg': self.eps_reg, 'eps_div': self.eps_div},
             domain=self.interior,
             output=reg
         )
 
-        loss = err + reg * self.tv_reg_weight
+        loss = error + self.tv_reg_weight * reg
         loss.requires_grad = True
         return loss
 
@@ -397,105 +399,6 @@ class WarpFEMSolver(solvers.PDESolver):
     def rasterize_vector_field(self, values, shape, bounds):
         field = self.make_vector_field(values)
         return rasterize_field(field, shape, bounds)
-
-
-@wp.fem.integrand
-def pde_bilinear_form(
-    s: wp.fem.Sample,
-    u: wp.fem.Field,
-    v: wp.fem.Field,
-    mu: wp.fem.Field,
-    lam: wp.fem.Field,
-    I: wp.mat33
-):
-    eps_u = wp.fem.D(u, s) # symmetric gradient
-    eps_v = wp.fem.D(v, s)
-    div_u = wp.fem.div(u, s)
-    sigma_u = 2.0*mu(s)*eps_u + lam(s)*div_u*I
-    return wp.ddot(sigma_u, eps_v)
-
-
-@wp.fem.integrand
-def pde_linear_form(
-    s: wp.fem.Sample,
-    v: wp.fem.Field,
-    rho: wp.fem.Field,
-    g: wp.vec3
-):
-    return rho(s) * wp.dot(g, v(s))
-
-
-@wp.fem.integrand
-def pde_residual_form(
-    s: wp.fem.Sample,
-    u: wp.fem.Field,
-    v: wp.fem.Field,
-    mu: wp.fem.Field,
-    lam: wp.fem.Field,
-    rho: wp.fem.Field,
-    g: wp.vec3,
-    I: wp.mat33
-):
-    lhs = pde_bilinear_form(s, u, v, mu, lam, I)
-    rhs = pde_linear_form(s, v, rho, g)
-    return rhs - lhs
-
-
-@wp.fem.integrand
-def inner_form(s: wp.fem.Sample, u: wp.fem.Field, v: wp.fem.Field):
-    return wp.dot(u(s), v(s))
-
-
-@wp.fem.integrand
-def error_form(
-    s: wp.fem.Sample, u: wp.fem.Field, v: wp.fem.Field, w: wp.fem.Field
-):
-    r_s = u(s) - v(s)
-    return w(s) * wp.dot(r_s, r_s)
-
-
-@wp.fem.integrand
-def rel_error_form(
-    s: wp.fem.Sample,
-    u: wp.fem.Field,
-    v: wp.fem.Field,
-    w: wp.fem.Field,
-    eps_div: float
-):
-    u_s, v_s = u(s), v(s)
-    r_s = (u_s - v_s) / (v_s + eps_div)
-    return w(s) * wp.dot(r_s, r_s)
-
-
-@wp.fem.integrand
-def norm2_form(s: wp.fem.Sample, u: wp.fem.Field, w: wp.fem.Field):
-    u_s = u(s)
-    return w(s) * wp.dot(u_s, u_s)
-
-
-@wp.fem.integrand
-def volume_form(s: wp.fem.Sample, w: wp.fem.Field):
-    return w(s)
-
-
-@wp.fem.integrand
-def tv_reg_form(
-    s: wp.fem.Sample,
-    mu: wp.fem.Field,
-    lam: wp.fem.Field,
-    rho: wp.fem.Field,
-    eps_reg: float,
-    eps_div: float,
-):
-    # TV regularization on gradient of log params
-    grad_mu = wp.fem.grad(mu, s) / (mu(s) + eps_div)
-    grad_lam = wp.fem.grad(lam, s) / (lam(s) + eps_div)
-    grad_rho = wp.fem.grad(rho, s) / (rho(s) + eps_div)
-    return (
-        wp.sqrt(wp.dot(grad_mu, grad_mu) + eps_reg * eps_reg) +
-        wp.sqrt(wp.dot(grad_lam, grad_lam) + eps_reg * eps_reg) +
-        wp.sqrt(wp.dot(grad_rho, grad_rho) + eps_reg * eps_reg)
-    )
 
 
 def rasterize_field(src: wp.fem.Field, shape, bounds, background=0.0):

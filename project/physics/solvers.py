@@ -6,7 +6,7 @@ import torch
 def _resolve_solver_name(name: str):
     if name in {'warp', 'warp.fem', 'WarpFEMSolver'}:
         from . import warp
-        return warp.WarpFEMSolver
+        return warp.solver.WarpFEMSolver
     elif name in {'fenics', 'dolfin', 'FenicsFEMSolver'}:
         from . import fenics
         return fenics.FenicsFEMSolver
