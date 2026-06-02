@@ -68,15 +68,7 @@ def run_training(examples, config, outputs):
     optimizer_cls = getattr(torch.optim, optimizer_kws.pop('_class'))
     optimizer = optimizer_cls(model.parameters(), **optimizer_kws)
 
-    physics_adapter_kws = config.get('physics_adapter', {})
-    pde_solver_kws = config.get('pde_solver', {}).copy()
-    pde_solver_cls = pde_solver_kws.pop('_class')
-
-    physics_adapter = physics.adapter.PhysicsAdapter(
-        pde_solver_cls=pde_solver_cls,
-        pde_solver_kws=pde_solver_kws,
-        **physics_adapter_kws
-    )
+    phys_adapter = physics.api.get_adapter(config)
 
     evaluator_kws = config.get('evaluator', {})
     callbacks = [
@@ -101,7 +93,7 @@ def run_training(examples, config, outputs):
         task=task,
         model=model,
         optimizer=optimizer,
-        phys_adapter=physics_adapter,
+        phys_adapter=phys_adapter,
         train_loader=train_loader,
         test_loader=test_loader,
         val_loader=val_loader,

@@ -3,10 +3,11 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
+import meshio
 
 from .core import utils, fileio
 
-from . import models, physics
+from . import datasets, models, physics
 
 
 @dataclass
@@ -37,6 +38,7 @@ def optimize_example(ex, config, outputs):
             'optimizer',
             'initialize',
             'evaluator',
+            'boundary_condition'
         },
         where='optimization'
     )
@@ -45,15 +47,15 @@ def optimize_example(ex, config, outputs):
     raster_dir = outputs.raster_dir(ex)
 
     unit_m = float(ex.metadata['unit'])
-    sample = load_example(ex)
+    sample = datasets.api.load_example(ex)
     mesh = sample['mesh']
 
     param_specs  = build_parameter_specs(config)
     optim_spec   = build_optimizer_spec(config)
     init_spec    = build_initialize_spec(config)
-    phys_adapter = build_physics_adapter(config)
 
-    bc_spec = None
+    phys_adapter = physics.api.get_adapter(config)
+    bc_spec      = physics.api.get_bc_spec(config)
 
     utils.log('Start optimization')
 
@@ -108,11 +110,6 @@ def optimize_example(ex, config, outputs):
 # ----- context configuration -----
 
 
-def load_example(ex) -> Dict[str, Any]:
-    from . import datasets
-    return datasets.torch.TorchDataset([ex])[0]
-
-
 def build_parameter_specs(config) -> Dict[str, models.ParameterSpec]:
     target_list = config.get('targets', ['E'])
     utils.log(f'Targets: {target_list}')
@@ -138,16 +135,6 @@ def build_initialize_spec(config) -> InitializeSpec:
     initialize_kws = config.get('initialize', {})
     return InitializeSpec(**initialize_kws)
 
-
-def build_physics_adapter(config) -> physics.adapter.PhysicsAdapter:
-    physics_adapter_kws = config.get('physics_adapter', {})
-    pde_solver_kws = config.get('pde_solver', {}).copy()
-    pde_solver_cls = pde_solver_kws.pop('_class')
-    return physics.adapter.PhysicsAdapter(
-        pde_solver_cls=pde_solver_cls,
-        pde_solver_kws=pde_solver_kws,
-        **physics_adapter_kws
-    )
 
 
 # ----- optimization loops -----
@@ -215,6 +202,17 @@ def initialize_param_dofs(
     return dofs
 
 
+def decode_params(specs, dofs, global_mean=False):
+    params = {k: v.decode(dofs[k]) for k, v in specs.items()}
+    if global_mean:
+        return {k: v.mean().expand(v.shape) for k, v in params.items()}
+    return params
+
+
+def clone_params(params: Dict[str, torch.Tensor]):
+    return {k: v.detach().clone() for k, v in params.items()}
+
+
 def run_optimization_trial(
     phys: physics.adapter.PhysicsAdapter,
     mesh: meshio.Mesh,
@@ -234,12 +232,6 @@ def run_optimization_trial(
             ret_outputs=False
         )
 
-    def local_params() -> Dict[str, torch.Tensor]:
-        return {k: v.decode(param_dofs[k]) for k, v in param_specs.items()}
-
-    def global_params() -> Dict[str, torch.Tensor]:
-        return {k: v.mean().expand(v.shape) for k, v in local_params().items()}
-
     history: Dict[str, OptimizationHistory] = {}
 
     if optim_spec.global_steps > 0:
@@ -248,7 +240,7 @@ def run_optimization_trial(
 
         def closure_g() -> torch.Tensor:
             optimizer_g.zero_grad(set_to_none=True)
-            params = global_params()
+            params = decode_params(param_specs, param_dofs, global_mean=True)
             loss = objective(params)
             if not torch.isfinite(loss):
                 raise RuntimeError(f'Invalid loss: {loss.item()}')
@@ -265,7 +257,7 @@ def run_optimization_trial(
 
         def closure_l() -> torch.Tensor:
             optimizer_l.zero_grad(set_to_none=True)
-            params = local_params()
+            params = decode_params(param_specs, param_dofs, global_mean=False)
             loss = objective(params)
             if not torch.isfinite(loss):
                 raise RuntimeError(f'Invalid loss: {loss.item()}')
@@ -277,7 +269,8 @@ def run_optimization_trial(
         )
 
     with torch.no_grad():
-        params = clone_params(local_params())
+        params = decode_params(param_specs, param_dofs, global_mean=False)
+        params = clone_params(params)
 
     return params, history
 
@@ -306,10 +299,6 @@ def optimize_closure(optimizer, closure, max_steps: int = 100):
         loss = closure()
 
     return history
-
-
-def clone_params(params: Dict[str, torch.Tensor]):
-    return {k: v.detach().clone() for k, v in params.items()}
 
 
 # ----- evaluation / output -----
@@ -388,7 +377,7 @@ def evaluate_outputs(evaluator, outputs):
     evaluator.on_phase_end(epoch=0, phase='optimize')
 
 
-def save_output_mesh(mesh, sim_output, output_path):
+def get_output_mesh(mesh, sim_output):
 
     def _assign_mesh_field(m, name):
         field = sim_output.get(name)
@@ -409,6 +398,12 @@ def save_output_mesh(mesh, sim_output, output_path):
     _assign_mesh_field(output_mesh, 'u_pred')
     _assign_mesh_field(output_mesh, 'residual')
 
+    return output_mesh
+
+
+def save_output_mesh(mesh, sim_output, output_path):
+
+    output_mesh = get_output_mesh(mesh, sim_output)
     utils.log(output_mesh)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

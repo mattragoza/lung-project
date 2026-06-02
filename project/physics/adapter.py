@@ -39,60 +39,50 @@ class PhysicsAdapter:
     '''
     def __init__(
         self,
+        pde_solver: solvers.PDESolver,
         default_nu: float,
         default_rho: float,
-        scalar_degree: int,
-        vector_degree: int,
-        pde_solver_cls: str,
-        pde_solver_kws = None,
-        use_cache: bool = True,
-        device: str = 'cuda',
         snr_db: float = None,
-        seed: int = 0
+        random_seed: int = 0,
+        use_cache: bool = True
     ):
-        self.default_nu  = float(default_nu)
+        self.pde_solver = pde_solver
+
+        self.default_nu = float(default_nu)
         self.default_rho = float(default_rho)
 
-        if scalar_degree not in {0, 1}:
-            raise ValueError(f'Invalid scalar degree: {scalar_degree}')
-        if vector_degree not in {0, 1}:
-            raise ValueError(f'Invalid vector degree: {vector_degree}')
-
-        self.scalar_degree = scalar_degree
-        self.vector_degree = vector_degree
-
-        self.device = device
-
         self.snr_db = None if snr_db is None else float(snr_db)
-        self.seed = int(seed)
+        self.random_seed = int(random_seed)
 
-        self.pde_solver_cls = solvers.PDESolver.get_subclass(pde_solver_cls)
-        self.pde_solver_kws = pde_solver_kws or {}
-        self.pde_solver = self.make_pde_solver()
+        self.use_cache = bool(use_cache)
+        self.ctx_cache: Dict[Any, context.PhysicsContext] = {}
 
-        self.use_cache = use_cache
-        self._cache: Dict[Any, context.PhysicsContext] = {}
+    # ----- solver attributes -----
 
-    # ----- solver / context lifecycle -----
+    @property
+    def device(self) -> str:
+        return self.pde_solver.device
 
-    def make_pde_solver(self) -> solvers.base.PDESolver:
-        return self.pde_solver_cls(
-            scalar_degree=self.scalar_degree,
-            vector_degree=self.vector_degree,
-            device=self.device,
-            **self.pde_solver_kws
-        )
+    @property
+    def scalar_degree(self) -> int:
+        return self.pde_solver.scalar_degree
+
+    @property
+    def vector_degree(self) -> int:
+        return self.pde_solver.vector_degree
+
+    # ----- context lifecycle -----
 
     def get_pde_context(self, mesh: meshio.Mesh, unit_m: float) -> context.PhysicsContext:
         if not self.use_cache:
             return context.PhysicsContext(mesh, unit_m)
         key = (str(mesh.path), round(unit_m, 4))
-        if key not in self._cache:
-            self._cache[key] = context.PhysicsContext(mesh, unit_m)
-        return self._cache[key]
+        if key not in self.ctx_cache:
+            self.ctx_cache[key] = context.PhysicsContext(mesh, unit_m)
+        return self.ctx_cache[key]
 
     def clear_cache(self):
-        self._cache.clear()
+        self.ctx_cache.clear()
 
     # ----- material parameters -----
 
@@ -159,8 +149,12 @@ class PhysicsAdapter:
         bc_spec: Any
     ) -> torch.Tensor:
 
-        template = ctx.points[self.vector_degree]
-        return torch.zeros_like(template) # TODO implement different BCs
+        if bc_spec is None or bc_spec.name == 'zero':
+            return torch.zeros_like(ctx.points[self.vector_degree])
+        elif bc_spec.name == 'u_true':
+            return ctx.fields['u_true'][self.vector_degree]
+
+        raise ValueError(f'Invalid bc_spec: {bc_spec!r}')
 
     # ----- displacement observations -----
 
@@ -171,6 +165,9 @@ class PhysicsAdapter:
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
         if bc_spec not in ctx.obs_cache: # cache clean only
+            if not self.has_material_params(ctx):
+                raise RuntimeError(f'No observations for bc_spec: {bc_spec!r}')
+
             params = self.get_material_params(ctx)
             mu, lam, rho = self.get_canonical_params(ctx, params)
 
@@ -188,13 +185,13 @@ class PhysicsAdapter:
         u_obs = u_obs_field[self.vector_degree]
 
         if self.snr_db is not None:
-            u_obs = self.add_observation_noise(u_obs, self.snr_db, self.seed)
+            u_obs = self.add_observation_noise(u_obs, self.snr_db, self.random_seed)
 
         return u_bc, u_obs
 
-    def add_observation_noise(self, u_obs, snr_db, seed=None):
+    def add_observation_noise(self, u_obs, snr_db, random_seed=None):
         rng = torch.Generator(device=u_obs.device)
-        rng.manual_seed(seed)
+        rng.manual_seed(random_seed)
 
         sigma = (10 ** -(snr_db / 10)) ** 0.5
         rms = torch.sqrt(torch.mean(u_obs**2))
@@ -235,10 +232,27 @@ class PhysicsAdapter:
         self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
         u_sim = self.pde_solver.solve(mu, lam, rho, u_bc)
 
-        def _numpy(t: torch.Tensor) -> np.ndarray:
-            return t.detach().cpu().numpy()
+        if self.has_material_params(ctx):
+            true_params = self.get_material_params(ctx)
+            mu_t, lam_t, rho_t = self.get_canonical_params(ctx, true_params)
+        else:
+            true_params = {}
+            mu_t = lam_t = rho_t = None
 
-        return {'u_bc': _numpy(u_bc), 'u_sim': _numpy(u_sim)}
+        return self._package_outputs(
+            ctx,
+            true_native=true_params,
+            pred_native=params,
+            mu_true=mu_t,
+            lam_true=lam_t,
+            rho_true=rho_t,
+            mu_pred=mu,
+            lam_pred=lam,
+            rho_pred=rho,
+            u_true=None,
+            u_pred=u_sim,
+            pde_res=None,
+        )
 
     def mesh_simulation_loss(
         self,
@@ -368,20 +382,24 @@ class PhysicsAdapter:
 
         ret = {
             'volume':   ctx.volume,
-            'material': ctx.fields.get('material'),
+            'u_pred':   _as_mesh_field(ctx, u_pred, self.vector_degree),
             'mu_pred':  _as_mesh_field(ctx, mu_pred, self.scalar_degree),
             'lam_pred': _as_mesh_field(ctx, lam_pred, self.scalar_degree),
             'rho_pred': _as_mesh_field(ctx, rho_pred, self.scalar_degree),
-            'u_pred':   _as_mesh_field(ctx, u_pred, self.vector_degree),
-            'u_true':   _as_mesh_field(ctx, u_true, self.vector_degree),
-            'residual': _as_mesh_field(ctx, pde_res, self.vector_degree)
         }
+        if 'material' in ctx.fields:
+            ret['material'] = ctx.fields['material']
+
+        if u_true is not None:
+            ret['u_true'] = _as_mesh_field(ctx, u_true, self.vector_degree)
         if mu_true is not None:
             ret['mu_true'] = _as_mesh_field(ctx, mu_true, self.scalar_degree)
         if lam_true is not None:
             ret['lam_true'] = _as_mesh_field(ctx, lam_true, self.scalar_degree)
         if rho_true is not None:
             ret['rho_true'] = _as_mesh_field(ctx, rho_true, self.scalar_degree)
+        if pde_res is not None:
+            ret['residual'] = _as_mesh_field(ctx, pde_res, self.vector_degree)
 
         for name in pred_native:
             ret[f'{name}_pred'] = _as_mesh_field(ctx, pred_native[name], self.scalar_degree)

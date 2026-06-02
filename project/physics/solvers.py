@@ -3,20 +3,21 @@ from typing import List, Dict, Tuple, Optional, Any
 import torch
 
 
+def _resolve_solver_name(name: str):
+    if name in {'warp', 'warp.fem', 'WarpFEMSolver'}:
+        from . import warp
+        return warp.WarpFEMSolver
+    elif name in {'fenics', 'dolfin', 'FenicsFEMSolver'}:
+        from . import fenics
+        return fenics.FenicsFEMSolver
+    raise ValueError(f'Invalid solver name: {name!r}')
+
+
 class PDESolver:
 
     @classmethod
     def get_subclass(cls, name: str):
-
-        if name in {'warp', 'warp.fem', 'WarpFEMSolver'}:
-            from . import warp
-            return warp.WarpFEMSolver
-
-        elif name in {'fenics', 'dolfin', 'FenicsFEMSolver'}:
-            from . import fenics
-            return fenics.FenicsFEMSolver
-
-        raise ValueError(f'Invalid solver class: {name}')
+        return _resolve_solver_name(name)
 
     def bind_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
         raise NotImplementedError

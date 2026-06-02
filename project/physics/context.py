@@ -5,6 +5,8 @@ import meshio
 import numpy as np
 import torch
 
+from . import bcs
+
 from ..core import transforms
 
 
@@ -74,7 +76,7 @@ class PhysicsContext:
         self.obs_cache: Dict[Any, Tuple[MeshField, MeshField]] = {}
 
         if _add_field('u_true', dtype=torch.float):
-            u_bc_field = u_obs_field = self.fields['u_true']
-            self.obs_cache[None] = (u_bc_field, u_obs_field)
-
+            bc_spec = bcs.BoundaryConditionSpec(name='u_true')
+            u_bc_field = u_obs_field = self.fields['u_true'] 
+            self.obs_cache[bc_spec] = (u_bc_field, u_obs_field)
 
