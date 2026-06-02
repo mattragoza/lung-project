@@ -54,14 +54,14 @@ def render_mesh(mesh, size=512, view='iso', **kwargs):
         p.close()
 
 
-def show_mesh(mesh, size=512, **kwargs):
+def show_mesh(mesh, size=512, backend='trame', **kwargs):
     m = pv.wrap(mesh)
     p = pv.Plotter(window_size=(size, size), off_screen=False)
     plot_mesh(m, plotter=p, **kwargs)
     p.camera_position = 'iso'
     p.camera.azimuth = 180
     try:
-        return p.show(jupyter_backend='static')
+        return p.show(jupyter_backend=backend)
     finally:
         p.close()
 

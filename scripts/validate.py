@@ -1,4 +1,6 @@
-import sys, project
+import sys, os
+sys.path.insert(0, os.environ['LP'])
+import project
 
 
 def main(argv):
