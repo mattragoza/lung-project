@@ -16,12 +16,14 @@ from . import solvers
 def _as_warp_array(t: torch.Tensor, **kwargs) -> wp.array:
     return wp.from_torch(t.contiguous().detach(), **kwargs)
 
+
 def _copy_warp_array(src, dst):
     try:
         wp.copy(src=src, dest=dst)
     except RuntimeError as exc:
         print(src.shape, dst.shape)
         raise exc
+
 
 def _torch_grad(a: wp.array) -> torch.Tensor | None:
     return wp.to_torch(a.grad) if a.requires_grad else None
@@ -33,6 +35,7 @@ class WarpFEMSolver(solvers.PDESolver):
         self,
         relative_loss: bool = True,
         tv_reg_weight: float = 1e-4,
+        max_newton_iters: int = 1,
         eps_reg: float = 1e-3,
         eps_div: float = 1e-6,
         cg_tol:  float = 1e-5,
@@ -40,12 +43,14 @@ class WarpFEMSolver(solvers.PDESolver):
         vector_degree: int = 1,
         scalar_dtype = wp.float32,
         vector_dtype = wp.vec3f,
-        device: str = None
+        device: str = 'cuda'
     ):
         # loss and regularization 
         # NOTE: relative loss greatly improves gradient scaling
         self.relative_loss = bool(relative_loss)
         self.tv_reg_weight = float(tv_reg_weight)
+
+        self.max_newton_iters = int(max_newton_iters)
 
         # numerical constants
         self.eps_reg = float(eps_reg)
@@ -77,8 +82,8 @@ class WarpFEMSolver(solvers.PDESolver):
         #   rasterization fails silently- it produces all background values
         # - therefore we explicitly move the geometry to the solver device
 
-        verts = verts.to(self.device)
-        cells = cells.to(self.device)
+        verts = verts.to(str(self.device))
+        cells = cells.to(str(self.device))
 
         with wp.ScopedDevice(self.device):
             verts = _as_warp_array(verts, dtype=self.vector_dtype)
@@ -102,7 +107,8 @@ class WarpFEMSolver(solvers.PDESolver):
             self._initialized = True
 
     def make_scalar_field(self, values=None, requires_grad=None):
-        assert self._initialized, 'Geometry not initialized'
+        if not self._initialized:
+            raise RuntimeError('Geometry not initialized')
 
         s = self.S.make_field() # controlled by ScopedDevice
         if values is not None:
@@ -117,7 +123,8 @@ class WarpFEMSolver(solvers.PDESolver):
         return s
 
     def make_vector_field(self, values=None, requires_grad=None):
-        assert self._initialized, 'Geometry not initialized'
+        if not self._initialized:
+            raise RuntimeError('Geometry not initialized')
 
         v = self.V.make_field() # controlled by ScopedDevice
         if values is not None:
@@ -131,55 +138,48 @@ class WarpFEMSolver(solvers.PDESolver):
 
         return v
 
-    def rasterize_scalar_field(self, values, shape, bounds):
-        field = self.make_scalar_field(values)
-        return rasterize_field(field, shape, bounds)
-
-    def rasterize_vector_field(self, values, shape, bounds):
-        field = self.make_vector_field(values)
-        return rasterize_field(field, shape, bounds)
+    def make_input_fields(self, mu, lam, rho, u_bc):
+        mu = self.make_scalar_field(mu)
+        lam = self.make_scalar_field(lam)
+        rho = self.make_scalar_field(rho)
+        u_bc = self.make_vector_field(u_bc)
+        return mu, lam, rho, u_bc
 
     def solve(self, mu, lam, rho, u_bc):
-
         with wp.ScopedDevice(self.device):
-            mu = self.make_scalar_field(mu)
-            lam = self.make_scalar_field(lam)
-            rho = self.make_scalar_field(rho)
-            u_bc = self.make_vector_field(u_bc)
+            mu, lam, rho, u_bc = self.make_input_fields(mu, lam, rho, u_bc)
 
             K = self.assemble_stiffness(mu, lam)
             f = self.assemble_forcing(rho)
-            M = self.get_preconditioner(K)
 
+            M = self.get_preconditioner(K)
             P = self.assemble_projector()
             u0 = self.apply_lifting(P, u_bc)
-            f_tilde = self.shift_rhs(f, K, u0)
+            fs = self.shift_rhs(f, K, u0)
 
-            u_sim = self.make_vector_field()
-            self.solve_forward(K, u_sim, f_tilde, P, M, u0)
+            u = self.make_vector_field()
+            self.solve_forward(K, u, fs, P, M, u0)
 
-        return wp.to_torch(u_sim.dof_values)
+        return wp.to_torch(u.dof_values)
 
     def forward(self, mu, lam, rho, u_bc, u_obs, mask):
 
         with wp.ScopedDevice(self.device):
-            mu = self.make_scalar_field(mu)
-            lam = self.make_scalar_field(lam)
-            rho = self.make_scalar_field(rho)
-            u_bc = self.make_vector_field(u_bc)
-            u_obs = self.make_vector_field(u_obs)
-            mask = self.make_scalar_field(mask)
+            mu, lam, rho, u_bc = self.make_input_fields(mu, lam, rho, u_bc)
 
             K = self.assemble_stiffness(mu, lam)
             f = self.assemble_forcing(rho)
-            M = self.get_preconditioner(K)
 
+            M = self.get_preconditioner(K)
             P = self.assemble_projector()
             u0 = self.apply_lifting(P, u_bc)
-            f_tilde = self.shift_rhs(f, K, u0)
+            fs = self.shift_rhs(f, K, u0)
 
             u_sim = self.make_vector_field(requires_grad=True)
-            self.solve_forward(K, u_sim, f_tilde, P, M, u0)
+            self.solve_forward(K, u_sim, fs, P, M, u0)
+
+            u_obs = self.make_vector_field(u_obs)
+            mask = self.make_scalar_field(mask)
 
             tape = wp.Tape()
             with tape:
@@ -262,8 +262,7 @@ class WarpFEMSolver(solvers.PDESolver):
         return f
 
     def get_preconditioner(self, K):
-        M = wp.optim.linear.preconditioner(K, ptype='diag')
-        return M
+        return wp.optim.linear.preconditioner(K, ptype='diag')
 
     def assemble_projector(self):
         P = wp.fem.integrate(
@@ -277,37 +276,64 @@ class WarpFEMSolver(solvers.PDESolver):
         return P
 
     def apply_lifting(self, P, u_bc):
-        u0 = P @ u_bc.dof_values
-        return u0
+        return P @ u_bc.dof_values
 
     def shift_rhs(self, f, K, u0):
-        f_tilde = f - (K @ u0)
-        return f_tilde
+        return f - (K @ u0)
 
-    # --- solving linear systems ---
+    # ----- solving linear systems -----
 
-    def solve_forward(self, K, u_sim, f_tilde, P, M, u0):
-        wp.fem.project_linear_system(K, f_tilde, P, normalize_projector=False)
+    def solve_forward(self, J, u, f, P, M, u0):
+        return self.solve_forward_newton(J, u, f, P, M, u0)
+
+    def solve_forward_newton(self, J, u, f, P, M, u0):
+
+        for newton_it in range(self.max_newton_iters):
+            r = f - (J @ u.dof_values)
+            wp.fem.project_linear_system(J, r, P, normalize_projector=False)
+
+            du = self.make_vector_field()
+            it, cg_res, tol = wp.optim.linear.cg(
+                A=J,
+                x=du.dof_values,
+                b=r,
+                M=M,
+                tol=self.cg_tol
+            )
+            if not np.isfinite(cg_res):
+                raise RuntimeError('Non-finite CG residual')
+
+            u.dof_values += du.dof_values
+        u.dof_values += u0
+
+    def solve_forward_linear(self, K, u, f, P, M, u0):
+        wp.fem.project_linear_system(K, f, P, normalize_projector=False)
         it, cg_res, tol = wp.optim.linear.cg(
-            A=K, x=u_sim.dof_values, b=f_tilde, M=M, tol=self.cg_tol
+            A=K,
+            x=u.dof_values,
+            b=f,
+            M=M,
+            tol=self.cg_tol
         )
         if not np.isfinite(cg_res):
-            print(it, cg_res, tol)
-            raise RuntimeError(f'Non-finite CG residual')
-        u_sim.dof_values += u0
+            raise RuntimeError('Non-finite CG residual on forward solve')
+        u.dof_values += u0
 
-    def solve_adjoint(self, K, res, u_sim, P, M):
-        wp.fem.project_linear_system(K, u_sim.dof_values.grad, P, normalize_projector=False)
+    def solve_adjoint(self, K, r, u, P, M):
+        wp.fem.project_linear_system(K, u.dof_values.grad, P, normalize_projector=False)
         it, cg_res, tol = wp.optim.linear.cg(
-            A=K, x=res.dof_values.grad, b=u_sim.dof_values.grad, M=M, tol=self.cg_tol
+            A=K,
+            x=r.dof_values.grad,
+            b=u.dof_values.grad,
+            M=M,
+            tol=self.cg_tol
         )
         if not np.isfinite(cg_res):
-            print(it, cg_res, tol)
-            raise RuntimeError(f'Non-finite CG residual')
+            raise RuntimeError('Non-finite CG residual on adjoint solve')
 
-    # --- residual and loss evaluation ---
+    # ----- residual and loss evaluation -----
 
-    def compute_residual(self, mu, lam, rho, u_sim, res):
+    def compute_residual(self, mu, lam, rho, u_sim, r):
         wp.fem.integrate(
             pde_residual_form,
             fields={
@@ -319,11 +345,10 @@ class WarpFEMSolver(solvers.PDESolver):
             },
             values={'g': self.g, 'I': self.I},
             domain=self.interior,
-            output=res.dof_values
+            output=r.dof_values
         )
 
     def compute_loss(self, mu, lam, rho, u_sim, u_obs, mask):
-
         num = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
         den = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
 
@@ -362,6 +387,16 @@ class WarpFEMSolver(solvers.PDESolver):
         loss = err + reg * self.tv_reg_weight
         loss.requires_grad = True
         return loss
+
+    # ----- rasterization helpers -----
+
+    def rasterize_scalar_field(self, values, shape, bounds):
+        field = self.make_scalar_field(values)
+        return rasterize_field(field, shape, bounds)
+
+    def rasterize_vector_field(self, values, shape, bounds):
+        field = self.make_vector_field(values)
+        return rasterize_field(field, shape, bounds)
 
 
 @wp.fem.integrand
@@ -412,7 +447,9 @@ def inner_form(s: wp.fem.Sample, u: wp.fem.Field, v: wp.fem.Field):
 
 
 @wp.fem.integrand
-def error_form(s: wp.fem.Sample, u: wp.fem.Field, v: wp.fem.Field, w: wp.fem.Field):
+def error_form(
+    s: wp.fem.Sample, u: wp.fem.Field, v: wp.fem.Field, w: wp.fem.Field
+):
     r_s = u(s) - v(s)
     return w(s) * wp.dot(r_s, r_s)
 
