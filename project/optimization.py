@@ -27,6 +27,32 @@ class InitializeSpec:
 # ----- public entry point -----
 
 
+def simulate_example(ex, config):
+
+    unit_m = float(ex.metadata['unit'])
+    sample = datasets.api.load_example(ex)
+    mesh = sample['mesh']
+
+    param_specs = build_parameter_specs(config)
+    init_spec   = build_initialize_spec(config)
+
+    adapter = physics.api.get_adapter(config)
+    bc_spec = physics.api.get_bc_spec(config)
+
+    param_dofs = initialize_param_dofs(
+        phys=adapter,
+        mesh=mesh,
+        unit_m=unit_m,
+        param_specs=param_specs,
+        init_spec=init_spec
+    )
+    with torch.no_grad():
+        params = decode_params(param_specs, param_dofs)
+        output = adapter.simulate(mesh, unit_m, bc_spec, params)
+
+    utils.pprint(output)
+
+
 def optimize_example(ex, config, outputs):
     utils.check_keys(
         config,
@@ -42,7 +68,6 @@ def optimize_example(ex, config, outputs):
         },
         where='optimization'
     )
-
     output_path = outputs.mesh_path(ex, name='optimized')
     raster_dir = outputs.raster_dir(ex)
 
@@ -50,9 +75,9 @@ def optimize_example(ex, config, outputs):
     sample = datasets.api.load_example(ex)
     mesh = sample['mesh']
 
-    param_specs  = build_parameter_specs(config)
-    optim_spec   = build_optimizer_spec(config)
-    init_spec    = build_initialize_spec(config)
+    param_specs = build_parameter_specs(config)
+    optim_spec  = build_optimizer_spec(config)
+    init_spec   = build_initialize_spec(config)
 
     phys_adapter = physics.api.get_adapter(config)
     bc_spec      = physics.api.get_bc_spec(config)
@@ -153,7 +178,7 @@ def optimize_params(
     best_params = None
 
     for trial in range(init_spec.num_restarts):
-        utils.log(f'Trial {trial + 1} / {init_spec.num_restarts}')
+        utils.log(f'Trial {trial + 1}/{init_spec.num_restarts}')
 
         param_dofs = initialize_param_dofs(
             phys=phys,
@@ -235,7 +260,7 @@ def run_optimization_trial(
     history: Dict[str, OptimizationHistory] = {}
 
     if optim_spec.global_steps > 0:
-        utils.log('Stage 1: Global optimization')
+        utils.log('Global optimization')
         optimizer_g = optim_spec.cls(list(param_dofs.values()), **optim_spec.kws)
 
         def closure_g() -> torch.Tensor:
@@ -252,7 +277,7 @@ def run_optimization_trial(
         )
 
     if optim_spec.local_steps > 0:
-        utils.log('Stage 2: Local optimization')
+        utils.log('Local optimization')
         optimizer_l = optim_spec.cls(list(param_dofs.values()), **optim_spec.kws)
 
         def closure_l() -> torch.Tensor:
@@ -442,8 +467,6 @@ class OptimizationHistory:
         self.grad_history: List[float] = []
         self.param_history: List[np.array] = []
 
-        utils.log('iter\tloss (rel_delta)\tgrad_norm (rel_init)\tparam_norm (update_norm)')
-
     def update(self, loss: torch.Tensor, params: List[torch.nn.Parameter]):
         curr_loss = float(loss.detach().item())
         curr_grad = compute_grad_norm(params)
@@ -477,9 +500,9 @@ class OptimizationHistory:
             param_delta = norm(curr_param - prev_param) / max(norm(prev_param), eps)
 
         utils.log(
-            f'{it}\t{curr_loss:.4e} ({loss_delta:.4e})'
-            f'\t{curr_grad:.4e} ({grad_delta:.4e})'
-            f'\t{curr_norm:.4e} ({param_delta:.4e})'
+            f'Iteration {it+1} loss={curr_loss:.4e} ({loss_delta:.4e})'
+            f' grad={curr_grad:.4e} ({grad_delta:.4e})'
+            f' norm={curr_norm:.4e} ({param_delta:.4e})'
         )
 
         if np.isnan(curr_loss) or np.isnan(curr_grad) or np.isnan(curr_norm):
