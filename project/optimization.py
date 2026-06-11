@@ -16,6 +16,7 @@ class OptimizerSpec:
     kws: Dict[str, Any]
     global_steps: int = 10
     local_steps: int = 100
+    tol: float = 1e-3
 
 
 @dataclass
@@ -152,7 +153,8 @@ def build_optimizer_spec(config) -> OptimizerSpec:
         cls=optimizer_cls,
         kws=optimizer_kws,
         global_steps=optimizer_kws.pop('global_steps', 10),
-        local_steps=optimizer_kws.pop('local_steps', 100)
+        local_steps=optimizer_kws.pop('local_steps', 100),
+        tol=optimizer_kws.pop('tol', 1e-3)
     )
 
 
@@ -273,7 +275,7 @@ def run_optimization_trial(
             return loss
 
         history['global'] = optimize_closure(
-            optimizer_g, closure_g, optim_spec.global_steps
+            optimizer_g, closure_g, optim_spec.global_steps, optim_spec.tol
         )
 
     if optim_spec.local_steps > 0:
@@ -290,7 +292,7 @@ def run_optimization_trial(
             return loss
 
         history['local'] = optimize_closure(
-            optimizer_l, closure_l, optim_spec.local_steps
+            optimizer_l, closure_l, optim_spec.local_steps, optim_spec.tol
         )
 
     with torch.no_grad():
@@ -300,7 +302,7 @@ def run_optimization_trial(
     return params, history
 
 
-def optimize_closure(optimizer, closure, max_steps: int = 100):
+def optimize_closure(optimizer, closure, max_steps: int = 100, tol: float = 1e-3):
     history = OptimizationHistory()
 
     params = []
@@ -316,7 +318,7 @@ def optimize_closure(optimizer, closure, max_steps: int = 100):
 
         history.update(loss.detach(), params)
 
-        if history.converged(step):
+        if history.converged(step, tol=tol):
             utils.log('Optimization converged')
             break
 
@@ -506,7 +508,7 @@ class OptimizationHistory:
         )
 
         if np.isnan(curr_loss) or np.isnan(curr_grad) or np.isnan(curr_norm):
-            raise RuntimeError('Optimization encountered nan value')
+            raise RuntimeError('Optimization encountered NaN value')
 
         return loss_delta < tol or grad_delta < tol or param_delta < tol
 

@@ -1,5 +1,5 @@
 from typing import Dict, Tuple, Optional
-
+import math
 import numpy as np
 import torch
 
@@ -39,15 +39,20 @@ def _make_warp_field(space, values=None, requires_grad=None):
     return f
 
 
+def _array_norm(a: wp.array) -> float:
+    return torch.linalg.norm(wp.to_torch(a)).item()
+
+
 class WarpFEMSolver(solvers.PDESolver):
 
     def __init__(
         self,
-        material_type: str,
+        material_type: str = 'linear',
         relative_loss: bool = True,
         tv_reg_weight: float = 1e-4,
         newton_steps: int = 100,
         newton_alpha: float = 1.0,
+        newton_beta: float = 0.5,
         newton_rtol: float = 1e-5,
         cg_maxiter: int = 0,
         cg_rtol: float = 1e-5,
@@ -57,7 +62,8 @@ class WarpFEMSolver(solvers.PDESolver):
         vector_degree: int = 1,
         scalar_dtype = wp.float32,
         vector_dtype = wp.vec3f,
-        device: str = 'cuda'
+        device: str = 'cuda',
+        verbose: bool = False
     ):
         # physical material model
         self.material = forms.WarpMaterial.get_subclass(material_type)
@@ -66,9 +72,10 @@ class WarpFEMSolver(solvers.PDESolver):
         self.relative_loss = bool(relative_loss)
         self.tv_reg_weight = float(tv_reg_weight)
 
-        # Newton's method settings
+        # Newton method settings
         self.newton_steps = int(newton_steps)
-        self.newton_alpha = float(newton_alpha)
+        self.newton_alpha = float(newton_alpha) # init step size
+        self.newton_beta = float(newton_beta)   # step size decay
         self.newton_rtol = float(newton_rtol)
 
         # conjugate gradient settings
@@ -86,6 +93,7 @@ class WarpFEMSolver(solvers.PDESolver):
         self.vector_dtype  = vector_dtype
 
         self.device = device or wp.get_device(device)
+        self.verbose = verbose
 
         self._initialized = False
 
@@ -94,7 +102,7 @@ class WarpFEMSolver(solvers.PDESolver):
     def bind_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
         '''
         Args:
-            verts: (N, 3) float tensor of vertex coords, in meters
+            verts: (N, 3) float tensor of vertex coords in meters
             cells: (M, 4) int tensor of tetra cell vertex indices
         '''
         if not (verts.ndim == 2 and verts.shape[-1] == 3):
@@ -171,37 +179,42 @@ class WarpFEMSolver(solvers.PDESolver):
         mask = self.make_scalar_field(mask)
         return u_obs, mask
 
-    def init_unknown_field(self, u_bc, requires_grad=None):
+    def init_unknown_field(self, u_bc, P, requires_grad=None):
         u = self.make_vector_field(requires_grad=requires_grad)
-        P = self.assemble_boundary_projector()
         u.dof_values += P @ u_bc.dof_values
-        return u, P
+        return u
 
     # ----- public solver interface -----
 
     def solve(self, mu, lam, rho, u_bc):
+
         with wp.ScopedDevice(self.device):
             mu, lam, rho, u_bc = self.make_input_fields(mu, lam, rho, u_bc)
 
-            init_material = self.material.get_linear()
-            u, P = self.init_unknown_field(u_bc, requires_grad=False)
-            J, M = self.solve_newtons_method(init_material, mu, lam, rho, u, P)
+            P = self.assemble_boundary_projector(normalize=True)
+            u = self.init_unknown_field(u_bc, P, requires_grad=False)
 
-            if not self.material.is_linear:
-                J, M = self.solve_newtons_method(self.material, mu, lam, rho, u, P)
+            init_material = self.material.get_linear()
+            if self.material.is_linear:
+                J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
+            else:
+                J, M = self.solve_newton_method(self.material, mu, lam, rho, u, P)
 
         return wp.to_torch(u.dof_values)
 
     def forward(self, mu, lam, rho, u_bc, u_obs, mask):
+
         with wp.ScopedDevice(self.device):
             mu, lam, rho, u_bc = self.make_input_fields(mu, lam, rho, u_bc)
 
-            init_material = self.material.get_linear()
-            u, P = self.init_unknown_field(u_bc, requires_grad=True)
-            J, M = self.solve_newtons_method(init_material, mu, lam, rho, u, P)
+            P = self.assemble_boundary_projector(normalize=True)
+            u = self.init_unknown_field(u_bc, P, requires_grad=True)
 
-            if not self.material.is_linear:
-                J, M = self.solve_newtons_method(self.material, mu, lam, rho, u, P)
+            init_material = self.material.get_linear()
+            if self.material.is_linear:
+                J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
+            else:
+                J, M = self.solve_newton_method(self.material, mu, lam, rho, u, P)
 
             u_obs, mask = self.make_target_fields(u_obs, mask)
 
@@ -220,8 +233,8 @@ class WarpFEMSolver(solvers.PDESolver):
 
         outputs = {
             'u_sim': wp.to_torch(u.dof_values),
-            'res': wp.to_torch(res.dof_values),
-            'loss': wp.to_torch(loss),
+            'res':   wp.to_torch(res.dof_values),
+            'loss':  wp.to_torch(loss),
         }
         context = { # track variables for backward pass
             'mu': mu,
@@ -261,67 +274,31 @@ class WarpFEMSolver(solvers.PDESolver):
 
     # ----- solving systems of equations -----
 
-    def solve_newtons_method(self, material, mu, lam, rho, u, P):
-        J = M = None
-        ares0 = None
+    def solve_linear_system(self, material, mu, lam, rho, u, P):
 
-        def _array_norm(a: wp.array) -> float:
-            return torch.linalg.norm(wp.to_torch(a)).item()
+        r = self.assemble_residual(material, mu, lam, rho, u)
+        J = self.assemble_jacobian(material, mu, lam, u)
 
-        for step in range(self.newton_steps):
-            r = self.assemble_residual(material, mu, lam, rho, u)
-            J = self.assemble_jacobian(material, mu, lam, u)
+        self.project_linear_system(J, r.dof_values, P)
+        M = wp.optim.linear.preconditioner(J, ptype='diag')
 
-            wp.fem.project_linear_system(J, r.dof_values, P, normalize_projector=False)
+        du = self.make_vector_field()
+        cg_iter, cg_ares, cg_atol = wp.optim.linear.cg(
+            A=J,
+            x=du.dof_values,
+            b=r.dof_values,
+            M=M,
+            tol=self.cg_rtol,
+            maxiter=self.cg_maxiter
+        )
+        if not np.isfinite(cg_ares):
+            raise RuntimeError('Non-finite CG residual in linear solve')
 
-            ares = _array_norm(r.dof_values)
-            if ares0 is None:
-                ares0 = ares + self.eps_div
-
-            rres = ares / ares0
-            if rres < self.newton_rtol:
-                print('    Newton solver converged.')
-                break
-
-            M = wp.optim.linear.preconditioner(J, ptype='diag')
-
-            du = self.make_vector_field()
-            cg_iter, cg_ares, cg_atol = wp.optim.linear.cg(
-                A=J,
-                x=du.dof_values,
-                b=r.dof_values,
-                M=M,
-                tol=self.cg_rtol,
-                maxiter=self.cg_maxiter
-            )
-            cg_rres = cg_ares / (cg_atol / self.cg_rtol)
-
-
-            step_id = 'linear' if material.is_linear else f'step {step+1}'
-            print(
-                f'    {step_id}: '
-                f'cg_iter = {cg_iter:d} '
-                #f'cg_ares = {cg_ares:.4e} '
-                #f'cg_atol = {cg_atol:.4f} '
-                f'cg_rres = {cg_rres:.4e} '
-                #f'cg_rtol = {self.cg_rtol:.4e}'
-                f'ares = {ares:.4e}',
-                f'rres = {rres:.4e}',
-            )
-
-            if not np.isfinite(cg_ares):
-                raise RuntimeError('Non-finite CG residual in forward solve')
-
-
-            u.dof_values += self.newton_alpha * du.dof_values
-
-            if material.is_linear:
-                break
-
+        u.dof_values += du.dof_values
         return J, M
 
     def solve_adjoint_system(self, J, r, u, P, M):
-        wp.fem.project_linear_system(J, u.dof_values.grad, P, normalize_projector=False)
+        self.project_linear_system(J, u.dof_values.grad, P)
 
         cg_it, cg_ares, cg_atol = wp.optim.linear.cg(
             A=J,
@@ -331,14 +308,93 @@ class WarpFEMSolver(solvers.PDESolver):
             tol=self.cg_rtol,
             maxiter=self.cg_maxiter
         )
-
         if not np.isfinite(cg_ares):
             raise RuntimeError('Non-finite CG residual in adjoint solve')
+
+    def solve_newton_method(self, material, mu, lam, rho, u, P):
+        base_res = None # base residual norm
+
+        for step in range(self.newton_steps):
+            r = self.assemble_residual(material, mu, lam, rho, u)
+            J = self.assemble_jacobian(material, mu, lam, u)
+
+            self.project_linear_system(J, r.dof_values, P)
+
+            abs_res = _array_norm(r.dof_values)
+            if base_res is None:
+                base_res = abs_res + self.eps_div
+
+            rel_res = abs_res / base_res
+            if rel_res < self.newton_rtol:
+                if self.verbose:
+                    print('    Newton solver converged.')
+                break
+
+            M = wp.optim.linear.preconditioner(J, ptype='diag')
+
+            du = self.make_vector_field()
+            cg_iter, cg_ares, cg_atol = wp.optim.linear.gmres(
+                A=J,
+                x=du.dof_values,
+                b=r.dof_values,
+                M=M,
+                tol=self.cg_rtol,
+                maxiter=self.cg_maxiter
+            )
+            cg_rres = cg_ares / (cg_atol / self.cg_rtol)
+
+            if not np.isfinite(cg_ares):
+                raise RuntimeError(f'Non-finite GMRES residual in Newton step {step+1}')
+
+            alpha = self.adaptive_step_size(
+                material, mu, lam, rho, u, du, P, abs_res
+            )
+            if self.verbose:
+                print(
+                    f'    step {step + 1}: '
+                    f'cg_iter = {cg_iter:d} '
+                    f'cg_rres = {cg_rres:.2e} '
+                    f'abs_res = {abs_res:.2e} '
+                    f'rel_res = {rel_res:.2e} '
+                    f'alpha = {alpha:.2e}'
+                )
+            if alpha <= 0.0:
+                raise RuntimeError(f'Line search failed at Newton step {step+1}')
+
+            u.dof_values += alpha * du.dof_values
+
+        return J, M
+
+    def adaptive_step_size(self, material, mu, lam, rho, u, du, P, init_norm):
+        curr_size = self.newton_alpha
+        best_size = 0.0
+        best_norm = init_norm
+        num_iters = 16
+
+        u_curr = self.make_vector_field()
+
+        for it in range(num_iters):
+            _copy_warp_array(u.dof_values, u_curr.dof_values)
+            u_curr.dof_values += curr_size * du.dof_values
+
+            r = self.assemble_residual(material, mu, lam, rho, u_curr)
+            r.dof_values -= P @ r.dof_values
+            curr_norm = _array_norm(r.dof_values)
+
+            if np.isfinite(curr_norm) and curr_norm < best_norm:
+                best_norm = curr_norm
+                best_size = curr_size
+                return best_size
+
+            curr_size *= self.newton_beta
+
+        return best_size
 
     # ----- internal assembly -----
 
     def assemble_residual(self, material, mu, lam, rho, u, requires_grad=None):
         res = self.make_vector_field(requires_grad=requires_grad)
+
         wp.fem.integrate(
             material.residual_form,
             fields={
@@ -370,7 +426,7 @@ class WarpFEMSolver(solvers.PDESolver):
         )
         return J
 
-    def assemble_boundary_projector(self):
+    def assemble_boundary_projector(self, normalize=False):
         P = wp.fem.integrate(
             forms.inner_product_form,
             fields={'u': self.ub_trial, 'v': self.vb_test},
@@ -378,8 +434,17 @@ class WarpFEMSolver(solvers.PDESolver):
             assembly='nodal',
             output_dtype=self.scalar_dtype
         )
-        wp.fem.normalize_dirichlet_projector(P)
+        if normalize:
+            wp.fem.normalize_dirichlet_projector(P)
         return P
+
+    def project_linear_system(self, A, b, P, normalize=False):
+        wp.fem.project_linear_system(
+            system_matrix=A,
+            system_rhs=b,
+            projector_matrix=P,
+            normalize_projector=normalize
+        )
 
     # ----- loss evaluation -----
 
