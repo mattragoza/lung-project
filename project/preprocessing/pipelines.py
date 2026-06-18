@@ -44,7 +44,7 @@ def preprocess_shapenet(ex, config):
         {'image_generation', 'image_interpolation', 'random_seed'},
         where='preprocessing[shapenet]'
     )
-    base_seed = config.pop('random_seed', 0)
+    base_seed = config.get('random_seed', 0)
     subj_seed = utils.make_seed(base_seed, ex.subject)
 
     run_stage( # binary mask
