@@ -1,4 +1,4 @@
-# preprocessing/pipelines/emory4dct.py
+# preprocessing/pipelines/copdgene.py
 
 from ...core import utils
 from ..runner import run_stage
@@ -15,7 +15,7 @@ def preprocess(ex, config):
 
     for state in ['init_state', 'curr_state']:
         run_stage(
-            stages.resample_image_spacing,
+            stages.images.resample_image_spacing,
             ref_path=ex.paths['ref_state']['source_image'],
             input_path=ex.paths[state]['source_image'],
             output_path=ex.paths[state]['resampled_image'],
@@ -24,21 +24,21 @@ def preprocess(ex, config):
 
     for state in ['init_state', 'curr_state']:
         run_stage(
-            stages.create_segmentation_masks,
+            stages.masks.create_segmentation_masks,
             input_path=ex.paths[state]['resampled_image'],
             segment_dir=ex.paths[state]['segment_dir'],
             output_path=ex.paths[state]['combined_mask'],
             config=config.get('image_segmentation', {})
         )
         run_stage(
-            stages.create_multi_region_map,
+            stages.regions.map_regions_from_masks,
             input_dir=ex.paths[state]['segment_dir'],
             output_path=ex.paths[state]['region_map'],
             config=config.get('region_labeling', {})
         )
 
     run_stage(
-        stages.register_displacement_field,
+        stages.registration.estimate_displacement,
         fixed_image=ex.paths['init_state']['resampled_image'],
         moving_image=ex.paths['curr_state']['resampled_image'],
         fixed_mask=ex.paths['init_state']['combined_mask'],
@@ -47,13 +47,13 @@ def preprocess(ex, config):
         config=config.get('image_registration', {})
     )
     run_stage(
-        stages.generate_tetrahedral_mesh,
+        stages.meshes.generate_volume_mesh,
         mask_path=ex.paths['region_map'],
         output_path=ex.paths['region_mesh'],
         config=config.get('mesh_generation', {})
     )
     run_stage(
-        stages.interpolate_mesh_fields,
+        stages.fields.interpolate_mesh_fields,
         mesh_path=ex.paths['region_mesh'],
         image_path=ex.paths['input_image'],
         disp_path=ex.paths['disp_field'],

@@ -1,4 +1,7 @@
-from __future__ import annotations
+# preprocessing/registration.py
+
+from pathlib import Path
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -44,7 +47,6 @@ def run_unigradicon_registration(
     **kwargs
 ):
     import tempfile
-    from pathlib import Path
 
     with tempfile.TemporaryDirectory() as tmpdir:
         transform_path = Path(tmpdir) / 'transform.hdf5'
@@ -85,7 +87,6 @@ def run_unigradicon_command(
     weights: str = 'network_weights/gradicon_lung1.0/Step_2_final.trch'
 ):
     import os, subprocess
-    from pathlib import Path
 
     if model not in {'unigradicon', 'multigradicon', 'gradiconlung'}:
         raise ValueError(f'Invalid model: {model!r}')

@@ -1,7 +1,9 @@
+# preprocessing/textures.py
+
 from __future__ import annotations
 from dataclasses import dataclass
-from functools import lru_cache
 import numpy as np
+import scipy
 
 from ..core import utils, fileio, transforms
 
@@ -70,7 +72,7 @@ class TextureCache:
         self._cache.clear()
 
 
-def load_texture_annotations(path: str):
+def load_texture_annotations(path: str) -> pd.DataFrame:
     import pandas as pd
 
     df = pd.read_csv(path)
@@ -237,7 +239,7 @@ def describe_texture(tex: np.ndarray):
     utils.log(f'median (IQR): {p50:.4f} ({p75 - p25:.4f})')
 
 
-# ----- texture vizualization -----
+# ----- texture visualization -----
 
 
 def plot_histogram(tex, bins, alpha=0.2):

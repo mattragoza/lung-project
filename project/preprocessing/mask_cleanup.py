@@ -1,3 +1,5 @@
+# preprocessing/mask_cleanup.py
+
 import numpy as np
 import scipy
 import skimage

@@ -1,3 +1,5 @@
+# preprocessing/segmentation.py
+
 from typing import List, Optional
 
 TASK_ROIS = {

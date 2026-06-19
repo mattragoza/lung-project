@@ -1,11 +1,16 @@
-from typing import Dict, List, Tuple, Iterable, Optional, Any
+# preprocessing/surface_meshing.py
+
+from typing import Dict, Tuple, Any
+
 import numpy as np
 import trimesh
 
 from ..core import utils, transforms
 
 
-def repair_surface_mesh(mesh: trimesh.Trimesh, use_pymeshfix: False) -> trimesh.Trimesh:
+def repair_surface_mesh(
+    mesh: trimesh.Trimesh, use_pymeshfix: bool = False
+) -> trimesh.Trimesh:
     '''
     Process a triangular mesh to fix several issues
     and attempt to make it a watertight surface.
@@ -72,10 +77,12 @@ def count_unique_edges(faces: np.ndarray) -> np.ndarray:
     return np.unique(e, axis=0, return_counts=True)
 
 
-# --- mesh region labels ---
+# ----- mesh region labels ----
 
 
-def extract_face_labels(scene: trimesh.Scene):
+def extract_face_labels(
+    scene: trimesh.Scene
+) -> Tuple[trimesh.Trimesh, np.ndarray]:
     '''
     Args:
         scene: trimesh.Scene with multiple geometries
