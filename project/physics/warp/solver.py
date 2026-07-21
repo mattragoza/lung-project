@@ -194,7 +194,6 @@ class WarpFEMSolver(solvers.PDESolver):
             P = self.assemble_boundary_projector(normalize=True)
             u = self.init_unknown_field(u_bc, P, requires_grad=False)
 
-            init_material = self.material.get_linear()
             if self.material.is_linear:
                 J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
             else:
@@ -210,7 +209,6 @@ class WarpFEMSolver(solvers.PDESolver):
             P = self.assemble_boundary_projector(normalize=True)
             u = self.init_unknown_field(u_bc, P, requires_grad=True)
 
-            init_material = self.material.get_linear()
             if self.material.is_linear:
                 J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
             else:
@@ -325,7 +323,7 @@ class WarpFEMSolver(solvers.PDESolver):
                 base_res = abs_res + self.eps_div
 
             rel_res = abs_res / base_res
-            if rel_res < self.newton_rtol:
+            if rel_res < self.newton_rtol: # converged
                 if self.verbose:
                     print('    Newton solver converged.')
                 break
@@ -341,7 +339,7 @@ class WarpFEMSolver(solvers.PDESolver):
                 tol=self.cg_rtol,
                 maxiter=self.cg_maxiter
             )
-            cg_rres = cg_ares / (cg_atol / self.cg_rtol)
+            cg_rres = cg_ares / cg_atol * self.cg_rtol
 
             if not np.isfinite(cg_ares):
                 raise RuntimeError(f'Non-finite GMRES residual in Newton step {step+1}')

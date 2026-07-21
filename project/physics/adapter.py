@@ -8,6 +8,8 @@ from ..core import transforms, utils
 
 from . import context, solvers
 
+MATERIAL_KEYS = ('E', 'nu', 'G', 'K', 'mu', 'lam', 'rho')
+
 
 def _as_mesh_field(
     ctx: context.PhysicsContext,
@@ -86,60 +88,80 @@ class PhysicsAdapter:
 
     # ----- material parameters -----
 
-    def has_material_params(self, ctx: context.PhysicsContext) -> bool:
-        try:
-            self.get_material_params(ctx)
-            return True
-        except (KeyError, IndexError):
-            return False
+    def get_context_params(self, ctx: context.PhysicsContext) -> Dict[str, torch.Tensor]:
+        out = {}
+        for key in MATERIAL_KEYS:
+            try:
+                out[key] = ctx.fields[key][self.scalar_degree]
+            except (KeyError, IndexError):
+                pass
+        return out
 
-    def get_material_params(self, ctx: context.PhysicsContext) -> Dict[str, torch.Tensor]:
-        return {
-            'E': ctx.fields['E'][self.scalar_degree],
-            'rho': ctx.fields['rho'][self.scalar_degree]
-        }
-
-    def get_canonical_params(
+    def get_resolved_params(
         self,
         ctx: context.PhysicsContext,
         params: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+
+        resolved = {}
+        resolved.update(self.get_context_params(ctx))
+
+        if params is not None: # override params
+            resolved.update(params)
+
+        if 'rho' not in resolved: # fallback to default
+            shape = (ctx.points[self.scalar_degree].shape[0],)
+            resolved['rho'] = torch.full(shape, self.default_rho)
+
+        return resolved
+
+    def canonicalize_params(
+        self, params: Dict[str, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
-        params = dict(params)
-        rho = params.pop('rho', None)
-        if rho is None:
-            template = next(iter(params.values()))
-            rho = torch.full_like(template, self.default_rho)
+        params = params.copy()
+        rho = params.pop('rho')
 
         elast_keys = tuple(sorted(params.keys()))
 
         if elast_keys == ('E',):
-            E, nu = params['E'], self.default_nu
+            E = params['E']
+            nu = self.default_nu
             mu = E / (2*(1 + nu))
             lam = E * nu / ((1 + nu)*(1 - 2*nu))
 
         elif elast_keys == ('E', 'nu'):
             E, nu = params['E'], params['nu']
-            if torch.any(nu > 0.49):
-                utils.warn(f'Material is nearly incompressible: {nu.max()}')
             mu = E / (2*(1 + nu))
             lam = E * nu / ((1 + nu)*(1 - 2*nu))
 
         elif elast_keys == ('E', 'K'):
             E, K = params['E'], params['K']
             mu = 3*K*E /  (9*K - E)
-            lam = K - (2/3)*mu
+            lam = K - (2/3) * mu
 
         elif elast_keys == ('G', 'K'):
             G, K = params['G'], params['K']
-            mu, lam = G, K - (2/3)*G
+            mu = G
+            lam = K - (2/3) * G
 
         elif elast_keys == ('mu', 'lam'):
             mu, lam = params['mu'], params['lam']
+
         else:
-            raise ValueError(f'Unsupported elasticity keys: {elast_keys}')
+            raise KeyError(f'Unsupported elasticity keys: {elast_keys}')
+
+        # check incompressibility
+        K = lam + (2/3) * mu
+        ratio = K / mu
+        if torch.any(ratio > 100):
+            utils.warn(f'Material is nearly incompressible: K/G = {ratio.max().item()}')
 
         return mu, lam, rho
+
+    def get_canonical_params(self, ctx, params):
+        resolved = self.get_resolved_params(ctx, params)
+        return self.canonicalize_params(resolved)
 
     # ----- boundary conditions -----
 
@@ -223,8 +245,6 @@ class PhysicsAdapter:
         params: Dict[str, torch.Tensor] = None
     ):
         ctx = self.get_pde_context(mesh, unit_m)
-        if params is None:
-            params = self.get_material_params(ctx)
 
         u_bc = self.get_boundary_condition(ctx, bc_spec)
         mu, lam, rho = self.get_canonical_params(ctx, params)
@@ -232,10 +252,10 @@ class PhysicsAdapter:
         self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
         u_sim = self.pde_solver.solve(mu, lam, rho, u_bc)
 
-        if self.has_material_params(ctx):
-            true_params = self.get_material_params(ctx)
+        try:
+            true_params = self.get_context_params(ctx)
             mu_t, lam_t, rho_t = self.get_canonical_params(ctx, true_params)
-        else:
+        except KeyError:
             true_params = {}
             mu_t = lam_t = rho_t = None
 
@@ -279,10 +299,10 @@ class PhysicsAdapter:
         if not ret_outputs:
             return loss
 
-        if self.has_material_params(ctx):
-            true_params = self.get_material_params(ctx)
+        try:
+            true_params = self.get_context_params(ctx)
             mu_t, lam_t, rho_t = self.get_canonical_params(ctx, true_params)
-        else:
+        except KeyError:
             true_params = {}
             mu_t = lam_t = rho_t = None
     
