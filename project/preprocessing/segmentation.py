@@ -33,6 +33,10 @@ TASK_ROIS = {
 }
 
 
+def run_segmentation_task(image_path, output_dir, model_name):
+    # write output_dir/<mask_name>.nii.gz
+
+
 def run_segmentation_task(
     image_path,
     output_dir,

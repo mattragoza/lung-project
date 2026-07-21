@@ -1,13 +1,49 @@
-import pathlib
-import numpy as np
-import xarray as xr
-import nibabel as nib
-import scipy.stats
-import pygalmesh
-import meshio
-import torch
+from typing import List, Dict, Tuple, Iterable, Optional, Any
+from pathlib import Path
 
-from . import data, meshing, interpolation, pde, utils
+from . import base
+from ..core import utils
+
+
+class PhantomDataset(base.Dataset):
+
+    def __init__(self, root, source):
+        super().__init__(root)
+        self.source = source
+
+    def derived_path(
+        self,
+        subject: str,
+        variant: str,
+        asset_type: str,
+        asset_name: str
+    ):
+        base_dir = self.root / 'synthetic' / variant / subject
+        raise RuntimeError(f'Invalid derived asset type: {asset_type!r}')
+
+    def examples(
+        self, subjects, variant,
+    ):
+        for ex in self.source.examples(subjects, variant):
+
+            paths = {}
+            paths['input_image'] = ex.paths['input_image']
+            paths['interp_mesh'] = ...
+            paths['region_map'] = ...
+            paths['material_map'] = ...
+
+            meta = {}
+
+            yield base.Example(
+                dataset='Phantom',
+                variant=variant,
+                subject=sid,
+                paths=paths,
+                metadata=meta
+            )
+
+
+## DEPRECATED
 
 
 class PhantomSet(object):
