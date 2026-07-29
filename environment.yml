@@ -8,25 +8,27 @@ dependencies:
   - scipy
   - scikit-image
   - scikit-learn
-  - pytorch::pytorch
-  - pytorch::pytorch-cuda=12.4
-  - pytorch::torchvision
-  - nibabel
+  - pytorch-gpu>=2.1.2
+  - cuda-version=12.4
+  - torchvision
+  - nibabel>=2.3.0
   - simpleitk
+  - monai
   - meshio
   - pygalmesh
   - warp-lang
   - matplotlib
   - seaborn
-  - ipython
-  - ipykernel
-  - ipywidgets
-  - ipympl
   - pyvista
   - trame
   - trame-vtk
   - trame-vuetify
-  - pytest
+  - vtk=9.3.1
+  - ipykernel
+  - ipywidgets
+  - ipympl
   - pip
   - pip:
     - TotalSegmentator
+    - git+ssh://git@github.com/uncbiag/uniGradICONLung.git
+
