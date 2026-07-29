@@ -19,11 +19,11 @@ dependencies:
   - warp-lang
   - matplotlib
   - seaborn
+  - vtk=9.3.1
   - pyvista
   - trame
   - trame-vtk
   - trame-vuetify
-  - vtk=9.3.1
   - ipykernel
   - ipywidgets
   - ipympl
@@ -31,4 +31,3 @@ dependencies:
   - pip:
     - TotalSegmentator
     - git+ssh://git@github.com/uncbiag/uniGradICONLung.git
-

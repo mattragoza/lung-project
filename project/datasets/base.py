@@ -24,7 +24,7 @@ def _resolve_subject_list(val: str|Path|List[str], col='subject') -> List[str]:
     from ..core import fileio
     if isinstance(val, str):
         if val.endswith('.csv'):
-            return fileio.load_subject_list(val, key=col)
+            return fileio.load_subject_list(val, key=col, sep='\t')
         elif val.endswith('.txt'):
             return fileio.load_subject_list(val, key=0, header=None)
         return val.split(',')

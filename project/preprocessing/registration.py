@@ -1,6 +1,7 @@
 # preprocessing/registration.py
 
 from __future__ import annotations
+import os
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +9,9 @@ import torch
 import torch.nn.functional as F
 
 from ..core import utils, fileio
+
+PROJECT_ROOT = Path(os.environ['LP'])
+WEIGHTS_ROOT = PROJECT_ROOT / 'network_weights'
 
 
 def _as_tensor(a, device):
@@ -45,20 +49,26 @@ def run_unigradicon_registration(
     fixed_mask: Path,
     moving_mask: Path,
     output_path: Path,
+    weights_root: Path = WEIGHTS_ROOT
     **kwargs
 ):
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        transform_path = Path(tmpdir) / 'transform.hdf5'
-        raw_disp_path = Path(tmpdir) / 'raw_disp.nii.gz'
+        tmpdir = Path(tmpdir)
+        transform_path = tmpdir / 'transform.hdf5'
+        raw_disp_path = tmpdir / 'raw_disp.nii.gz'
 
-        run_unigradicon_command(
+        weights_link = Path('network_weights')
+        if not weights_link.exists():
+            weights_link.symlink_to(weights_root, target_is_directory=True)
+
+        run_unigradicon_main(
             fixed_image=fixed_image,
             fixed_mask=fixed_mask,
             moving_image=moving_image,
             moving_mask=moving_mask,
-            output_path=transform_path,
+            transform_out=transform_path,
             **kwargs
         )
         convert_itk_transform(
@@ -72,55 +82,79 @@ def run_unigradicon_registration(
         )
 
 
-def run_unigradicon_command(
-    fixed_image: Path,
-    fixed_mask: Path,
-    moving_image: Path,
-    moving_mask: Path,
-    output_path: Path,
-    model: str = 'unigradicon',
-    io_sim: str = 'lncc2',
+def run_unigradicon_main(
+    fixed_image: str,
+    moving_image: str,
+    fixed_mask: str,
+    moving_mask: str,
+    fixed_modality: str = 'ct',
+    moving_modality: str = 'ct',
+    transform_out: str = 'transform.hdf5',
+    warped_moving_out: str = 'warped_out.nrrd',
     io_iterations: int = 50,
-    io_sigma: int = 1,
-    loss_function_masking: bool = False,
-    intensity_conservation: bool = False,
-    executable: str = 'unigradicon-register',
-    weights: str = 'network_weights/gradicon_lung1.0/Step_2_final.trch'
+    learning_rate: float = 2e-5,
+    sigma: int = 5,
+    io_sim: int = 'lncc',
+    model: str = 'unigradicon',
+    loss_function_masking: bool = True,
+    intensity_conservation_loss: bool = False
 ):
-    import os, subprocess
+    import itk, unigradicon
 
-    if model not in {'unigradicon', 'multigradicon', 'gradiconlung'}:
-        raise ValueError(f'Invalid model: {model!r}')
-    if io_sim not in {'lncc', 'lncc2', 'mind'}:
-        raise ValueError(f'Invalid io_sim: {io_sim!r}')
+    if intensity_conservation_loss:
+        if fixed_modality != 'ct' or moving_modality != 'ct':
+            raise ValueError('Intensity conservation loss is only supported for CT images.')
 
-    rel_path = Path(weights)
-    abs_path = Path(os.environ['LP']) / weights
+    net = unigradicon.get_model_from_model_zoo(
+        model,
+        loss_fn=unigradicon.make_sim(io_sim, sigma),
+        apply_intensity_conservation_loss=intensity_conservation_loss,
+        use_intersection=False
+    )
+    fixed_image = itk.imread(fixed_image)
+    moving_image = itk.imread(moving_image)
 
-    if not rel_path.exists():
-        rel_path.parent.mkdir(parents=True, exist_ok=True)
-        os.symlink(abs_path, rel_path)
+    if fixed_mask is not None:
+        fixed_mask = itk.imread(fixed_mask)
+    if moving_mask is not None:
+        moving_mask = itk.imread(moving_mask)
 
-    cmd = [
-        str(executable),
-        f'--fixed={fixed_image}',
-        f'--fixed_modality=ct',
-        f'--fixed_segmentation={fixed_mask}',
-        f'--moving={moving_image}',
-        f'--moving_segmentation={moving_mask}',
-        f'--moving_modality=ct',
-        f'--transform_out={output_path}',
-        f'--model={model}',
-        f'--io_sim={io_sim}',
-        f'--io_iterations={io_iterations}',
-        f'--sigma={io_sigma}'
-    ]
+    pre_fixed_image = unigradicon.preprocess(moving_image, moving_modality)
+    pre_moving_image = unigradicon.preprocess(fixed_image, fixed_modality)
+
     if loss_function_masking:
-        cmd.append('--loss_function_masking')
-    if intensity_conservation:
-        cmd.append('--intensity_conservation_loss')
+        phi_AB, phi_BA = unigradicon.register_pair_with_mask(
+            net,
+            pre_moving_image,
+            pre_fixed_image,
+            moving_mask,
+            fixed_mask,
+            finetune_steps=io_iterations,
+            lr=learning_rate
+        )
+    else:
+        phi_AB, phi_BA = unigradicon.register_pair(
+            net,
+            pre_moving_image,
+            pre_fixed_image,
+            finetune_steps=io_iterations,
+            lr=learning_rate
+        )
 
-    subprocess.run(cmd, check=True)
+    itk.transformwrite([phi_AB], transform_out)
+
+    if warped_moving_out:
+        moving_image, maybe_cast_back = unigradicon.maybe_cast(moving_image)
+        interpolator = itk.LinearInterpolateImageFunction.New(moving_image)
+        warped_moving_image = itk.resample_image_filter(
+            moving_image,
+            transform=phi_AB,
+            interpolator=interpolator,
+            use_reference_image=True,
+            reference_image=fixed_image
+        )
+        warped_moving_image = maybe_cast_back(warped_moving_image)
+        itk.imwrite(warped_moving_image, warped_moving_out)
 
 
 def convert_itk_transform(
