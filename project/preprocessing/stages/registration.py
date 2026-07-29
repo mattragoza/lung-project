@@ -6,7 +6,7 @@ from pathlib import Path
 from ...core import utils, fileio
 
 
-def estimate_displacement(
+def estimate_displacement_field(
     fixed_image: Path,
     moving_image: Path,
     fixed_mask: Path,
@@ -16,13 +16,13 @@ def estimate_displacement(
 ):
     utils.check_keys(
         config,
-        valid={'method', 'args'},
+        valid={'method', 'kwargs'},
         where='image_registration'
     )
     from .. import registration
 
     method = config.get('method', 'corrfield').lower()
-    kwargs = config.get('args', {})
+    kwargs = config.get('kwargs', {})
 
     if method == 'corrfield':
         utils.log('Running CorrField registration')

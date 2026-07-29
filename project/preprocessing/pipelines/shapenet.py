@@ -76,7 +76,7 @@ def preprocess(ex, config):
         config=config.get('image_interpolation', {})
     )
     run_stage( # simulate mesh
-        stages.simulation.simulate_displacement,
+        stages.simulation.simulate_displacement_field,
         mesh_path=ex.paths['interp_mesh'],
         output_path=ex.paths['simulate_mesh'],
         unit_m=ex.metadata['unit'],

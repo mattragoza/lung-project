@@ -7,30 +7,42 @@ import numpy as np
 from ...core import utils, fileio
 
 
-def create_segmentation_masks(input_path, segment_dir, output_path, config):
+def create_segmentation_masks(
+    image_path: Path,
+    segment_dir: Path, # individual masks for each class
+    output_path: Path, # combined mask across all classes
+    config: Dict[str, Any]
+):
     utils.check_keys(
         config,
-        valid={'tasks', 'combine'},
+        valid={'tasks'},
         where='image_segmentation'
     )
     from .. import segmentation
 
+    utils.log('Running segmentation tasks')
     segment_dir.mkdir(parents=True, exist_ok=True)
 
-    for task_kws in config.get('tasks', []):
-        task_name = task_kws['task_name']
-        utils.log(f'Running TotalSegmentator task: {task_name}')
-        segmentation.run_segmentation_task(input_path, segment_dir, **task_kws)
+    for task_config in config.get('tasks', []):
+        segmentation.run_segmentation_task(
+            image_path=image_path,
+            output_dir=segment_dir,
+            config=task_config
+        )
 
-    if config.get('combine'):
-        utils.log('Combining segmentation masks: lung')
-        nifti = segmentation.combine_segmentation_masks(segment_dir, class_type='lung')
+    utils.log('Combining segmentation masks')
+    nifti = segmentation.combine_segmentation_masks(segment_dir, class_type='lung')
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        fileio.save_nibabel(output_path, nifti.get_fdata(), nifti.affine)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(output_path, nifti.get_fdata(), nifti.affine)
 
 
-def convert_binvox_mask(mask_path, mesh_path, output_path, config):
+def convert_binvox_mask(
+    mask_path: Path,
+    mesh_path: Path,
+    output_path: Path,
+    config: Dict[str, Any]
+):
     utils.check_keys(
         config,
         valid={'foreground_filter', 'background_filter', 'center_mask', 'pad_amount'},

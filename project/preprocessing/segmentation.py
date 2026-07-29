@@ -1,8 +1,11 @@
 # preprocessing/segmentation.py
 
-from typing import List, Optional
+from typing import List, Dict, Any, Optional
+from pathlib import Path
 
-TASK_ROIS = {
+from ..core import utils
+
+TS_LABELS_BY_TASK = {
     'total': [
         'lung_upper_lobe_right',
         'lung_middle_lobe_right',
@@ -32,24 +35,55 @@ TASK_ROIS = {
     ]
 }
 
-
-def run_segmentation_task(image_path, output_dir, model_name):
-    # write output_dir/<mask_name>.nii.gz
+VF_LABELS = [
+    "nodule",
+    "ggo",
+    "consolidation",
+    "emphysema",
+    "honeycombing",
+    "pleural_effusion"
+]
 
 
 def run_segmentation_task(
-    image_path,
-    output_dir,
-    task_name: str,
-    roi_subset: Optional[List[str]] = None
+    image_path: Path,
+    output_dir: Path,
+    config: Dict[str, Any]
 ):
-	from totalsegmentator import python_api
-	return python_api.totalsegmentator(
-		image_path, output_dir, task=task_name, roi_subset=roi_subset
-	)
+    utils.check_keys(
+        config,
+        valid={'method', 'kwargs'},
+        where='image_segmentation.task'
+    )
+    method = config.get('method', 'totalsegmentator').lower()
+    kwargs = config.get('kwargs', {})
+
+    if method == 'totalsegmentator':
+        from totalsegmentator import python_api
+        task = kwargs.pop('task', 'total')
+        utils.log(f'Running TotalSegmentator task: {task}')
+
+        return python_api.totalsegmentator(
+            input=image_path,
+            output=output_dir,
+            task=task,
+            **kwargs
+        )
+
+    elif method == 'visionfeature':
+        from VisionFeature import segmentation
+        utils.log('Running VisionFeature segmentation')
+    
+        return segmentation.create_segmentation_masks(
+            image_path=image_path,
+            output_dir=output_dir,
+            **kwargs
+        )
+    else:
+        raise ValueError(f'Invalid segmentation method: {method!r}')
 
 
-def combine_segmentation_masks(mask_dir, class_type: str = 'lung'):
-	from totalsegmentator import libs
-	return libs.combine_masks(mask_dir, class_type)
+def combine_segmentation_masks(mask_dir: Path, class_type: str = 'lung'):
+    from totalsegmentator import libs
+    return libs.combine_masks(mask_dir, class_type)
 

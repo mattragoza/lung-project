@@ -6,7 +6,7 @@ from pathlib import Path
 from ...core import utils, fileio
 
 
-def simulate_displacement(
+def simulate_displacement_field(
     mesh_path, output_path, unit_m, config, random_seed=0
 ):
     utils.check_keys(

@@ -49,7 +49,7 @@ def run_unigradicon_registration(
     fixed_mask: Path,
     moving_mask: Path,
     output_path: Path,
-    weights_root: Path = WEIGHTS_ROOT
+    weights_root: Path = WEIGHTS_ROOT,
     **kwargs
 ):
     import tempfile

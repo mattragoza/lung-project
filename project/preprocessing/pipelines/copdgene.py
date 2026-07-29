@@ -8,7 +8,8 @@ from .. import stages
 def preprocess(ex, config):
     utils.check_keys(
         config,
-        {'image_resampling', 'image_segmentation', 'region_labeling'} |
+        {'image_resampling'} |
+        {'image_segmentation', 'region_labeling'} |
         {'image_registration', 'mesh_generation', 'mesh_interpolation'},
         where='preprocessing[copdgene]'
     )
@@ -25,7 +26,7 @@ def preprocess(ex, config):
     for state in ['init_state', 'curr_state']:
         run_stage(
             stages.masks.create_segmentation_masks,
-            input_path=ex.paths[state]['resampled_image'],
+            image_path=ex.paths[state]['resampled_image'],
             segment_dir=ex.paths[state]['segment_dir'],
             output_path=ex.paths[state]['combined_mask'],
             config=config.get('image_segmentation', {})
@@ -38,7 +39,7 @@ def preprocess(ex, config):
         )
 
     run_stage(
-        stages.registration.estimate_displacement,
+        stages.registration.estimate_displacement_field,
         fixed_image=ex.paths['init_state']['resampled_image'],
         moving_image=ex.paths['curr_state']['resampled_image'],
         fixed_mask=ex.paths['init_state']['combined_mask'],
