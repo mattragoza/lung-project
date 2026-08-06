@@ -4,11 +4,11 @@ import warp.fem
 
 def _resolve_material_type(name: str):
     n = name.lower()
-    if n in {'linear', 'linear_elastic'}:
+    if n in {'linear_elastic', 'linear', 'le'}:
         return LinearElasticMaterial
-    elif n in {'st_venant_kirchoff', 'stvk'}:
+    elif n in {'st_venant_kirchoff', 'stvk', 'vk'}:
         return StVenantKirchoffMaterial
-    elif n in {'neo_hookean', 'neohookean'}:
+    elif n in {'neo_hookean', 'neohookean', 'nh'}:
         return NeoHookeanMaterial
     raise ValueError(f'Invalid material type: {name!r}')
 
@@ -58,7 +58,7 @@ def linear_elastic_jacobian_form(
     return wp.ddot(sigma, wp.fem.D(v, s))
 
 
-# ---- geometric nonlinearity ----
+# ----- geometric nonlinearity -----
 
 
 @wp.fem.integrand

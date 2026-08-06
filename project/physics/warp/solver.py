@@ -110,8 +110,8 @@ class WarpFEMSolver(solvers.PDESolver):
         if not (cells.ndim == 2 and cells.shape[-1] == 4):
             raise ValueError(f'Invalid cells shape: {cells.shape!r}')
 
-        # ScopedDevice doesn't affect wp.from_torch, only new arrays
-        # so we need to explicitly move geometry to solver device
+        # ScopedDevice doesn't affect wp.from_torch- only new arrays,
+        # so we need to explicitly move the geometry to solver device
         verts = verts.to(str(self.device))
         cells = cells.to(str(self.device))
 

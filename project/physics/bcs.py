@@ -1,7 +1,9 @@
+from typing import Any
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class BoundaryConditionSpec:
-    name: str
+    type: str
+    value: Any
 

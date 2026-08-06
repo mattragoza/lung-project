@@ -7,41 +7,33 @@ from ...core import utils, fileio
 
 
 def simulate_displacement_field(
-    mesh_path, output_path, unit_m, config, random_seed=0
+    mesh_path: Path,
+    output_path: Path,
+    unit_m: float,
+    config: Dict[str, Any]
 ):
     utils.check_keys(
         config,
-        valid={'physics_adapter', 'pde_solver'},
+        valid={'physics_adapter', 'pde_solver', 'boundary_condition', 'output_key'},
         where='displacement_simulation'
     )
-    import numpy as np
     from ... import physics
 
     mesh = fileio.load_meshio(mesh_path)
     utils.log(mesh)
 
-    physics_adapter_kws = config.get('physics_adapter', {})
-    pde_solver_kws = config.get('pde_solver', {}).copy()
+    if len(mesh.cells) != 1 or mesh.cells[0].type != 'tetra':
+        block_types = [b.type for b in mesh.cells]
+        raise ValueError(f'Expected exactly one tetra cell block: {block_types}')
 
-    physics_adapter = physics.PhysicsAdapter(
-        pde_solver_cls=pde_solver_kws.pop('_class'),
-        pde_solver_kws=pde_solver_kws,
-        **physics_adapter_kws
-    )
-    bc_spec = None #physics_adapter.get_bc_spec(random_seed)
-    outputs = physics_adapter.simulate(mesh, unit_m, bc_spec)
+    adapter = physics.api.get_adapter(config)
+    bc_spec = physics.api.get_bc_spec(config)
 
-    for k, v in outputs.items():
-        utils.log((k, v.shape, v.dtype, v.mean()))
+    u_sim = adapter.simulate(mesh, unit_m, bc_spec)
 
-        if v.shape[0] == mesh.points.shape[0]:
-            mesh.point_data[k] = v.astype(np.float32)
-
-        elif v.shape[0] == mesh.cells_dict['tetra'].shape[0]:
-            mesh.cell_data[k] = [v.astype(np.float32)]
-
-        else:
-            raise ValueError(f'Invalid mesh field shape: {v.shape}')
+    output_key = config.get('output_key', 'u')
+    mesh.point_data[output_key] = u_sim.nodes.detach().cpu().numpy()
+    mesh.cell_data[output_key] = [u_sim.cells.detach().cpu().numpy()]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_meshio(output_path, mesh)

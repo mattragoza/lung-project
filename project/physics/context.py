@@ -22,6 +22,13 @@ class MeshField:
             return self.nodes
         raise IndexError(f'No values for degree {degree}')
 
+    def __hasitem__(self, degree: int) -> bool:
+        if degree == 0 and self.cells is not None:
+            return True
+        if degree == 1 and self.nodes is not None:
+            return True
+        return False
+
 
 class PhysicsContext:
     '''
@@ -75,8 +82,9 @@ class PhysicsContext:
         # observation cache: bc_spec -> (u_bc, u_obs)
         self.obs_cache: Dict[Any, Tuple[MeshField, MeshField]] = {}
 
-        if _add_field('u_true', dtype=torch.float):
-            bc_spec = bcs.BoundaryConditionSpec(name='u_true')
-            u_bc_field = u_obs_field = self.fields['u_true'] 
-            self.obs_cache[bc_spec] = (u_bc_field, u_obs_field)
+        for key in sorted(mesh.cell_data_dict | mesh.point_data):
+            if key.startswith('u_') and _add_field(key, dtype=torch.float):
+                bc_spec = bcs.BoundaryConditionSpec(type='mesh_key', value=key)
+                u_bc_field = u_obs_field = self.fields[key] 
+                self.obs_cache[bc_spec] = (u_bc_field, u_obs_field)
 
