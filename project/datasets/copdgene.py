@@ -132,6 +132,8 @@ class COPDGeneDataset(base.Dataset):
             return base_dir / 'meshes' /  f'{asset_name}.xdmf'
         elif asset_type == 'field':
             return base_dir / 'fields' / f'{asset_name}.nii.gz'
+        elif asset_type == 'field_dir':
+            return base_dir / 'fields' / f'{asset_name}'
 
         raise RuntimeError(f'Invalid derived asset type: {asset_type!r}')
 
@@ -154,12 +156,14 @@ class COPDGeneDataset(base.Dataset):
         state_pairs = list(state_pairs or self.state_pairs())
 
         pipeline_tags = pipeline_tags or {}
-        img_tag = pipeline_tags.get('image_resampling',   'std')
+        img_tag = pipeline_tags.get('image_resampling',    'std')
         seg_tag = pipeline_tags.get('image_segmentation', 'tseg')
         reg_tag = pipeline_tags.get('image_registration', 'corr')
-        map_tag = pipeline_tags.get('region_labeling',    'regions')
-        gen_tag = pipeline_tags.get('mesh_generation',    'pyg')
-        int_tag = pipeline_tags.get('mesh_interpolation', 'int')
+        map_tag = pipeline_tags.get('anatomical_regions', 'anat')
+        mat_tag = pipeline_tags.get('material_properties', 'mat')
+        gen_tag = pipeline_tags.get('mesh_generation',     'pyg')
+        int_tag = pipeline_tags.get('mesh_interpolation',  'int')
+        sim_tag = pipeline_tags.get('forward_simulation',  'sim')
 
         for sid in subject_list:
             m = self.subject_metadata(sid)
@@ -192,19 +196,25 @@ class COPDGeneDataset(base.Dataset):
                     paths['curr_state']['resampled_image'] = self.derived_path(sid, variant, 'image', f'{sid}_{curr_state}_{img_tag}')
 
                     paths['init_state']['segment_dir'] = self.derived_path(sid, variant, 'mask_dir', f'{sid}_{init_state}_{img_tag}_{seg_tag}')
-                    paths['init_state']['combined_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{init_state}_{img_tag}_{seg_tag}_combined')
-                    paths['init_state']['region_map'] = self.derived_path(sid, variant, 'mask',  f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}')
-
                     paths['curr_state']['segment_dir'] = self.derived_path(sid, variant, 'mask_dir', f'{sid}_{curr_state}_{img_tag}_{seg_tag}')
-                    paths['curr_state']['combined_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{curr_state}_{img_tag}_{seg_tag}_combined')
-                    paths['curr_state']['region_map'] = self.derived_path(sid, variant, 'mask',  f'{sid}_{curr_state}_{img_tag}_{seg_tag}_{map_tag}')
+
+                    paths['init_state']['domain_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{init_state}_{img_tag}_{seg_tag}_domain')
+                    paths['curr_state']['domain_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{curr_state}_{img_tag}_{seg_tag}_domain')
+
+                    paths['anatomical_map'] = self.derived_path(sid, variant, 'mask',  f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}')
+                    paths['anatomical_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}')
+
+                    paths['material_map'] = self.derived_path(sid, variant, 'field', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{mat_tag}_label')
+                    paths['material_dir'] = self.derived_path(sid, variant, 'field_dir', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{mat_tag}')
 
                     paths['disp_field'] = self.derived_path(sid, variant, 'field', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{reg_tag}_{curr_state}')
-                    paths['region_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}')
-                    paths['interp_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}_{reg_tag}_{curr_state}_{int_tag}')
+                    paths['interp_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{reg_tag}_{curr_state}_{map_tag}_{gen_tag}_{mat_tag}_{int_tag}')
+                    paths['forward_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{reg_tag}_{curr_state}_{map_tag}_{gen_tag}_{mat_tag}_{int_tag}_{sim_tag}')
 
+                    # required training paths
                     paths['input_image'] = paths['init_state']['resampled_image']
-                    paths['region_map'] = paths['init_state']['region_map']
+                    paths['domain_mask'] = paths['init_state']['domain_mask']
+                    paths['target_mesh'] = paths['forward_mesh']
 
                 yield base.Example(
                     dataset='COPDGene',

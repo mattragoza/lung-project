@@ -68,27 +68,29 @@ class TorchDataset(torch.utils.data.Dataset):
         self._cache.clear()
 
     def load_example(self, ex):
-        paths.require_paths(ex, keys=['input_image', 'interp_mesh', 'region_map'])
+        paths.require_paths(ex, keys=['input_image', 'domain_mask', 'physics_mesh'])
 
         image = fileio.load_nibabel(ex.paths['input_image'])
-        mesh  = fileio.load_meshio(ex.paths['interp_mesh'])
-        mask  = fileio.load_nibabel(ex.paths['region_map'])
+        mask  = fileio.load_nibabel(ex.paths['domain_mask'])
+        mesh  = fileio.load_meshio(ex.paths['physics_mesh'])
 
         image_a = image.get_fdata()
-        if self.rgb:
-            assert image_a.ndim == 4 and image_a.shape[-1] == 3
-        else:
-            assert image_a.ndim == 3
-            image_a = image_a[...,None] # add channel dim
+        if self.rgb and not (image_a.ndim == 4 and image_a.shape[-1] == 3) or image_a.ndim != 3:
+            raise ValueError(f'Invalid image shape: {image_a.shape}')
+
+        if image_a.shape.ndim == 3: # add channel dim
+            image_a = image_a[...,None]
 
         mask_a = mask.get_fdata()
+        if mask_a.shape != image_a.shape[:3]:
+            raise ValueError(f'Mask shape mismatch: {mask_a.shape} vs. {image_a.shape}')
 
         def _as_cpu_tensor(a, dtype):
             return torch.as_tensor(a, dtype=dtype, device='cpu')
 
         affine_t = _as_cpu_tensor(image.affine, dtype=torch.float)
-        image_t  = _as_cpu_tensor(image_a, dtype=torch.float).permute(3,0,1,2)
-        mask_t   = _as_cpu_tensor(mask_a, dtype=torch.long).unsqueeze(0) > 0
+        image_t  = _as_cpu_tensor(image_a, dtype=torch.float).permute(3,0,1,2) # (C, X, Y, Z)
+        mask_t   = _as_cpu_tensor(mask_a, dtype=torch.long).unsqueeze(0) > 0   # (1, X, Y, Z)
 
         if self.normalize:
             image_t = (image_t - self.image_mean) / self.image_std

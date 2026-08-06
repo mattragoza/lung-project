@@ -7,6 +7,66 @@ import numpy as np
 from ...core import utils, fileio
 
 
+def assign_tissue_properties(
+    domain_path: Path,
+    segment_dir: Path,
+    output_path: Path,
+    fields_dir: Path,
+    config: Dict[str, Any]
+):
+    for key in config:
+        utils.check_keys(
+            config[key],
+            valid={'priority', 'density', 'youngs_modulus', 'poisson_ratio'},
+            where=f'tissue_properties.{key}'
+        )
+
+    nifti = fileio.load_nibabel(domain_path)
+    domain = nifti.get_fdata() > 0
+    affine = nifti.affine
+
+    masks = {}
+    for label in config:
+        if label == 'background':
+            masks[label] = ~domain
+        elif label == 'normal':
+            masks[label] = domain.copy()
+        else:
+            mask_path = segment_dir / f'{label}.nii.gz'
+            nifti = fileio.load_nibabel(mask_path)
+
+            if nifti.shape != domain.shape:
+                raise ValueError('shape mismatch')
+            if not np.allclose(nifti.affine, affine):
+                raise ValueError('affine mismatch')
+            
+            masks[label] = (nifti.get_fdata() > 0) & domain
+
+    shape = domain.shape
+    labels = np.zeros(shape, dtype=np.int16)
+    density = np.zeros(shape, dtype=np.float32)
+    youngs  = np.zeros(shape, dtype=np.float32)
+    poisson = np.zeros(shape, dtype=np.float32)
+
+    by_priority = sorted(config.items(), key=lambda x: x[1]['priority'])
+
+    for idx, (label, material) in enumerate(by_priority):
+        mask = masks[label]
+        labels[mask]  = idx
+        density[mask] = material['density']
+        youngs[mask]  = material['youngs_modulus']
+        poisson[mask] = material['poisson_ratio']
+
+    # write output paths
+    fields_dir.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(fields_dir / f'density.nii.gz', density, affine)
+    fileio.save_nibabel(fields_dir / f'youngs_modulus.nii.gz', youngs, affine)
+    fileio.save_nibabel(fields_dir / f'poisson_ratio.nii.gz', poisson, affine)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.save_nibabel(output_path, labels, affine)
+
+
 def assign_materials_to_regions(
     mask_path,
     output_path,

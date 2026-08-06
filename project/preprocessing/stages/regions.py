@@ -7,14 +7,13 @@ import numpy as np
 from ...core import utils, fileio
 
 
-def map_regions_from_masks(input_dir, output_path, config):
+def label_anatomical_regions(input_dir, output_path, config):
     utils.check_keys(
         config,
         valid={'roi_order', 'region_filter'},
-        where='region_labeling'
+        where='anatomical_regions'
     )
     import scipy
-
     from .. import mask_cleanup
 
     if not input_dir.is_dir():
