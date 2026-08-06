@@ -56,7 +56,7 @@ def resample_image_spacing(input_path, output_path, ref_path, config):
     src_image = fileio.load_simpleitk(input_path)
     ref_image = fileio.load_simpleitk(ref_path)
 
-    utils.log('Resampling image using reference grid')
+    utils.log('Resampling image on reference grid')
     output_image = image_resampling.resample_image(src_image, ref_image, **config)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

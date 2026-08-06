@@ -10,8 +10,7 @@ import torch.nn.functional as F
 
 from ..core import utils, fileio
 
-PROJECT_ROOT = Path(os.environ['LP'])
-WEIGHTS_ROOT = PROJECT_ROOT / 'network_weights'
+WEIGHTS_ROOT = Path(os.environ.get('LP_ROOT', '.')) / 'network_weights'
 
 
 def _as_tensor(a, device):

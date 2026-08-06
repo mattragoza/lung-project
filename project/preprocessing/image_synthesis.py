@@ -6,7 +6,7 @@ from typing import Dict
 import numpy as np
 import scipy.ndimage
 
-from ..core import utils
+from ..core import utils, transforms, interpolation
 
 
 def generate_simple_image(
@@ -23,7 +23,7 @@ def generate_simple_image(
     assert mat_mask.ndim == 3
 
     I, J, K = mat_mask.shape
-    points = grid_coords((I, J, K)).astype(np.float32)
+    points = transforms.grid_coords((I, J, K)).astype(np.float32)
 
     shape = (I, J, K, 3) if rgb else (I, J, K)
     image = np.zeros(shape, dtype=np.float32)
@@ -42,65 +42,10 @@ def generate_simple_image(
         tex_ctr = (np.array(tex.shape[:3]) - 1) / 2
         tex_pts = (img_pts - img_ctr) * texel_scale + tex_ctr
 
-        interp_pts = random_rigid_transform(tex_pts, trans_sigma, rng)
-        image[loc] = interpolate_volume(tex, interp_pts, interp_order, interp_mode)
+        interp_pts = transforms.random_rigid_transform(tex_pts, trans_sigma, rng)
+        image[loc] = interpolation.interpolate_array(tex, interp_pts, interp_order, interp_mode)
 
     return image
-
-
-def grid_coords(shape, axis=-1):
-    xs = (np.arange(n) for n in shape)
-    xs = np.meshgrid(*xs, indexing='ij')
-    return np.stack(xs, axis=axis)
-
-
-def random_rigid_transform(points, sigma=0, rng=None):
-    import scipy.stats as stats
-
-    points = np.asarray(points)
-    assert points.ndim == 2 and points.shape[-1] == 3
-
-    R = stats.special_ortho_group.rvs(3, random_state=rng)
-    t = rng.normal(scale=sigma, size=3)
-
-    center = points.mean(axis=0)
-    return (points - center) @ R.T + t + center
-
-
-def interpolate_volume(vol, points, order=1, mode='wrap', background=0):
-    import scipy.ndimage
-    vol, pts = np.asarray(vol), np.asarray(points)
-
-    assert vol.ndim in {3, 4}, vol.shape
-    rgb = (vol.ndim == 4)
-    if rgb:
-        assert vol.shape[-1] == 3, vol.shape
-
-    assert pts.ndim == 2 and pts.shape[-1] == 3, pts.shape
-    
-    if not rgb:
-        return scipy.ndimage.map_coordinates(
-            input=vol,
-            coordinates=pts.T,
-            order=order,
-            prefilter=(order > 1),
-            mode=mode,
-            cval=background
-        )
-
-    out_shape = (pts.shape[0], 3)
-    out = np.full(out_shape, background, dtype=vol.dtype)
-    
-    for c in range(3):
-        out[:,c] = scipy.ndimage.map_coordinates(
-            input=vol[...,c],
-            coordinates=pts.T,
-            order=order,
-            prefilter=(order > 1),
-            mode=mode,
-            cval=background
-        )
-    return out
 
 
 ## DEPRECATED

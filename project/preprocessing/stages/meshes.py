@@ -26,7 +26,7 @@ def repair_surface_mesh(input_path, output_path, config):
     fileio.save_meshio(output_path, mesh)
 
 
-def generate_volume_mesh(mask_path, output_path, config, random_seed=0):
+def generate_tetrahedral_mesh(mask_path, output_path, config, random_seed=0):
     utils.check_keys(
         config,
         valid={'use_affine_spacing', 'mesh_parameters'},

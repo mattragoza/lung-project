@@ -5,19 +5,23 @@ from pathlib import Path
 
 from ..core import utils
 
+VALID_METHODS = ['totalsegmentator', 'visionfeature']
+DEFAULT_METHOD = 'totalsegmentator'
+DEFAULT_TS_TASK = 'total'
+
 TS_LABELS_BY_TASK = {
     'total': [
         'lung_upper_lobe_right',
         'lung_middle_lobe_right',
         'lung_lower_lobe_right',
         'lung_upper_lobe_left',
-        'lung_lower_lobe_left',
+        'lung_lower_lobe_left'
     ],
     'lung_vessels': [
         'lung_airways',
         'lung_airways_wall',
         'lung_arteries',
-        'lung_veins',
+        'lung_veins'
     ],
     'lung_vessels_LEGACY': [
         'lung_trachea_bronchia',
@@ -55,15 +59,15 @@ def run_segmentation_task(
         valid={'method', 'kwargs'},
         where='image_segmentation.task'
     )
-    method = config.get('method', 'totalsegmentator').lower()
+    method = config.get('method', DEFAULT_METHOD).lower()
     kwargs = config.get('kwargs', {})
 
     if method == 'totalsegmentator':
-        from totalsegmentator import python_api
-        task = kwargs.pop('task', 'total')
+        from totalsegmentator import python_api as ts_api
+        task = kwargs.pop('task', DEFAULT_TS_TASK)
         utils.log(f'Running TotalSegmentator task: {task}')
 
-        return python_api.totalsegmentator(
+        return ts_api.totalsegmentator(
             input=image_path,
             output=output_dir,
             task=task,
@@ -71,16 +75,21 @@ def run_segmentation_task(
         )
 
     elif method == 'visionfeature':
-        from VisionFeature import segmentation
+        import os
+        os.environ.pop('nnUNet_raw')
+        os.environ.pop('nnUNet_preprocessed')
+        os.environ.pop('nnUNet_results')
+
+        from VisionFeature import segmentation_api as vf_api
         utils.log('Running VisionFeature segmentation')
     
-        return segmentation.create_segmentation_masks(
+        return vf_api.segment_case(
             image_path=image_path,
             output_dir=output_dir,
             **kwargs
         )
-    else:
-        raise ValueError(f'Invalid segmentation method: {method!r}')
+
+    raise ValueError(f'Invalid segmentation method: {method!r}')
 
 
 def combine_segmentation_masks(mask_dir: Path, class_type: str = 'lung'):

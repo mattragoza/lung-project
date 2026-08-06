@@ -1,52 +1,104 @@
-# TODO: consider moving or deprecating.
-
 import numpy as np
 import torch
 
 
-def interpolate_image(
-    image: torch.Tensor,
-    points: torch.Tensor,
-    mode: str='trilinear',
-    padding: str='border',
-    align_corners: bool=True,
-    reshape: bool=True
+def interpolate_array(
+    volume: np.ndarray,
+    points: np.ndarray,
+    order: int = 1,
+    mode: str = 'nearest',
+    cval: float = 0.0
 ):
     '''
     Args:
-        image:  (C, I, J, K) input image tensor
-        points: (N, 3) tensor of voxel coordinates,
-            where component order == image dim order
+        volume: (I, J, K) or (I, J, K, C) input array
+        points: (N, 3) array of voxel 3D coordinates,
+            where component order == array axis order
     Returns:
-        (N, C) tensor of interpolated image values
+        (N,) or (N, C) array of interpolated values
+    '''
+    from scipy import ndimage
+
+    vol, pts = np.asarray(volume), np.asarray(points)
+
+    if vol.ndim not in {3, 4}:
+        raise ValueError(f'Invalid volume shape: {vol.shape}')
+
+    if pts.ndim != 2 or pts.shape[-1] != 3:
+        raise ValueError(f'Invalid points shape: {pts.shape}')
+
+    if vol.ndim == 3: # single channel
+        return ndimage.map_coordinates(
+            input=vol,
+            coordinates=pts.T,
+            order=order,
+            prefilter=(order > 1),
+            mode=mode,
+            cval=cval
+        )
+
+    n_channels = vol.shape[-1]
+    out = np.zeros((len(pts), n_channels), dtype=np.float32)
+    
+    for c in range(n_channels):
+        out[:,c] = ndimage.map_coordinates(
+            input=vol[...,c],
+            coordinates=pts.T,
+            order=order,
+            prefilter=(order > 1),
+            mode=mode,
+            cval=cval
+        )
+
+    return out # (N, C)
+
+
+def interpolate_tensor(
+    volume: torch.Tensor,
+    points: torch.Tensor,
+    mode: str = 'trilinear',
+    padding: str = 'border',
+    align_corners: bool = True,
+    reshape: bool = True
+):
+    '''
+    Args:
+        volume: (C, I, J, K) input volume tensor
+        points: (N, 3) tensor of voxel 3D coordinates,
+            where component order == tensor dim order
+    Returns:
+        (N, C) tensor of interpolated input values
     '''
     from . import transforms
     import torch.nn.functional as F
 
-    assert image.ndim == 4, image.shape
-    assert points.ndim == 2 and points.shape[-1] == 3, points.shape
+    if volume.ndim != 4:
+        raise ValueError(f'Invalid volume shape: {volume.shape}')
+
+    if points.ndim != 2 or points.shape[-1] != 3:
+        raise ValueError(f'Invalid points shape: {points.shape}')
+
+    if mode in {'linear', 'trilinear'}: # convenience alias
+        mode = 'bilinear'
 
     points = transforms.normalize_voxel_coords(
         points=points,
-        shape=image.shape[1:],
+        shape=volume.shape[1:],
         align_corners=align_corners,
         flip_order=True
     )
-    if mode in {'trilinear', 'linear'}:
-        mode = 'bilinear'
 
     output = F.grid_sample(
-        input=image[None,:,:,:,:],       # (B, C, I, J, K)
+        input=volume[None,:,:,:,:],      # (B, C, I, J, K)
         grid=points[None,None,None,:,:], # (B, L, M, N, 3)
         mode=mode,
         padding_mode=padding,
         align_corners=align_corners
-    ) # (B, C, L, M, N)
+    )[0] # (B, C, L, M, N) -> (C, L, M, N)
 
     if reshape:
-        return output[0,:,0,0,:].T # (N, C)
-    else:
-        return output[0] # (C, L, M, N)
+        return output[:,0,0,:].T # (N, C)
+    return output
 
 
 def deform_image(

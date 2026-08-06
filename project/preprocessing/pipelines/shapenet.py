@@ -37,7 +37,7 @@ def preprocess(ex, config):
         config=config.get('region_map', {})
     )
     run_stage(
-        stages.meshes.generate_volume_mesh,
+        stages.meshes.generate_tetrahedral_mesh,
         mask_path=ex.paths['region_map'],
         output_path=ex.paths['volume_mesh'],
         config=config.get('volume_mesh', {}),

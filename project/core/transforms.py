@@ -346,3 +346,15 @@ def apply_rigid_transform(points, transform):
     output = to_homo_coords(points) @ T.T
     return output[:,:3] / output[:,3:4]
 
+
+def random_rigid_transform(points, sigma=0, rng=None):
+    import scipy.stats as stats
+
+    points = np.asarray(points)
+    assert points.ndim == 2 and points.shape[-1] == 3
+
+    R = stats.special_ortho_group.rvs(3, random_state=rng)
+    t = rng.normal(scale=sigma, size=3)
+
+    center = points.mean(axis=0)
+    return (points - center) @ R.T + t + center
