@@ -31,7 +31,7 @@ def validate_example(ex, config):
     if dataset == 'shapenet':
         return validate_shapenet(ex, **config)
     elif dataset == 'copdgene':
-        raise NotImplementedError(ex.dataset)
+        raise validate_copdgene(ex, **config)
     elif dataset == 'emory4dct':
         raise NotImplementedError(ex.dataset)
     elif dataset == 'bmc4dct':
@@ -39,9 +39,145 @@ def validate_example(ex, config):
     raise ValueError(f'Invalid dataset: {ex.dataset!r}')
 
 
+def validate_copdgene(ex):
+    res = {}
+    if ex is None:
+        return _fail(res, reason='example is none')
+    if not isinstance(ex, Example):
+        return _fail(res, reason='not an example object')
+
+    res |= namespace(validate_subject(ex.subject), name='subject')
+    if not res['subject.valid']:
+        return _fail(res, reason=res['subject.reasons'])
+
+    res |= namespace(validate_paths(ex.paths), name='paths')
+    if not res['paths.valid']:
+        return _fail(res, reason=res['paths.reasons'])
+
+    return _pass(res)
+
+
+def validate_subject(sid):
+    res = {'value': sid}
+    if missing_value(sid):
+        return _fail(res, reason='subject is missing')
+    if not isinstance(sid, str):
+        return _fail(res, reason='subject is not a string')
+    return _pass(res)
+
+
+def validate_paths(paths): # copdgene version
+    res = {}
+    if missing_value(paths):
+        return _fail(res, reason='paths is missing')
+    if not isinstance(paths, dict):
+        return _fail(res, reason='paths is not a dict')
+
+    res |= namespace(validate_state(paths.get('init_state')), name='init_state')
+    if not res['init_state.valid']:
+        return _fail(res, reason=res['init_state.reasons'])
+
+    res |= namespace(validate_state(paths.get('curr_state')), name='curr_state')
+    if not res['curr_state.valid']:
+        return _fail(res, reason=res['curr_state.reasons'])
+    
+    return _pass(res)
+
+
+def validate_state(state):
+    res = {}
+    if missing_value(state):
+        return _fail(res, reason='state is missing')
+    if not isinstance(state, dict):
+        return _fail(res, reason='state is not a dict')
+
+    res |= namespace(validate_nifti_path(state.get('source_image')), name='source_image')
+    if not res['source_image.valid']:
+        return _fail(res, reason=res['source_image.reasons'])
+    
+    return _pass(res)
+
+
+def validate_nifti_path(path):
+    res = {}
+    if missing_value(path):
+        return _fail(res, reason='path is missing')
+    if not isinstance(path, Path):
+        return _fail(res, reason='not a path object')
+
+    res['exists'] = path.is_file()
+    if not res['exists']:
+        return _fail(res, reason='file does not exist')
+        
+    res['fsize'] = path.stat().st_size
+    if res['fsize'] == 0:
+        return _fail(res, reason='file size is zero')
+
+    try:
+        loaded = project.core.fileio.load_nibabel(path)
+        res['error'] = None
+
+        res |= namespace(validate_nifti_image(loaded), name='loaded')
+        if not res['loaded.valid']:
+            return _fail(res, reason=res['loaded.reasons'])
+        
+    except Exception as e:
+        res['error'] = e
+        return _fail(res, reason='failed to load')
+
+    return _pass(res)
+
+
+def validate_nifti_image(nifti):
+    res = {}
+    if missing_value(nifti):
+        return _fail(res, reason='nifti is missing')
+
+    res |= namespace(validate_shape(nifti.shape), name='shape')
+    if not res['shape.valid']:
+        return _fail(res, reason=res['shape.reasons'])
+    
+    res |= namespace(validate_affine(nifti.affine), name='affine')
+    if not res['affine.valid']:
+        return _fail(res, reason=res['affine.reasons'])
+    
+    return _pass(res)
+
+
+def validate_affine(affine):
+    res = {'value': affine}
+    if affine is None:
+        return _fail(res, reason='affine is none')
+    if not isinstance(affine, np.ndarray):
+        return _fail(res, reason='affine is not an array')
+    res['shape'] = affine.shape
+    if affine.shape != (4, 4):
+        return _fail(res, reason='affine is not 4 x 4')
+    return _pass(res)
+
+
+def validate_shape(shape):
+    res = {'value': shape}
+    if missing_value(shape):
+        return _fail(res, reason='shape is missing')
+    if not isinstance(shape, tuple):
+        return _fail(res, reason='shape is not a tuple')
+    if len(shape) != 3:
+        return _fail(res, reason='shape is not length 3')
+    if not all(isinstance(d, int) for d in shape):
+        return _fail(res, reason='shape dim not an int')
+    if not all(d > 1 for d in shape):
+        return _fail(res, reason='shape dim not > 1')
+    res['product'] = np.prod(shape)
+    return _pass(res)
+
+
 def validate_bmc4dct(ex):
     metrics = {'subject': ex.subject}
     return metrics
+
+
+# ----- shapenet validation -----
 
 
 def validate_shapenet(
