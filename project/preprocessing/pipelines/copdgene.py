@@ -9,7 +9,7 @@ def preprocess(ex, config):
     utils.check_keys(
         config,
         {'image_resampling', 'image_segmentation', 'image_registration'} |
-        {'anatomical_regions', 'tissue_properties', 'mesh_generation'} |
+        {'anatomical_regions', 'material_properties', 'mesh_generation'} |
         {'mesh_interpolation', 'forward_simulation'},
         where='preprocessing[copdgene]'
     )
@@ -49,12 +49,12 @@ def preprocess(ex, config):
     )
 
     run_stage(
-        stages.materials.assign_tissue_properties,
+        stages.materials.assign_material_properties,
         domain_path=ex.paths['init_state']['domain_mask'],
         segment_dir=ex.paths['init_state']['segment_dir'],
         output_path=ex.paths['material_map'],
         fields_dir=ex.paths['material_dir'],
-        config=config.get('tissue_properties', {})
+        config=config.get('material_properties', {})
     )
 
     run_stage(

@@ -7,7 +7,7 @@ import numpy as np
 from ...core import utils, fileio
 
 
-def assign_tissue_properties(
+def assign_material_properties(
     domain_path: Path,
     segment_dir: Path,
     output_path: Path,
@@ -18,7 +18,7 @@ def assign_tissue_properties(
         utils.check_keys(
             config[key],
             valid={'priority', 'density', 'youngs_modulus', 'poisson_ratio'},
-            where=f'tissue_properties.{key}'
+            where=f'material_properties.{key}'
         )
 
     nifti = fileio.load_nibabel(domain_path)
@@ -27,6 +27,7 @@ def assign_tissue_properties(
 
     masks = {}
     for label in config:
+
         if label == 'background':
             masks[label] = ~domain
         elif label == 'normal':
@@ -39,7 +40,7 @@ def assign_tissue_properties(
                 raise ValueError('shape mismatch')
             if not np.allclose(nifti.affine, affine):
                 raise ValueError('affine mismatch')
-            
+
             masks[label] = (nifti.get_fdata() > 0) & domain
 
     shape = domain.shape
