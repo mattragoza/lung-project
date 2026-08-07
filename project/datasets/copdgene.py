@@ -58,6 +58,7 @@ class COPDGeneDataset(base.Dataset):
                     fields/<field_name>.nii.gz
     '''
     META_PATH = 'ClinicalData/phase1_Final_10K/phase 1 Pheno/Final10000_Phase1_Rev_28oct16.txt'
+    META_SEP  = '\t'
     SUBJ_COLUMN = 'sid'
     SITE_COLUMN = 'ccenter'
     KERNEL_COLUMN = 'kernel'
@@ -73,7 +74,7 @@ class COPDGeneDataset(base.Dataset):
 
     def load_metadata(self):
         import pandas as pd
-        self._metadata = pd.read_csv(self.root / self.META_PATH, sep='\t', low_memory=False)
+        self._metadata = pd.read_csv(self.root / self.META_PATH, sep=self.META_SEP, low_memory=False)
         self._metadata.set_index(self.SUBJ_COLUMN, inplace=True)
         self._metadata_loaded = True
 
@@ -139,15 +140,13 @@ class COPDGeneDataset(base.Dataset):
 
     def examples(
         self,
-        subjects: Optional[str|Path|List[str]] = None,
+        subjects: Optional[List[str]] = None,
         variant: Optional[str] = None,
         visit: Optional[str] = None,
         state_pairs: Optional[List[Tuple[str, str]]] = None,
         pipeline_tags: Dict[str, str] = None
     ):
-        from .base import _resolve_subject_list
-        subject_iter = subjects or self.subjects()
-        subject_list = _resolve_subject_list(subject_iter, col=self.SUBJ_COLUMN)
+        subject_list = list(subjects or self.subjects())
 
         if variant is not None:
             variant = str(variant)

@@ -3,6 +3,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _resolve_subject_list(subjects: str|Path|Iterable[str], col='subject', sep='\t') -> List[str]:
+    from ..core import fileio
+    if isinstance(subjects, (str, Path)):
+        subjects = str(subjects)
+        if subjects.endswith('.csv'):
+            return fileio.load_subject_list(subjects, key=col, sep=sep)
+        elif subjects.endswith('.txt'):
+            return fileio.load_subject_list(subjects, key=0, header=None)
+    elif hasattr(subjects, '__iter__'):
+        return [str(v) for v in subjects]
+    raise TypeError(f'Invalid subject list: {subjects!r}')
+
+
 def _resolve_dataset_name(name: str):
     n = name.lower()
     if n in {'shapenet', 'shapenetsem'}:
@@ -20,21 +33,6 @@ def _resolve_dataset_name(name: str):
     raise ValueError(f'Invalid dataset name: {name!r}')
 
 
-def _resolve_subject_list(val: str|Path|List[str], col='subject') -> List[str]:
-    from ..core import fileio
-    if isinstance(val, str):
-        if val.endswith('.csv'):
-            return fileio.load_subject_list(val, key=col, sep='\t')
-        elif val.endswith('.txt'):
-            return fileio.load_subject_list(val, key=0, header=None)
-        return val.split(',')
-    elif isinstance(val, Path):
-        return fileio.load_subject_list(val, key=col)
-    elif hasattr(val, '__iter__'):
-        return [str(v) for v in val]
-    return [str(val)]
-
-
 @dataclass
 class Example:
     dataset:  str
@@ -45,6 +43,8 @@ class Example:
 
 
 class Dataset:
+    SUBJ_COLUMN = None
+    META_SEP = None
 
     @classmethod
     def get_subclass(cls, name: str):
@@ -95,6 +95,18 @@ class Dataset:
     ) -> Iterable[Example]:
         raise NotImplementedError
 
-    def list_examples(self, *args, **kwargs) -> List[Example]:
-        return list(self.examples(*args, **kwargs))
+    # ----- convenience API wrapper -----
+
+    def list_examples(
+        self,
+        subjects: str|Path|Iterable[str],
+        **kwargs
+    ) -> List[Example]:
+
+        subject_list = _resolve_subject_list(
+            subjects,
+            col=self.SUBJ_COLUMN,
+            sep=self.META_SEP
+        )
+        return list(self.examples(subject_list, **kwargs))
 

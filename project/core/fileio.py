@@ -114,12 +114,10 @@ def load_xyz(path, dtype=float):
     return np.array(data, dtype=dtype)
 
 
-def load_subject_list(path, key='subject', **csv_kws):
+def load_subject_list(path, key='subject', **kwargs):
     import pandas as pd
-    df = pd.read_csv(path, **csv_kws)
-    try:
-        return df[key].to_list()
-    except Exception:
-        print(df.columns)
-        raise
+    df = pd.read_csv(path, **kwargs)
+    if key not in df:
+        raise KeyError(f'Missing column: {key!r} vs. {df.columns}')
+    return df[key].to_list()
 

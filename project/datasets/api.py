@@ -1,14 +1,9 @@
-from . import base
-
-from ..core import utils
-
-
-def get_subjects(config):
-    raise NotImplementedError
+from typing import List, Iterable
 
 
 def get_subclass(config):
-    return base.Dataset.get_subclass(config['name'])
+    from .base import Dataset
+    return Dataset.get_subclass(config['name'])
 
 
 def get_dataset(config):
@@ -17,6 +12,6 @@ def get_dataset(config):
 
 
 def load_example(ex, **kwargs):
-    from . import torch
-    return torch.TorchDataset([ex], **kwargs)[0]
+    from .torch import TorchDataset
+    return TorchDataset([ex], **kwargs)[0]
 
