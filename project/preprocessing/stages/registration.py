@@ -25,7 +25,7 @@ def estimate_displacement_field(
     kwargs = config.get('kwargs', {})
 
     if method == 'corrfield':
-        utils.log('Running CorrField registration')
+        utils.log('Running deformable registration: CorrField')
 
         registration.run_corrfield_registration(
             fixed_image=fixed_image,
@@ -36,7 +36,7 @@ def estimate_displacement_field(
         )
 
     elif method == 'unigradicon':
-        utils.log('Running uniGradICON registration')
+        utils.log('Running deformable registration: uniGradICON')
     
         registration.run_unigradicon_registration(
             fixed_image=fixed_image,

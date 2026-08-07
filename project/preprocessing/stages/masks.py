@@ -20,7 +20,7 @@ def create_segmentation_masks(
     )
     from .. import segmentation
 
-    utils.log('Running segmentation tasks')
+    utils.log('Starting image segmentation')
     segment_dir.mkdir(parents=True, exist_ok=True)
 
     for task_config in config.get('tasks', []):

@@ -40,7 +40,7 @@ def generate_mesh_from_mask(
     spacing = _get_pygalmesh_spacing(affine, use_affine)
 
     utils.log('Running pygalmesh generation')
-    raw_mesh = run_pygalmesh_generate(
+    raw_mesh = run_pygalmesh_generation(
         mask=mask,
         spacing=spacing,
         random_seed=random_seed,
@@ -62,18 +62,18 @@ def generate_mesh_from_mask(
     utils.log('Removing unreferenced points')
     mesh = remove_unreferenced_points(mesh)
 
-    utils.log('Converting to world coordinates')
+    utils.log('Mapping to world coordinates')
     mesh = convert_to_world_coords(mesh, spacing, affine)
 
+    utils.log(mesh)
     n_components = count_connected_components(mesh, cell_type='tetra')
     if n_components != 1:
         utils.warn(f'WARNING: mesh has {n_components} components')
 
-    utils.log(mesh)
     return mesh
 
 
-def run_pygalmesh_generate(
+def run_pygalmesh_generation(
     mask: np.ndarray,
     spacing: np.ndarray,
     random_seed: int,
