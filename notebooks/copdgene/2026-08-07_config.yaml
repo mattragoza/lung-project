@@ -18,7 +18,6 @@ dataset:
             forward_simulation: "sim"
 
 preprocessing:
-    random_seed: 1234
     image_resampling:
         spacing: [1.0, 1.0, 1.0]
         interpolation: "linear"
@@ -27,18 +26,24 @@ preprocessing:
         tasks:
             - method: "TotalSegmentator"
               kwargs:
-                - task: "total"
+                  task: "total"
                   roi_subset: ["lung_upper_lobe_right", "lung_middle_lobe_right", "lung_lower_lobe_right", "lung_upper_lobe_left", "lung_lower_lobe_left"]
             - method: "TotalSegmentator"
               kwargs:
-                - task: "lung_vessels"
+                  task: "lung_vessels"
             - method: "VisionFeature"
               kwargs:
-                - model: "vista3d"
+                  model: "vista3d"
                   results_dir: "/restricted/projectnb/batmanlab/haozhe/Lung_Mesh_Segment/data/nnUNetv2/nnUNet_results"
             - method: "HU_threshold"
               kwargs:
-                - values: [-850., -900., -950.]
+                  thresholds:
+                      lt-950: {"operator": "<", "value": -950}
+                      lt-910: {"operator": "<", "value": -910}
+                      lt-850: {"operator": "<", "value": -850}
+                      gt-700: {"operator": "<", "value": -700}
+                      gt-500: {"operator": ">", "value": -500}
+                      gt-200: {"operator": ">", "value": -200}
     image_registration:
         method: "unigradicon"
         kwargs:
@@ -55,12 +60,28 @@ preprocessing:
             min_voxels: 30
             keep_largest: true
     material_properties:
-        background:    {"priority": 0, "density":    0., "youngs_modulus":     0., "poisson_ratio": 0.0}
-        normal:        {"priority": 1, "density":  500., "youngs_modulus":  3000., "poisson_ratio": 0.4}
-        ggo:           {"priority": 2, "density":  650., "youngs_modulus":  5000., "poisson_ratio": 0.43}
-        consolidation: {"priority": 3, "density":  850., "youngs_modulus": 10000., "poisson_ratio": 0.45}
-        nodule:        {"priority": 4, "density": 1050., "youngs_modulus": 20000., "poisson_ratio": 0.46}
-        emphysema:     {"priority": 5, "density":  350., "youngs_modulus":  1500., "poisson_ratio": 0.35}
+        density:
+            range: [0., 2000.]
+            terms:
+                image: {'offset': 1000.}
+        youngs_modulus:
+            range: [0., 20000.]
+            terms:
+                domain:        {'weight':  3000.}
+                lung_arteries: {'weight': +3000.}
+                lung_veins:    {'weight': +3000.}
+                lung_airways:  {'weight': +8000.}
+                lt-850:        {'weight':  -500.}
+                lt-910:        {'weight':  -500.}
+                lt-950:        {'weight':  -500.}
+                emphysema:     {'weight': -1000.}
+                ggo:           {'weight': +2000.}
+                consolidation: {'weight': +4000.}
+                nodule:        {'weight': +6000.}
+        poisson_ratio:
+            range: [0.0, 0.5]
+            terms:
+                domain: {'weight': 0.4}
     mesh_generation:
         use_affine_spacing: true
         mesh_parameters:

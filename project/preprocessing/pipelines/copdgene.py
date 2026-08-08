@@ -50,6 +50,7 @@ def preprocess(ex, config):
 
     run_stage(
         stages.materials.assign_material_properties,
+        image_path=ex.paths['init_state']['resampled_image'],
         domain_path=ex.paths['init_state']['domain_mask'],
         segment_dir=ex.paths['init_state']['segment_dir'],
         output_path=ex.paths['material_map'],

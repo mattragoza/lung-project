@@ -8,64 +8,66 @@ from ...core import utils, fileio
 
 
 def assign_material_properties(
+    image_path: Path,
     domain_path: Path,
     segment_dir: Path,
     output_path: Path,
     fields_dir: Path,
     config: Dict[str, Any]
 ):
-    for key in config:
-        utils.check_keys(
-            config[key],
-            valid={'priority', 'density', 'youngs_modulus', 'poisson_ratio'},
-            where=f'material_properties.{key}'
-        )
+    utils.check_keys(
+        config,
+        valid={'density', 'youngs_modulus', 'poisson_ratio'},
+        where='material_properties'
+    )
 
-    nifti = fileio.load_nibabel(domain_path)
-    domain = nifti.get_fdata() > 0
+    # load image and domain mask
+    nifti = fileio.load_nibabel(image_path)
+    image = nifti.get_fdata(dtype=np.float32)
     affine = nifti.affine
 
-    masks = {}
-    for label in config:
+    domain = fileio.load_nibabel(domain_path).get_fdata() > 0
 
-        if label == 'background':
-            masks[label] = ~domain
-        elif label == 'normal':
-            masks[label] = domain.copy()
-        else:
-            mask_path = segment_dir / f'{label}.nii.gz'
-            nifti = fileio.load_nibabel(mask_path)
+    inputs = {'image': image, 'domain': domain}
 
-            if nifti.shape != domain.shape:
-                raise ValueError('shape mismatch')
-            if not np.allclose(nifti.affine, affine):
-                raise ValueError('affine mismatch')
+    # load masks referenced by the config
+    referenced_labels = set()
+    for prop_config in config.values():
+        for label in prop_config['terms'] - inputs.keys():
+            referenced_labels.add(label)
 
-            masks[label] = (nifti.get_fdata() > 0) & domain
+    for label in referenced_labels:
+        mask_path = segment_dir / f'{label}.nii.gz'
+        mask = fileio.load_nibabel(mask_path).get_fdata() > 0
+        inputs[label] = mask & domain
 
-    shape = domain.shape
-    labels = np.zeros(shape, dtype=np.int16)
-    density = np.zeros(shape, dtype=np.float32)
-    youngs  = np.zeros(shape, dtype=np.float32)
-    poisson = np.zeros(shape, dtype=np.float32)
+    # construct property fields by combining terms
+    fields = {}
 
-    by_priority = sorted(config.items(), key=lambda x: x[1]['priority'])
+    for prop_name, prop_config in config.items():
+        field = np.zeros(domain.shape, dtype=np.float32)
 
-    for idx, (label, material) in enumerate(by_priority):
-        mask = masks[label]
-        labels[mask]  = idx
-        density[mask] = material['density']
-        youngs[mask]  = material['youngs_modulus']
-        poisson[mask] = material['poisson_ratio']
+        for term_input, term_config in prop_config['terms'].items():
+            term_weight = term_config.get('weight', 1.0)
+            term_offset = term_config.get('offset', 0.0)
+            field += term_offset + term_weight * inputs[term_input]
+
+        if prop_config.get('range'):
+            vmin, vmax = map(float, prop_config['range'])
+            field = np.clip(field, vmin, vmax)
+
+        fields[prop_name] = field
 
     # write output paths
     fields_dir.mkdir(parents=True, exist_ok=True)
-    fileio.save_nibabel(fields_dir / f'density.nii.gz', density, affine)
-    fileio.save_nibabel(fields_dir / f'youngs_modulus.nii.gz', youngs, affine)
-    fileio.save_nibabel(fields_dir / f'poisson_ratio.nii.gz', poisson, affine)
+
+    for prop_name, field in fields.items():
+        fileio.save_nibabel(
+            fields_dir / f'{prop_name}.nii.gz', field, affine
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_nibabel(output_path, labels, affine)
+    fileio.save_nibabel(output_path, domain.astype(np.uint8), affine)
 
 
 def assign_materials_to_regions(
