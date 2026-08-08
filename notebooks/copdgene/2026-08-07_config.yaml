@@ -53,9 +53,9 @@ preprocessing:
             sigma: 1
             loss_function_masking: true
             intensity_conservation_loss: true
-            weights_root: "/restricted/projectnb/batmanlab/mragoza/lung-project/network_weights"
+            weights_root: "/projectnb/batmanlab/mragoza/lung-project/network_weights"
     anatomical_regions:
-        roi_order: ["lung_upper_lobe_right", "lung_middle_lobe_right", "lung_lower_lobe_right", "lung_upper_lobe_left", "lune_lower_lobe_left"]
+        roi_order: ["lung_upper_lobe_right", "lung_middle_lobe_right", "lung_lower_lobe_right", "lung_upper_lobe_left", "lung_lower_lobe_left"]
         region_filter:
             min_voxels: 30
             keep_largest: true
@@ -94,10 +94,11 @@ preprocessing:
         interpolate_args: {}
     forward_simulation:
         physics_adapter:
-            scalar_degree: 1
-            vector_degree: 1
+            default_rho: 500
         pde_solver:
             _class: WarpFEMSolver
+            scalar_degree: 1
+            vector_degree: 1
         boundary_condition:
             type: "mesh_key"
             value: "u_reg"
