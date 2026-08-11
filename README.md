@@ -1,78 +1,149 @@
-# Lung elasticity estimation using physics-constrained learning
+# Physics-constrained learning for lung elasticity estimation from CT images and respiratory deformations
 
-## Summary of procedure
+Code for preprocessing lung CT data to generate antomical models and estimate respiratory deformations, train models for lung elasticity estimation using physics-constrained learning, estimate elasticity using physics-based inverse optimization, and evaluate elasticity estimates.
 
-1. Setup conda environment
-2. Download and preprocess images
-4. Create image segmentation masks
-5. Create image registration fields
-6. Train deep learning model
+## Environment setup
 
-## Conda environment
-
-Run the following to create the conda environment and register it as jupyter notebook kernel:
+Run the following commands to create the environment and install the dependencies:
 
 ```bash
-mamba env create --file=environment.yml
-mamba activate lung-project
-python -m ipykernel install --user --name=lung-project
+conda env create -f environment.yml
+conda run -n warp pip install "nnunetv2>=2.3.1"
+conda run -n warp pip install "TotalSegmentator>=2.5" --no-deps
+conda run -n warp pip install "git+ssh://git@github.com/uncbiag/uniGradICONLung.git"
 ```
 
-## Emory 4DCT image set
+## API usage
 
-### Download the images
+The main actions are preprocessing, optimization, training, and evalation, which are each run by a script in the `scripts` folder provided with a config file and an optional set of overrides, specified as namespaced keys and values.
 
-1. Go to [download page](https://med.emory.edu/departments/radiation-oncology/research-laboratories/deformable-image-registration/downloads-and-reference-data/4dct.html)
-2. Submit [access request form](https://med.emory.edu/departments/radiation-oncology/research-laboratories/deformable-image-registration/access-request-form.html)
-	- Landing page contains dropbox password
-3. For each case packet i=1..10,
-	- Follow the download link to DropBox
-	- Enter password and download `Case${i}Pack.zip`
-	- Move .zip file to `lung-project/data/download`
-4. Unzip case packets into `lung-project/data/Emory-4DCT`
-	- Use the commands below:
+Generate COPDGene-derived lung phantom data:
 
-```bash
-cd lung-project
-for i in {1..10};
-	do unzip data/download/Case${i}Pack.zip -d data/Emory-4DCT;
-done
+```python
+python scripts/preprocess.py config/copdgene.yaml --set NAMESPACE.KEY=VAL
 ```
 
-### Convert images to NIFTI format
+Train a physics-constrained learning model:
 
-We need to convert the Emory 4DCT images to NIFTI format before running segmentation and registration steps. To do so, run the jupyter notebook `notebooks/Emory-4DCT-preprocessing.ipynb`.
-## TotalSegmentator
-
-### Install
-
-```bash
-#pip install TotalSegmentator
-TotalSegmentator -i $input_image -o $output_dir --device gpu --preview --statistics -ta total --roi_subset lung_upper_lobe_right lung_upper_lobe_left lung_middle_lobe_right lung_lower_lobe_right lung_lower_lobe_left
-TotalSegmentator -i $input_image -o $output_dir --device gpu --preview --statistics -ta lung_vessels
-totalseg_combine_masks -i $output_dir -o $output_dir/lung_combined_mask.nii.gz -m lung
+```python
+python scripts/train.py config/copdgene.yaml
 ```
 
-### Usage
+Run the inverse optimization baseline method:
 
-TODO
-
-## CorrField registration
-
-### Install
-
-```bash
-git clone git@github.com/multimodallearning/Lung250M-4B.git
-cd Lung250M-4B/corrfield
-python corrfield.py -F {fixed_image} -M {moving_image} -m {fixed_mask} -o {output_path}
+```python
+python scripts/optimize.py config/copdgene.yaml
 ```
 
-### Usage
+Evaluate the estimated elasticity fields:
 
-TODO
+```python
+python scripts/evaluate.py config/copdgene.yaml
+```
 
-## Train deep learning model
+## Example usage
 
-TODO
+Below is python code showing how to generate a list of `Example` objects for a given dataset with a config dict, then access the paths associated with the example.
 
+```python
+import project
+
+examples = project.api.get_examples(config={
+    'name': 'COPDGene',
+    'root': '/restricted/projectnb/batmanlab/mragoza/data/COPDGene',
+    'examples': {
+        'subjects': ['16514P'],           # list of subject IDs
+        'variant': '2026-08-08',          # preprocessing run ID
+        'state_pairs': [('EXP', 'INSP')], # list of (fixed_state, moving_state)
+        'pipeline_tags': {                # used for constructing file paths
+            'image_resampling': 'iso',
+            'image_segmentation': 'tsvf',
+            'image_registration': 'ugil',
+            'anatomical_regions': 'lung',
+            'material_properties': 'mat',
+            'mesh_generation': 'pyg',
+            'mesh_interpolation': 'int',
+            'forward_simulation': 'sim'
+        }
+    }
+})
+len(examples) # num subjects x num state-pairs
+```
+
+Then inspecting `examples[0].paths`:
+
+```python
+dict(len=13)
+├── 'ref_state':       dict(len=2)
+|   ├── 'source_image': PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Images/16514P/Phase-1/RAW/16514P_INSP_STD_TEM_COPD.nii.gz')
+|   └── 'source_json':  PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Images/16514P/Phase-1/RAW/16514P_INSP_STD_TEM_COPD.json')
+├── 'init_state':      dict(len=5)
+|   ├── 'source_image':    PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Images/16514P/Phase-1/RAW/16514P_EXP_STD_TEM_COPD.nii.gz')
+|   ├── 'source_json':     PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Images/16514P/Phase-1/RAW/16514P_EXP_STD_TEM_COPD.json')
+|   ├── 'resampled_image': PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/images/16514P_EXP_iso.nii.gz')
+|   ├── 'segment_dir':     PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/masks/16514P_EXP_iso_tsvf')
+|   └── 'domain_mask':     PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/masks/16514P_EXP_iso_tsvf_domain.nii.gz')
+├── 'curr_state':      dict(len=5)
+|   ├── 'source_image':    PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Images/16514P/Phase-1/RAW/16514P_INSP_STD_TEM_COPD.nii.gz')
+|   ├── 'source_json':     PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Images/16514P/Phase-1/RAW/16514P_INSP_STD_TEM_COPD.json')
+|   ├── 'resampled_image': PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/images/16514P_INSP_iso.nii.gz')
+|   ├── 'segment_dir':     PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/masks/16514P_INSP_iso_tsvf')
+|   └── 'domain_mask':     PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/masks/16514P_INSP_iso_tsvf_domain.nii.gz')
+├── 'anatomical_map':  PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/masks/16514P_EXP_iso_tsvf_lung.nii.gz')
+├── 'anatomical_mesh': PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/meshes/16514P_EXP_iso_tsvf_lung_pyg.xdmf')
+├── 'material_map':    PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/fields/16514P_EXP_iso_tsvf_mat_label.nii.gz')
+├── 'material_dir':    PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/fields/16514P_EXP_iso_tsvf_mat')
+├── 'disp_field':      PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/fields/16514P_EXP_iso_tsvf_ugil_INSP.nii.gz')
+├── 'interp_mesh':     PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/meshes/16514P_EXP_iso_tsvf_ugil_INSP_lung_pyg_mat_int.xdmf')
+├── 'forward_mesh':    PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/meshes/16514P_EXP_iso_tsvf_ugil_INSP_lung_pyg_mat_int_sim.xdmf')
+├── 'input_image':     PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/images/16514P_EXP_iso.nii.gz')
+├── 'domain_mask':     PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/masks/16514P_EXP_iso_tsvf_domain.nii.gz')
+└── 'target_mesh':     PosixPath('/restricted/projectnb/batmanlab/mragoza/data/COPDGene/Processed/2026-08-07/16514P/meshes/16514P_EXP_iso_tsvf_ugil_INSP_lung_pyg_mat_int_sim.xdmf')
+```
+
+The important paths for training are `input_image`, `domain_mask`, and `target_mesh`.
+
+The target mesh should have the following fields defined when loaded with meshio:
+
+```
+<meshio mesh object>
+  Number of points: 23303
+  Number of cells:
+    tetra: 99240
+  Point data: medit:ref, image, u_reg, E, nu, rho, u_fwd
+  Cell data: medit:ref, region, image, u_reg, E, nu, rho, u_fwd
+```
+
+## Repository structure
+
+```python
+data/
+config/             # example configs
+    copdgene.yaml
+    emory4dct.yaml
+    shapenet.yaml
+project/            # source code
+    core/
+    datasets/
+    preprocessing/
+    training/
+    physics/
+    visual/
+    __init__.py
+    api.py
+    models.py
+    optimization.py
+    evaluation.py
+    validation.py
+    callbacks.py
+scripts/            # API runners
+    preprocess.py
+    validate.py
+    optimize.py
+    train.py
+    evaluate.py
+tests/
+notebooks/
+environment.yml
+```
 
