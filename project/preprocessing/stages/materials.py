@@ -30,7 +30,7 @@ def assign_material_properties(
 
     inputs = {'image': image, 'domain': domain}
 
-    # load masks referenced by the config
+    # load other masks referenced by the config
     referenced_labels = set()
     for prop_config in config.values():
         for label in prop_config['terms'] - inputs.keys():
@@ -48,9 +48,9 @@ def assign_material_properties(
         field = np.zeros(domain.shape, dtype=np.float32)
 
         for term_input, term_config in prop_config['terms'].items():
-            term_weight = term_config.get('weight', 1.0)
-            term_offset = term_config.get('offset', 0.0)
-            field += term_offset + term_weight * inputs[term_input]
+            offset = term_config.get('offset', 0.0)
+            weight = term_config.get('weight', 1.0)
+            field += weight * (inputs[term_input] + offset)
 
         if prop_config.get('range'):
             vmin, vmax = map(float, prop_config['range'])
@@ -62,9 +62,8 @@ def assign_material_properties(
     fields_dir.mkdir(parents=True, exist_ok=True)
 
     for prop_name, field in fields.items():
-        fileio.save_nibabel(
-            fields_dir / f'{prop_name}.nii.gz', field, affine
-        )
+        field_path = fields_dir / f'{prop_name}.nii.gz'
+        fileio.save_nibabel(field_path, field, affine)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, domain.astype(np.uint8), affine)

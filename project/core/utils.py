@@ -1,15 +1,18 @@
+from typing import List, Dict, Iterable, Optional, Any
 import sys, time, random
+
+
+# ----- logging functions -----
 
 
 VERBOSE = True
 
-
-def set_verbose(val: bool):
+def set_verbose(val: bool) -> None:
     global VERBOSE
     VERBOSE = val
 
 
-def log(msg, end='\n'):
+def log(msg: str, end: str = '\n') -> None:
     is_worker = False
 
     if 'torch' in sys.modules:
@@ -20,50 +23,59 @@ def log(msg, end='\n'):
         print(msg, end=end, file=sys.stdout, flush=True)
 
 
-def warn(msg):
+def warn(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def is_iterable(obj, string_ok=False):
+# ----- common utilities -----
+
+
+def is_iterable(obj: Any, string_ok: bool = False) -> bool:
     if isinstance(obj, str):
         return string_ok
     return hasattr(obj, '__iter__')
 
 
-def as_iterable(obj, string_ok=False, length=1):
+def as_iterable(
+    obj: Any, string_ok: bool = False, length: int = 1
+) -> Iterable:
     if not is_iterable(obj, string_ok):
         return [obj] * length
     return obj
 
 
-def update_defaults(overrides=None, **defaults):
-    return defaults | (overrides or {})
-
-
-def namespace(dct, name):
-    return {f'{name}.{k}': v for k, v in dct.items()}
-
-
-def missing_value(val, strings=('',)):
-    import pandas as pd
-    return pd.isna(val) or str(val).strip() in set(strings)
-
-
-def check_keys(config, valid, where=None):
+def check_keys(
+    config: Dict[str, Any],
+    valid: Iterable[str],
+    where: Optional[str] = None
+) -> None:
     invalid = set(config.keys()) - set(valid)
     if invalid:
         loc = f' for {where}' if where else ''
         raise KeyError(f'Unexpected keys{loc}: {invalid} vs. {valid}')
 
 
-def make_seed(*parts):
+def update_defaults(overrides: Optional[Dict] = None, **defaults) -> Dict:
+    return defaults | (overrides or {})
+
+
+def namespace(dct: Dict[str, Any], name: str) -> Dict[str, Any]:
+    return {f'{name}.{k}': v for k, v in dct.items()}
+
+
+def missing_value(val: Any, strings: Iterable[str] = ('',)) -> bool:
+    import pandas as pd
+    return pd.isna(val) or str(val).strip() in set(strings)
+
+
+def make_seed(*parts) -> int:
     import hashlib
     s = ':'.join([str(part) for part in parts])
     h = hashlib.sha256(s.encode('utf-8')).digest()
     return int.from_bytes(h[:8], byteorder='little', signed=False)
 
 
-def pprint(*args, **kwargs):
+def pprint(*args, **kwargs) -> None:
     from .pprint import pprint as pprint_
     return pprint_(*args, **kwargs)
 
