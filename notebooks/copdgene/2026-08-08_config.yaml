@@ -6,13 +6,13 @@ dataset:
         state_pairs:
             - ["EXP", "INSP"]
             - ["INSP", "EXP"]
-        variant: "TEST"
+        variant: "2026-08-08"
         pipeline_tags:
             image_resampling: "iso"
             image_segmentation: "tsvf"
             image_registration: "ugil"
             anatomical_regions: "lung"
-            material_properties: "mat"
+            material_properties: "bela"
             mesh_generation: "pyg"
             mesh_interpolation: "int"
             forward_simulation: "sim"
@@ -61,27 +61,25 @@ preprocessing:
             keep_largest: true
     material_properties:
         density:
-            range: [0., 2000.]
+            default: 1000.
+            range: [1., 2000.]
             terms:
-                image: {'offset': 1000.}
+                image: {'weight': 1.0}
         youngs_modulus:
-            range: [0., 20000.]
+            default: 2000.
+            range: [1., 20000.]
             terms:
-                domain:        {'weight':  3000.}
-                lung_arteries: {'weight': +3000.}
-                lung_veins:    {'weight': +3000.}
-                lung_airways:  {'weight': +8000.}
-                lt-850:        {'weight':  -500.}
-                lt-910:        {'weight':  -500.}
-                lt-950:        {'weight':  -500.}
-                emphysema:     {'weight': -1000.}
-                ggo:           {'weight': +2000.}
-                consolidation: {'weight': +4000.}
-                nodule:        {'weight': +6000.}
+                lung_arteries: {'weight': +3000.} #  5000
+                lung_veins:    {'weight': +3000.} #  5000
+                lung_airways:  {'weight': +6000.} #  8000
+                lt-850:        {'weight': -1000.} #  1000
+                lt-910:        {'weight':  -500.} #   500
+                lt-950:        {'weight':  -250.} #   250
+                ggo:           {'weight': +2000.} #  4000
+                consolidation: {'weight': +4000.} #  8000
+                nodule:        {'weight': +8000.} # 16000
         poisson_ratio:
-            range: [0.0, 0.5]
-            terms:
-                domain: {'weight': 0.4}
+            default: 0.42
     mesh_generation:
         use_affine_spacing: true
         mesh_parameters:
@@ -94,7 +92,7 @@ preprocessing:
         interpolate_args: {}
     forward_simulation:
         physics_adapter:
-            default_rho: 500
+            default_rho: 250
         pde_solver:
             _class: WarpFEMSolver
             scalar_degree: 1
@@ -124,6 +122,7 @@ optimization:
         vector_degree: 1
     pde_solver:
         _class: WarpFEMSolver
+        material_type: "stvk"
         relative_loss: true
         tv_reg_weight: 0.0001
     optimizer:

@@ -57,8 +57,7 @@ class Dataset:
         self._metadata_loaded = False
 
     def __repr__(self):
-        cls = self.__class__
-        return f'{cls.__module__}.{cls.__name__}({str(self.root)!r})'
+        return f'{self.__class__.__name__}({str(self.root)!r})'
 
     def require_metadata(self):
         if not self._metadata_loaded:

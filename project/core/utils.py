@@ -9,7 +9,7 @@ VERBOSE = True
 
 def set_verbose(val: bool) -> None:
     global VERBOSE
-    VERBOSE = val
+    VERBOSE = bool(val)
 
 
 def log(msg: str, end: str = '\n') -> None:

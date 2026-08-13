@@ -30,9 +30,14 @@ def assign_material_properties(
 
     inputs = {'image': image, 'domain': domain}
 
-    # load other masks referenced by the config
+    # load additional masks referenced by the config
     referenced_labels = set()
-    for prop_config in config.values():
+    for key, prop_config in config.items():
+        utils.check_keys(
+            prop_config,
+            valid={'default', 'range', 'terms'},
+            where=f'material_properties.{key}'
+        )
         for label in prop_config['terms'] - inputs.keys():
             referenced_labels.add(label)
 
@@ -45,7 +50,8 @@ def assign_material_properties(
     fields = {}
 
     for prop_name, prop_config in config.items():
-        field = np.zeros(domain.shape, dtype=np.float32)
+        default = prop_config.get('default', 0.0)
+        field = np.full(domain.shape, default, dtype=np.float32)
 
         for term_input, term_config in prop_config['terms'].items():
             offset = term_config.get('offset', 0.0)
