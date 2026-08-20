@@ -235,7 +235,7 @@ class PhysicsAdapter:
         if torch.any(~torch.isfinite(K)):
             raise ValueError('Non-finite bulk modulus values (K)')
         if torch.any(K <= 0):
-            raise ValueError('Non-positive bulk modulus values (K)')
+            raise ValueError('Non-positive bulk modulus values (K; requires nu < 0.5)')
 
         ratio = K / mu
         if torch.any(ratio > max_ratio):

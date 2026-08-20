@@ -58,6 +58,7 @@ class WarpFEMSolver(solvers.PDESolver):
         cg_rtol: float = 1e-5,
         eps_reg: float = 1e-3,
         eps_div: float = 1e-6,
+        g_vector: Tuple[float, float, float] = (0., 0., -9.81),
         scalar_degree: int = 1,
         vector_degree: int = 1,
         scalar_dtype = wp.float32,
@@ -85,6 +86,9 @@ class WarpFEMSolver(solvers.PDESolver):
         # numerical stability
         self.eps_reg = float(eps_reg)
         self.eps_div = float(eps_div)
+
+        # physical constants
+        self.g_vector = g_vector
 
         # mesh field representations
         self.scalar_degree = scalar_degree
@@ -150,7 +154,7 @@ class WarpFEMSolver(solvers.PDESolver):
         self.vb_test  = wp.fem.make_test(self.V, domain=self.boundary)
 
     def init_constants(self):
-        self.g = self.vector_dtype([0., 0., -9.81]) # m/s^2
+        self.g = self.vector_dtype(self.g_vector) # m/s^2
         self.I = wp.diag(self.vector_dtype(1.))
 
     def require_initialized_geometry(self):
@@ -510,7 +514,7 @@ def rasterize_field(src: wp.fem.Field, shape, bounds, background=0.0):
         (C, I, J, K) rasterized field tensor
     '''
     I, J, K = shape
-    C = wp.types.type_length(src.dtype)
+    C = getattr(src.dtype, '_length_', 1)
 
     grid = wp.fem.Grid3D(
         res=wp.vec3i(shape),
