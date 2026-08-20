@@ -73,6 +73,7 @@ def assign_material_properties(
         field_path = fields_dir / f'{prop_name}.nii.gz'
         fileio.save_nibabel(field_path, field, affine)
 
+    # NOTE: This treats the domain as a single material "type"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, domain.astype(np.uint8), affine)
 

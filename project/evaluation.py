@@ -178,7 +178,11 @@ class ViewerCallback(Callback):
 
 class EvaluatorCallback(Callback):
 
-    def __init__(self, output_dir: str = 'metrics'):
+    def __init__(
+        self,
+        output_dir: str = 'metrics',
+        use_labels: bool = False
+    ):
         self.example_rows  = defaultdict(list)
         self.material_rows = defaultdict(list)
 
@@ -191,6 +195,8 @@ class EvaluatorCallback(Callback):
         print(self.ex_path)
         print(self.mat_path)
 
+        self.use_labels = use_labels
+
     def on_batch_end(self, epoch, phase, batch, step, outputs):
         self.evaluate(epoch, phase, batch, step, outputs)
 
@@ -199,7 +205,6 @@ class EvaluatorCallback(Callback):
 
     @torch.no_grad()
     def evaluate(self, epoch, phase, batch, step, outputs):
-        batch_size = len(outputs['example'])
         base = {
             'epoch': int(epoch),
             'phase': str(phase),
@@ -211,18 +216,19 @@ class EvaluatorCallback(Callback):
             base['loss_base'] = float(outputs['loss_base'].item()),
             base['loss_ratio'] = float(outputs['loss_ratio'].item())
 
-        has_material_labels = _has_output(outputs, 'mat_true')
-        if has_material_labels:
+        if self.use_labels:
             outputs = ensure_material_preds(outputs)
 
+        batch_size = len(outputs['example'])
         for k in range(batch_size):
+
             ex = outputs['example'][k]
             ex_base = {**base, 'subject': ex.subject}
 
             ex_metrics = self.compute_metrics(outputs, index=k)
             self.example_rows[phase].append(ex_base | ex_metrics)
 
-            if not has_material_labels:
+            if not self.use_labels:
                 continue
 
             for l in get_material_labels(outputs, index=k):

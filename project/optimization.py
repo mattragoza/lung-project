@@ -54,7 +54,7 @@ def simulate_example(ex, config):
     utils.pprint(output)
 
 
-def optimize_example(ex, config, outputs):
+def optimize_example(ex, config, outputs, do_raster=True):
     utils.check_keys(
         config,
         valid={
@@ -106,7 +106,7 @@ def optimize_example(ex, config, outputs):
     utils.log(f'Final loss: {loss.item()}')
     utils.pprint(sim_output)
 
-    if raster_dir:
+    if do_raster:
         utils.log('Rasterizing parameters')
         shape = sample['mask'].shape[1:]
         affine = sample['affine']
@@ -125,11 +125,13 @@ def optimize_example(ex, config, outputs):
     utils.log(f'Evaluating outputs')
 
     outputs = build_eval_outputs(ex, sample, loss, sim_output, rasters)
+    utils.pprint(outputs)
+
     evaluator = build_evaluator(config)
     evaluate_outputs(evaluator, outputs)
 
     save_output_mesh(mesh, sim_output, output_path)
-    if raster_dir:
+    if do_raster:
         save_output_rasters(rasters, affine, raster_dir)
 
 
