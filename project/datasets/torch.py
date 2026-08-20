@@ -68,17 +68,17 @@ class TorchDataset(torch.utils.data.Dataset):
         self._cache.clear()
 
     def load_example(self, ex):
-        paths.require_paths(ex, keys=['input_image', 'domain_mask', 'physics_mesh'])
+        paths.require_paths(ex, keys=['input_image', 'domain_mask', 'target_mesh'])
 
         image = fileio.load_nibabel(ex.paths['input_image'])
         mask  = fileio.load_nibabel(ex.paths['domain_mask'])
-        mesh  = fileio.load_meshio(ex.paths['physics_mesh'])
+        mesh  = fileio.load_meshio(ex.paths['target_mesh'])
 
         image_a = image.get_fdata()
         if self.rgb and not (image_a.ndim == 4 and image_a.shape[-1] == 3) or image_a.ndim != 3:
             raise ValueError(f'Invalid image shape: {image_a.shape}')
 
-        if image_a.shape.ndim == 3: # add channel dim
+        if image_a.ndim == 3: # add channel dim
             image_a = image_a[...,None]
 
         mask_a = mask.get_fdata()
