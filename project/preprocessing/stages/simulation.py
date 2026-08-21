@@ -19,7 +19,7 @@ def simulate_displacement_field(
     )
     from ... import physics
 
-    mesh = fileio.load_meshio(mesh_path)
+    mesh = fileio.load_meshio(mesh_path) # world coordinates
     utils.log(mesh)
 
     if len(mesh.cells) != 1 or mesh.cells[0].type != 'tetra':
@@ -29,11 +29,14 @@ def simulate_displacement_field(
     adapter = physics.api.get_adapter(config)
     bc_spec = physics.api.get_bc_spec(config)
 
-    u_sim = adapter.simulate(mesh, unit_m, bc_spec)
+    u_sim_field = adapter.simulate(mesh, unit_m, bc_spec) # meters
+
+    cell_values = u_sim_field.cell_values.detach().cpu().numpy() / unit_m
+    node_values = u_sim_field.node_values.detach().cpu().numpy() / unit_m
 
     output_key = config.get('output_key', 'u')
-    mesh.point_data[output_key] = u_sim.nodes.detach().cpu().numpy()
-    mesh.cell_data[output_key] = [u_sim.cells.detach().cpu().numpy()]
+    mesh.cell_data[output_key] = [cell_values]
+    mesh.point_data[output_key] = node_values
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_meshio(output_path, mesh)

@@ -206,20 +206,26 @@ def compute_cell_volume(verts, cells):
     return np.abs(np.linalg.det(M)) / 6
 
 
-def compute_node_adjacency(verts, cells, volume):
-    inds, vals = [], []
-    for c, vert_inds in enumerate(cells):
-        for v in vert_inds:
-            inds.append([int(v), int(c)])
-            vals.append(float(volume[c]))
+def compute_incidence_matrix(verts, cells, volume):
+    '''
+    Construct a sparse node-to-cell incidence matrix,
+    weighted by the tetrahedral cell volumes.
+    '''
+    indices, entries = [], []
+    for cell_idx, vert_indices in enumerate(cells):
+        for vert_idx in vert_indices:
+            indices.append([vert_idx, cell_idx])
+            entries.append(volume[cell_idx])
 
-    inds = np.array(inds).T
     shape = len(verts), len(cells)
+    indices = np.array(indices, dtype=int).T
+    entries = np.array(entries, dtype=float)
+
     if torch.is_tensor(verts):
-        return torch.sparse_coo_tensor(inds, vals, shape)
-    else:
-        import scipy.sparse
-        return scipy.sparse.coo_array((vals, inds), shape)
+        return torch.sparse_coo_tensor(indices, entries, shape)
+
+    import scipy.sparse
+    return scipy.sparse.coo_array((entries, indices), shape)
 
 
 def node_to_cell_values(cells, node_vals):

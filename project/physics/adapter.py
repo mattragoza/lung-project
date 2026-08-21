@@ -12,26 +12,6 @@ ELASTIC_KEYS = ('E', 'nu', 'G', 'K', 'mu', 'lam')
 MATERIAL_KEYS = ELASTIC_KEYS + ('rho',)
 
 
-def _as_mesh_field(
-    ctx: context.PhysicsContext,
-    values: torch.Tensor,
-    degree: int
-) -> context.MeshField:
-    '''
-    Convert values at cell or node dofs into both representations.
-    '''
-    if degree == 0:
-        cell_vals = values.detach().cpu()
-        node_vals = transforms.cell_to_node_values(ctx.verts, ctx.cells, cell_vals, ctx.volume)
-    elif degree == 1:
-        node_vals = values.detach().cpu()
-        cell_vals = transforms.node_to_cell_values(ctx.cells, node_vals)
-    else:
-        raise ValueError(f'Cannot convert degree {degree}')
-
-    return context.MeshField(cell_vals, node_vals)
-
-
 class PhysicsAdapter:
     '''
     PhysicsAdapter owns the PDE solver and the logic for:
@@ -289,6 +269,7 @@ class PhysicsAdapter:
         try:
             true_params = self.get_context_params(ctx)
             mu_t, lam_t, rho_t = self.get_canonical_params(ctx, true_params)
+
         except KeyError:
             true_params = {}
             mu_t = lam_t = rho_t = None
@@ -430,4 +411,24 @@ class PhysicsAdapter:
             ret[f'{name}_true'] = _as_mesh_field(ctx, true_native[name], self.scalar_degree)
 
         return ret
+
+
+def _as_mesh_field(
+    ctx: context.PhysicsContext,
+    values: torch.Tensor,
+    degree: int
+) -> context.MeshField:
+    '''
+    Convert values at cell or node dofs into both representations.
+    '''
+    if degree == 0:
+        cell_vals = values.detach().cpu()
+        node_vals = transforms.cell_to_node_values(ctx.verts, ctx.cells, cell_vals, ctx.volume)
+    elif degree == 1:
+        node_vals = values.detach().cpu()
+        cell_vals = transforms.node_to_cell_values(ctx.cells, node_vals)
+    else:
+        raise ValueError(f'Cannot convert degree {degree}')
+
+    return context.MeshField(cell_vals, node_vals)
 

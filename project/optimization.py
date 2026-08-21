@@ -41,7 +41,7 @@ def simulate_example(ex, config):
     bc_spec = physics.api.get_bc_spec(config)
 
     param_dofs = initialize_param_dofs(
-        phys=adapter,
+        adapter=adapter,
         mesh=mesh,
         unit_m=unit_m,
         param_specs=param_specs,
@@ -80,13 +80,13 @@ def optimize_example(ex, config, outputs, do_raster=True):
     optim_spec  = build_optimizer_spec(config)
     init_spec   = build_initialize_spec(config)
 
-    phys_adapter = physics.api.get_adapter(config)
-    bc_spec      = physics.api.get_bc_spec(config)
+    adapter = physics.api.get_adapter(config)
+    bc_spec = physics.api.get_bc_spec(config)
 
     utils.log('Start optimization')
 
     params = optimize_params(
-        phys=phys_adapter,
+        adapter=adapter,
         mesh=mesh,
         unit_m=unit_m,
         bc_spec=bc_spec,
@@ -96,7 +96,7 @@ def optimize_example(ex, config, outputs, do_raster=True):
     )
 
     loss, sim_output = evaluate_loss(
-        phys=phys_adapter,
+        adapter=adapter,
         mesh=mesh,
         unit_m=unit_m,
         bc_spec=bc_spec,
@@ -112,7 +112,7 @@ def optimize_example(ex, config, outputs, do_raster=True):
         affine = sample['affine']
 
         rasters = rasterize_params(
-            phys=phys_adapter,
+            adapter=adapter,
             mesh=mesh,
             unit_m=unit_m,
             params=params,
@@ -165,12 +165,11 @@ def build_initialize_spec(config) -> InitializeSpec:
     return InitializeSpec(**initialize_kws)
 
 
-
 # ----- optimization loops -----
 
 
 def optimize_params(
-    phys: physics.adapter.PhysicsAdapter,
+    adapter: physics.adapter.PhysicsAdapter,
     mesh: meshio.Mesh,
     unit_m: float,
     bc_spec: Any,
@@ -185,14 +184,14 @@ def optimize_params(
         utils.log(f'Trial {trial + 1}/{init_spec.num_restarts}')
 
         param_dofs = initialize_param_dofs(
-            phys=phys,
+            adapter=adapter,
             mesh=mesh,
             unit_m=unit_m,
             param_specs=param_specs,
             init_spec=init_spec
         )
         params, history = run_optimization_trial(
-            phys=phys,
+            adapter=adapter,
             mesh=mesh,
             unit_m=unit_m,
             bc_spec=bc_spec,
@@ -201,7 +200,7 @@ def optimize_params(
             optim_spec=optim_spec
         )
         loss, _ = evaluate_loss(
-            phys, mesh, unit_m, bc_spec, params
+            adapter, mesh, unit_m, bc_spec, params
         )
         if best_loss is None or loss.item() < best_loss:
             best_loss = loss.item()
@@ -211,7 +210,7 @@ def optimize_params(
 
 
 def initialize_param_dofs(
-    phys: physics.adapter.PhysicsAdapter,
+    adapter: physics.adapter.PhysicsAdapter,
     mesh: meshio.Mesh,
     unit_m: float,
     param_specs: Dict[str, models.ParameterSpec],
@@ -220,7 +219,7 @@ def initialize_param_dofs(
 
     dofs = {}
     for name in param_specs:
-        z0 = phys.init_param_field(mesh, unit_m)
+        z0 = adapter.init_param_field(mesh, unit_m)
 
         if not np.isclose(init_spec.noise_std, 0):
             noise = torch.randn(z0.shape, dtype=z0.dtype, device=z0.device)
@@ -243,7 +242,7 @@ def clone_params(params: Dict[str, torch.Tensor]):
 
 
 def run_optimization_trial(
-    phys: physics.adapter.PhysicsAdapter,
+    adapter: physics.adapter.PhysicsAdapter,
     mesh: meshio.Mesh,
     unit_m: float,
     bc_spec: Any,
@@ -253,7 +252,7 @@ def run_optimization_trial(
 ) -> Tuple[dict, dict]:
 
     def objective(params: Dict[str, torch.Tensor]) -> torch.Tensor:
-        return phys.mesh_simulation_loss(
+        return adapter.mesh_simulation_loss(
             mesh=mesh,
             unit_m=unit_m,
             params=params,
@@ -334,14 +333,14 @@ def optimize_closure(optimizer, closure, max_steps: int = 100, tol: float = 1e-3
 
 
 def evaluate_loss(
-    phys: physics.adapter.PhysicsAdapter,
+    adapter: physics.adapter.PhysicsAdapter,
     mesh: meshio.Mesh,
     unit_m: float,
     bc_spec: Any,
     params: Dict[str, torch.Tensor]
 ):
     with torch.no_grad():
-        loss, sim_output = phys.mesh_simulation_loss(
+        loss, sim_output = adapter.mesh_simulation_loss(
             mesh=mesh,
             unit_m=unit_m,
             params=params,
@@ -352,7 +351,7 @@ def evaluate_loss(
 
 
 def rasterize_params(
-    phys: physics.adapter.PhysicsAdapter,
+    adapter: physics.adapter.PhysicsAdapter,
     mesh: meshio.Mesh,
     unit_m: float,
     params: Dict[str, torch.Tensor],
@@ -361,7 +360,7 @@ def rasterize_params(
 ):
     rasters = {}
     for name, field in params.items():
-        vox = phys.rasterize_scalar_field(
+        vox = adapter.rasterize_scalar_field(
             mesh=mesh,
             unit_m=unit_m,
             dofs=params[name],

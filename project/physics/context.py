@@ -10,81 +10,123 @@ from . import bcs
 from ..core import transforms
 
 
+def _cpu_tensor(array, dtype=torch.float):
+    return torch.as_tensor(array, dtype=dtype, device='cpu')
+
+
+def _get_mesh_field(mesh, name, dtype=torch.float, scale=1.0):
+    cell_values = node_values = None
+
+    cell_data = mesh.cell_data_dict.get(name, {})
+    if 'tetra' in cell_data:
+        cell_values = _cpu_tensor(cell_data['tetra'] * scale, dtype)
+
+    if name in mesh.point_data:
+        node_values = _cpu_tensor(mesh.point_data[name] * scale, dtype)
+
+    if cell_values is None and node_values is None:
+        return None
+
+    return MeshField(cell_values, node_values)
+
+
 @dataclass
 class MeshField:
-    cells: Optional[torch.Tensor] = None
-    nodes: Optional[torch.Tensor] = None
+    cell_values: Optional[torch.Tensor] = None
+    node_values: Optional[torch.Tensor] = None
 
     def __getitem__(self, degree: int) -> torch.Tensor:
-        if degree == 0 and self.cells is not None:
-            return self.cells
-        if degree == 1 and self.nodes is not None:
-            return self.nodes
+        if degree == 0 and self.cell_values is not None:
+            return self.cell_values
+        if degree == 1 and self.node_values is not None:
+            return self.node_values
         raise IndexError(f'No values for degree {degree}')
-
-    def __hasitem__(self, degree: int) -> bool:
-        if degree == 0 and self.cells is not None:
-            return True
-        if degree == 1 and self.nodes is not None:
-            return True
-        return False
 
 
 class PhysicsContext:
     '''
-    Stores immutable CPU tensors derived from mesh data.
+    Stores immutable CPU-side representations of geometry,
+    material fields, and displacement observations used by 
+    the physics adapter and PDE solver.
+
+    Unit contract
+    -------------
+    Input mesh:
+        mesh.points     : world coordinates
+        u_* fields      : world displacement units
+
+    Attributes:
+        self.verts      : meters (for physical simulation)
+        self.volume     : cubic meters
+        self.points     : world units (for voxel sampling)
+        self.fields:
+            u_*         : meters
+            rho         : kg/m^3
+            E, G, K, mu, lam
+                        : Pa
+            nu          : unitless
+
+    NOTE: The input mesh is expected to live in the "world"
+    coordinate system; the unit_m argument gives the mapping
+    from world units to meters. This factor applies to both
+    mesh vertices and any displacement field(s) on the mesh.
     '''
     def __init__(self, mesh: meshio.Mesh, unit_m: float):
 
-        # domain geometry
-        cells_np = mesh.cells_dict['tetra']
-        verts_np = mesh.points * unit_m # meters
+        # ----- mesh topology and geometry -----
 
-        volume_np = transforms.compute_cell_volume(verts_np, cells_np)
+        cells = mesh.cells_dict['tetra']
+        verts_w = mesh.points
+        verts_m = verts_w * unit_m
+        volume_m3 = transforms.compute_cell_volume(verts_m, cells)
 
-        def _cpu(a: np.ndarray, dtype=torch.float):
-            return torch.as_tensor(a, dtype=dtype, device='cpu')
+        self.cells = _cpu_tensor(cells, dtype=torch.int)
+        self.verts = _cpu_tensor(verts_m, dtype=torch.float)
+        self.volume = _cpu_tensor(volume_m3, dtype=torch.float)
 
-        self.cells = _cpu(cells_np, dtype=torch.int)
-        self.verts = _cpu(verts_np, dtype=torch.float)
+        self.adjacency = transforms.compute_incidence_matrix(
+            verts=self.verts,
+            cells=self.cells,
+            volume=self.volume
+        )
 
-        self.volume = _cpu(volume_np)
-        self.adjacency = transforms.compute_node_adjacency(self.verts, self.cells, self.volume)
+        # ----- world-space sampling points -----
 
-        # points used for voxel interpolation (world units)
-        cell_points = _cpu(mesh.points[cells_np].mean(axis=1))
-        node_points = _cpu(mesh.points)
+        self.points = MeshField(
+            cell_values=_cpu_tensor(verts_w[cells].mean(axis=1)),
+            node_values=_cpu_tensor(verts_w)
+        )
 
-        self.points = MeshField(cell_points, node_points)
+        # ----- material properties / labels -----
 
-        # generic mesh-attached fields
         self.fields: Dict[str, MeshField] = {}
 
-        def _add_field(name, dtype) -> bool:
-            cell_vals = node_vals = None
-            if 'tetra' in mesh.cell_data_dict.get(name, {}):
-                cell_vals = _cpu(mesh.cell_data_dict[name]['tetra'], dtype)
-            if name in mesh.point_data:
-                node_vals = _cpu(mesh.point_data[name], dtype)
-            if cell_vals is None and node_vals is None:
-                return False
-            self.fields[name] = MeshField(cell_vals, node_vals)
-            return True
-
-        # categorical labels
         for name in {'region', 'material'}:
-            _add_field(name, dtype=torch.int)
+            field = _get_mesh_field(mesh, name, dtype=torch.int)
+            if field is not None:
+                self.fields[name] = field
 
-        # material parameters
         for name in {'rho', 'E', 'nu', 'G', 'K', 'mu', 'lam'}:
-            _add_field(name, dtype=torch.float)
+            field = _get_mesh_field(mesh, name, dtype=torch.float)
+            if field is not None:
+                self.fields[name] = field
 
-        # observation cache: bc_spec -> (u_bc, u_obs)
+        # ----- displacement observations -----
+
         self.obs_cache: Dict[Any, Tuple[MeshField, MeshField]] = {}
 
-        for key in sorted(mesh.cell_data_dict | mesh.point_data):
-            if key.startswith('u_') and _add_field(key, dtype=torch.float):
-                bc_spec = bcs.BoundaryConditionSpec(type='mesh_key', value=key)
-                u_bc_field = u_obs_field = self.fields[key] 
-                self.obs_cache[bc_spec] = (u_bc_field, u_obs_field)
+        for name in sorted(mesh.cell_data_dict | mesh.point_data):
+            if not name.startswith('u_'):
+                continue
+
+            field = _get_mesh_field(
+                mesh, name, dtype=torch.float, scale=unit_m
+            )
+            if field is None:
+                continue
+
+            self.fields[name] = field
+
+            bc_spec = bcs.BoundaryConditionSpec(type='mesh_key', value=name)
+            self.obs_cache[bc_spec] = (field, field)
 
