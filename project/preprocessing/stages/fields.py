@@ -107,7 +107,7 @@ def interpolate_materials(
     # map material properties from cells to nodes
     verts, cells = mesh.points, mesh.cells_dict['tetra']
     volume = transforms.compute_cell_volume(verts, cells)
-    cells_to_nodes = transforms.compute_node_adjacency(verts, cells, volume)
+    cells_to_nodes = transforms.compute_incidence_matrix(verts, cells, volume)
     mesh.point_data['material'] = transforms.cell_to_node_labels(verts, cells, mat_cells)
     mesh.point_data['rho'] = transforms.cell_to_node_values(cells_to_nodes, rho_cells)
     mesh.point_data['nu']  = transforms.cell_to_node_values(cells_to_nodes, nu_cells)
