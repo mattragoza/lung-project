@@ -20,10 +20,11 @@ def interpolate_mesh_fields(
         valid={'displacement_key', 'interpolate_args'},
         where='mesh_interpolation'
     )
+    from ...core.interpolation import interpolate_array
 
     mesh = fileio.load_meshio(mesh_path)
     if len(mesh.cells) != 1 or mesh.cells[0].type != 'tetra':
-        block_types = [b.type for b in mesh.cells]
+        block_types = [block.type for block in mesh.cells]
         raise ValueError(f'Expected exactly one tetra cell block: {block_types}')
 
     nifti = fileio.load_nibabel(image_path)
@@ -51,22 +52,22 @@ def interpolate_mesh_fields(
     u_key = config.get('displacement_key', 'u')
     kwargs = config.get('interpolate_args', {})
 
-    mesh.point_data['image'] = interpolation.interpolate_array(image, node_voxels, **kwargs)
-    mesh.point_data[u_key] = interpolation.interpolate_array(disp, node_voxels, **kwargs)
-    mesh.point_data['E'] = interpolation.interpolate_array(elastic, node_voxels, **kwargs)
-    mesh.point_data['nu'] = interpolation.interpolate_array(poisson, node_voxels, **kwargs)
-    mesh.point_data['rho'] = interpolation.interpolate_array(density, node_voxels, **kwargs)
+    mesh.point_data['image'] = interpolate_array(image, node_voxels, **kwargs)
+    mesh.point_data[u_key] = interpolate_array(disp, node_voxels, **kwargs)
+    mesh.point_data['E'] = interpolate_array(elastic, node_voxels, **kwargs)
+    mesh.point_data['nu'] = interpolate_array(poisson, node_voxels, **kwargs)
+    mesh.point_data['rho'] = interpolate_array(density, node_voxels, **kwargs)
 
     utils.log(f'Interpolating fields onto tetra cell centers')
 
     tetra_cells = mesh.cells_dict['tetra']
     cell_voxels = node_voxels[tetra_cells].mean(axis=1)
 
-    mesh.cell_data['image'] = [interpolation.interpolate_array(image, cell_voxels, **kwargs)]
-    mesh.cell_data[u_key] = [interpolation.interpolate_array(disp, cell_voxels, **kwargs)]
-    mesh.cell_data['E'] = [interpolation.interpolate_array(elastic, cell_voxels, **kwargs)]
-    mesh.cell_data['nu'] = [interpolation.interpolate_array(poisson, cell_voxels, **kwargs)]
-    mesh.cell_data['rho'] = [interpolation.interpolate_array(density, cell_voxels, **kwargs)]
+    mesh.cell_data['image'] = [interpolate_array(image, cell_voxels, **kwargs)]
+    mesh.cell_data[u_key] = [interpolate_array(disp, cell_voxels, **kwargs)]
+    mesh.cell_data['E'] = [interpolate_array(elastic, cell_voxels, **kwargs)]
+    mesh.cell_data['nu'] = [interpolate_array(poisson, cell_voxels, **kwargs)]
+    mesh.cell_data['rho'] = [interpolate_array(density, cell_voxels, **kwargs)]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_meshio(output_path, mesh)

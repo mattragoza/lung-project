@@ -153,6 +153,9 @@ def normalize_voxel_coords(points, shape, align_corners=True, flip_order=False):
 
 
 def get_grid_bounds(shape, affine, align_corners=True):
+    '''
+    Compute the grid bounds in world coordinates.
+    '''
     use_torch = torch.is_tensor(affine)
 
     I, J, K = shape

@@ -49,7 +49,7 @@ def simulate_example(ex, config):
     )
     with torch.no_grad():
         params = decode_params(param_specs, param_dofs)
-        output = adapter.simulate(mesh, unit_m, bc_spec, params)
+        output = adapter.simulate_displacement(mesh, unit_m, bc_spec, params)
 
     utils.pprint(output)
 
@@ -219,7 +219,7 @@ def initialize_param_dofs(
 
     dofs = {}
     for name in param_specs:
-        z0 = adapter.init_param_field(mesh, unit_m)
+        z0 = adapter.initialize_param_field(mesh, unit_m)
 
         if not np.isclose(init_spec.noise_std, 0):
             noise = torch.randn(z0.shape, dtype=z0.dtype, device=z0.device)
@@ -406,25 +406,25 @@ def evaluate_outputs(evaluator, outputs):
 
 
 def get_output_mesh(mesh, sim_output):
+    output_mesh = mesh.copy()
 
-    def _assign_mesh_field(m, name):
+    def _assign_field(m, name):
         field = sim_output.get(name)
         if field is not None:
-            m.point_data[name] = field.nodes.numpy()
-            m.cell_data[name] = [field.cells.numpy()]
+            m.point_data[name] = field.node_values.numpy()
+            m.cell_data[name] = [field.cell_values.numpy()]
 
-    output_mesh = mesh.copy()
-    _assign_mesh_field(output_mesh, 'E_true')
-    _assign_mesh_field(output_mesh, 'E_pred')
-    _assign_mesh_field(output_mesh, 'mu_true')
-    _assign_mesh_field(output_mesh, 'mu_pred')
-    _assign_mesh_field(output_mesh, 'lam_true')
-    _assign_mesh_field(output_mesh, 'lam_pred')
-    _assign_mesh_field(output_mesh, 'rho_true')
-    _assign_mesh_field(output_mesh, 'rho_pred')
-    _assign_mesh_field(output_mesh, 'u_true')
-    _assign_mesh_field(output_mesh, 'u_pred')
-    _assign_mesh_field(output_mesh, 'residual')
+    _assign_field(output_mesh, 'E_true')
+    _assign_field(output_mesh, 'E_pred')
+    _assign_field(output_mesh, 'mu_true')
+    _assign_field(output_mesh, 'mu_pred')
+    _assign_field(output_mesh, 'lam_true')
+    _assign_field(output_mesh, 'lam_pred')
+    _assign_field(output_mesh, 'rho_true')
+    _assign_field(output_mesh, 'rho_pred')
+    _assign_field(output_mesh, 'u_true')
+    _assign_field(output_mesh, 'u_pred')
+    _assign_field(output_mesh, 'residual')
 
     return output_mesh
 

@@ -3,7 +3,7 @@
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
-from ..core import utils, fileio
+from ..core import utils, fileio, transforms
 
 VALID_METHODS = ['totalsegmentator', 'visionfeature', 'hu_threshold']
 DEFAULT_METHOD = 'totalsegmentator'
@@ -103,13 +103,19 @@ def run_visionfeature_segmentation(
 def run_threshold_segmentation(
     image_path: Path,
     output_dir: Path,
-    thresholds: Dict[str, Dict[str, Any]]
+    thresholds: Dict[str, Dict[str, Any]],
+    sigma: Optional[float] = None
 ):
     utils.log('Running threshold-based segmentation')
     import numpy as np
 
     nifti = fileio.load_nibabel(image_path)
     image = nifti.get_fdata()
+
+    if sigma is not None and sigma > 0:
+        from scipy.ndimage import gaussian_filter
+        spacing = transforms.get_affine_spacing(nifti.affine)
+        image = gaussian_filter(image, sigma=sigma / spacing)
 
     for label, config in thresholds.items():
         utils.check_keys(

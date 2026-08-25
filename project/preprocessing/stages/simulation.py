@@ -23,13 +23,13 @@ def simulate_displacement_field(
     utils.log(mesh)
 
     if len(mesh.cells) != 1 or mesh.cells[0].type != 'tetra':
-        block_types = [b.type for b in mesh.cells]
+        block_types = [block.type for block in mesh.cells]
         raise ValueError(f'Expected exactly one tetra cell block: {block_types}')
 
     adapter = physics.api.get_adapter(config)
     bc_spec = physics.api.get_bc_spec(config)
 
-    u_sim_field = adapter.simulate(mesh, unit_m, bc_spec) # meters
+    u_sim_field = adapter.simulate_displacement(mesh, unit_m, bc_spec) # meters
 
     cell_values = u_sim_field.cell_values.detach().cpu().numpy() / unit_m
     node_values = u_sim_field.node_values.detach().cpu().numpy() / unit_m

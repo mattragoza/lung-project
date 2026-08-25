@@ -98,6 +98,7 @@ def interpolate_tensor(
 
     if reshape:
         return output[:,0,0,:].T # (N, C)
+
     return output
 
 

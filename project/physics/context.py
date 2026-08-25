@@ -1,3 +1,5 @@
+# physics/context.py
+
 from typing import Optional, Dict, Tuple, Any
 from dataclasses import dataclass
 
@@ -66,7 +68,7 @@ class PhysicsContext:
                         : Pa
             nu          : unitless
 
-    NOTE: The input mesh is expected to live in the "world"
+    NOTE: The input mesh is assumed to live in the "world"
     coordinate system; the unit_m argument gives the mapping
     from world units to meters. This factor applies to both
     mesh vertices and any displacement field(s) on the mesh.
@@ -75,9 +77,9 @@ class PhysicsContext:
 
         # ----- mesh topology and geometry -----
 
-        cells = mesh.cells_dict['tetra']
-        verts_w = mesh.points
-        verts_m = verts_w * unit_m
+        cells = mesh.cells_dict['tetra'] # (num_cells, 4)
+        verts_w = mesh.points            # (num_verts, 3)
+        verts_m = verts_w * unit_m       # world -> meters
         volume_m3 = transforms.compute_cell_volume(verts_m, cells)
 
         self.cells = _cpu_tensor(cells, dtype=torch.int)
@@ -106,7 +108,7 @@ class PhysicsContext:
             if field is not None:
                 self.fields[name] = field
 
-        for name in {'rho', 'E', 'nu', 'G', 'K', 'mu', 'lam'}:
+        for name in {'E', 'nu', 'G', 'K', 'mu', 'lam', 'rho'}:
             field = _get_mesh_field(mesh, name, dtype=torch.float)
             if field is not None:
                 self.fields[name] = field
