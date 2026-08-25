@@ -13,7 +13,7 @@ def get_solver(config):
 def get_adapter(config):
 	pde_solver = get_solver(config.get('pde_solver', {}))
 	adapter_kws = config.get('physics_adapter', {})
-	return adapter.PhysicsAdapter(pde_solver=pde_solver, **adapter_kws)
+	return adapter.PhysicsAdapter(pde_solver, **adapter_kws)
 
 
 def get_bc_spec(config):

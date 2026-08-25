@@ -46,7 +46,7 @@ class PhysicsAdapter:
 
         if elastic_params not in VALID_ELASTIC_PARAMS:
             raise ValueError(f'Invalid elasticity parameterization: {elastic_params}')
-        self.elastic_params = elastic_params
+        self.elastic_params = tuple(elastic_params)
 
         self.default_rho = float(default_rho)
         self.noise_level = float(noise_level)
@@ -115,7 +115,7 @@ class PhysicsAdapter:
         self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
         loss, outputs = self.pde_solver.loss(mu, lam, rho, u_bc, u_obs, mask)
 
-        if ret_outputs: # TODO
+        if ret_outputs:
             try:
                 mu_t, lam_t, rho_t = self.get_canonical_parameters(ctx)
             except KeyError:
@@ -420,6 +420,9 @@ def _validate_material_parameters(
 
     if not torch.all(mu > 0):
         raise ValueError('Non-positive shear modulus values (mu or G)')
+
+    if not torch.all(torch.isfinite(lam)):
+        raise ValueError('Non-finite Lame parameter values (lambda)')
 
     K = lam + (2/3) * mu
     if not torch.all(torch.isfinite(K)):

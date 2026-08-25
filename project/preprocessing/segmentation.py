@@ -125,13 +125,13 @@ def run_threshold_segmentation(
         )
         value = float(config['value']) # required
 
-        ttype = config.get('type', 'absolute')
-        if ttype == 'absolute':
+        type_ = config.get('type', 'absolute')
+        if type_ == 'absolute':
             threshold = value
-        elif ttype == 'percentile':
+        elif type_ == 'percentile':
             threshold = np.percentile(image, value)
         else:
-            raise ValueError(f'Invalid threshold type: {ttype!r}')
+            raise ValueError(f'Invalid threshold type: {type_!r}')
 
         operator = config.get('operator', '<')
         if operator == '<':

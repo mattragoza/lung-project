@@ -51,6 +51,7 @@ class WarpFEMSolver(solvers.PDESolver):
         relative_loss: bool = True,
         tv_reg_weight: float = 1e-4,
         newton_steps: int = 100,
+        newton_tries: int = 16,
         newton_alpha: float = 1.0,
         newton_beta: float = 0.5,
         newton_rtol: float = 1e-5,
@@ -75,6 +76,7 @@ class WarpFEMSolver(solvers.PDESolver):
 
         # Newton method settings
         self.newton_steps = int(newton_steps)
+        self.newton_tries = int(newton_tries)
         self.newton_alpha = float(newton_alpha) # init step size
         self.newton_beta = float(newton_beta)   # step size decay
         self.newton_rtol = float(newton_rtol)
@@ -198,9 +200,8 @@ class WarpFEMSolver(solvers.PDESolver):
             P = self.assemble_boundary_projector(normalize=True)
             u = self.init_unknown_field(u_bc, P, requires_grad=False)
 
-            if self.material.is_linear:
-                J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
-            else:
+            J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
+            if not self.material.is_linear:
                 J, M = self.solve_newton_method(self.material, mu, lam, rho, u, P)
 
         return wp.to_torch(u.dof_values)
@@ -213,9 +214,8 @@ class WarpFEMSolver(solvers.PDESolver):
             P = self.assemble_boundary_projector(normalize=True)
             u = self.init_unknown_field(u_bc, P, requires_grad=True)
 
-            if self.material.is_linear:
-                J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
-            else:
+            J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
+            if not self.material.is_linear:
                 J, M = self.solve_newton_method(self.material, mu, lam, rho, u, P)
 
             u_obs, mask = self.make_target_fields(u_obs, mask)
@@ -302,7 +302,7 @@ class WarpFEMSolver(solvers.PDESolver):
     def solve_adjoint_system(self, J, r, u, P, M):
         self.project_linear_system(J, u.dof_values.grad, P)
 
-        cg_it, cg_ares, cg_atol = wp.optim.linear.cg(
+        cg_iter, cg_ares, cg_atol = wp.optim.linear.cg(
             A=J,
             x=r.dof_values.grad,
             b=u.dof_values.grad,
@@ -371,11 +371,10 @@ class WarpFEMSolver(solvers.PDESolver):
         curr_size = self.newton_alpha
         best_size = 0.0
         best_norm = init_norm
-        num_iters = 16
 
         u_curr = self.make_vector_field()
 
-        for it in range(num_iters):
+        for it in range(self.newton_tries):
             _copy_warp_array(u.dof_values, u_curr.dof_values)
             u_curr.dof_values += curr_size * du.dof_values
 
@@ -424,7 +423,8 @@ class WarpFEMSolver(solvers.PDESolver):
             },
             values={'I': self.I},
             domain=self.interior,
-            output_dtype=self.scalar_dtype
+            output_dtype=self.scalar_dtype,
+            bsr_options={'construction': 'row_compress'}
         )
         return J
 
