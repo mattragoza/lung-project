@@ -89,54 +89,56 @@ def run_unigradicon_main(
     fixed_modality: str = 'ct',
     moving_modality: str = 'ct',
     transform_out: str = 'transform.hdf5',
-    warped_moving_out: str = 'warped_out.nrrd',
-    io_iterations: int = 50,
-    learning_rate: float = 2e-5,
-    sigma: int = 5,
-    io_sim: int = 'lncc',
+    warped_moving_out: Optional[str] = None,
     model: str = 'unigradicon',
+    similarity: int = 'lncc',
+    sigma: int = 5,
+    iterations: int = 50,
+    learning_rate: float = 2e-5,
     loss_function_masking: bool = True,
-    intensity_conservation_loss: bool = False
+    intensity_conservation: bool = False
 ):
     import itk, unigradicon
 
-    if intensity_conservation_loss:
+    if not isinstance(sigma, int):
+        raise TypeError(f'Expected sigma to be an int; got {type(sigma)}')
+
+    if intensity_conservation:
         if fixed_modality != 'ct' or moving_modality != 'ct':
-            raise ValueError('Intensity conservation loss is only supported for CT images.')
+            raise ValueError('Intensity conservation is only supported for CT images.')
 
     net = unigradicon.get_model_from_model_zoo(
-        model,
-        loss_fn=unigradicon.make_sim(io_sim, sigma),
-        apply_intensity_conservation_loss=intensity_conservation_loss,
+        model_name=model,
+        loss_fn=unigradicon.make_sim(similarity, sigma),
+        apply_intensity_conservation_loss=intensity_conservation,
         use_intersection=False
     )
+
     fixed_image = itk.imread(fixed_image)
     moving_image = itk.imread(moving_image)
 
     if fixed_mask is not None:
         fixed_mask = itk.imread(fixed_mask)
+
     if moving_mask is not None:
         moving_mask = itk.imread(moving_mask)
-
-    pre_fixed_image = unigradicon.preprocess(moving_image, moving_modality)
-    pre_moving_image = unigradicon.preprocess(fixed_image, fixed_modality)
 
     if loss_function_masking:
         phi_AB, phi_BA = unigradicon.register_pair_with_mask(
             net,
-            pre_moving_image,
-            pre_fixed_image,
+            unigradicon.preprocess(moving_image, moving_modality),
+            unigradicon.preprocess(fixed_image, fixed_modality),
             moving_mask,
             fixed_mask,
-            finetune_steps=io_iterations,
+            finetune_steps=iterations,
             lr=learning_rate
         )
     else:
         phi_AB, phi_BA = unigradicon.register_pair(
             net,
-            pre_moving_image,
-            pre_fixed_image,
-            finetune_steps=io_iterations,
+            unigradicon.preprocess(moving_image, moving_modality, moving_mask),
+            unigradicon.preprocess(fixed_image, fixed_modality, fixed_mask),
+            finetune_steps=iterations,
             lr=learning_rate
         )
 
