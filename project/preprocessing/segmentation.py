@@ -39,7 +39,10 @@ VF_LABELS = [
 
 
 def run_segmentation_task(
-    image_path: Path, output_dir: Path, config: Dict[str, Any]
+    image_path: Path,
+    output_dir: Path,
+    config: Dict[str, Any],
+    mask_path: Optional[Path] = None
 ):
     utils.check_keys(
         config,
@@ -57,7 +60,9 @@ def run_segmentation_task(
         return run_visionfeature_segmentation(image_path, output_dir, **kwargs)
 
     elif method == 'hu_threshold':
-        return run_threshold_segmentation(image_path, output_dir, **kwargs)
+        return run_threshold_segmentation(
+            image_path, mask_path, output_dir, **kwargs
+        )
 
     raise ValueError(f'Invalid segmentation method: {method!r}')
 
@@ -69,6 +74,7 @@ def run_totalsegmentator_task(
     **kwargs
 ):
     utils.log(f'Running TotalSegmentator task: {task!r}')
+
     from totalsegmentator import python_api
 
     return python_api.totalsegmentator(
@@ -80,6 +86,7 @@ def run_visionfeature_segmentation(
     image_path: Path, output_dir: Path, **kwargs
 ):
     import os
+
     utils.log('Running VisionFeature segmentation')
 
     # save and restore nnUNet environment
@@ -102,20 +109,29 @@ def run_visionfeature_segmentation(
 
 def run_threshold_segmentation(
     image_path: Path,
+    mask_path: Path,
     output_dir: Path,
     thresholds: Dict[str, Dict[str, Any]],
     sigma: Optional[float] = None
 ):
-    utils.log('Running threshold-based segmentation')
     import numpy as np
+
+    utils.log('Running threshold-based segmentation')
 
     nifti = fileio.load_nibabel(image_path)
     image = nifti.get_fdata()
 
     if sigma is not None and sigma > 0:
         from scipy.ndimage import gaussian_filter
+
+        mask = fileio.load_nibabel(mask_path).get_fdata()
         spacing = transforms.get_affine_spacing(nifti.affine)
-        image = gaussian_filter(image, sigma=sigma / spacing)
+        sigma_vox = sigma / spacing
+
+        image_f = gaussian_filter(image * mask, sigma=sigma_vox)
+        mask_f = gaussian_filter(mask, sigma=sigma_vox)
+
+        image = image_f / np.maximum(mask_f, 1e-8) * mask
 
     for label, config in thresholds.items():
         utils.check_keys(

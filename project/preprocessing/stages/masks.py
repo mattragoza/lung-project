@@ -10,7 +10,7 @@ from ...core import utils, fileio
 def create_segmentation_masks(
     image_path: Path,
     segment_dir: Path, # individual masks for each class
-    output_path: Path, # combined mask across all classes
+    output_path: Path, # combined mask for entire domain
     config: Dict[str, Any]
 ):
     utils.check_keys(
@@ -23,7 +23,14 @@ def create_segmentation_masks(
     utils.log('Starting image segmentation')
     segment_dir.mkdir(parents=True, exist_ok=True)
 
+    threshold_tasks = []
     for task_config in config.get('tasks', []):
+
+        if task_config.get('method', '').lower() == 'hu_threshold':
+            # postpone thresholding until we have the domain mask
+            threshold_tasks.append(task_config)
+            continue 
+
         segmentation.run_segmentation_task(
             image_path=image_path,
             output_dir=segment_dir,
@@ -35,6 +42,14 @@ def create_segmentation_masks(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fileio.save_nibabel(output_path, nifti.get_fdata(), nifti.affine)
+
+    for task_config in threshold_tasks:
+        segmentation.run_segmentation_task(
+            image_path=image_path,
+            mask_path=output_path,
+            output_dir=segment_dir,
+            config=task_config
+        )
 
 
 def convert_binvox_mask(
@@ -50,7 +65,7 @@ def convert_binvox_mask(
     )
     from .. import binvox_affine, mask_cleanup
 
-    mesh   = fileio.load_meshio(mesh_path)
+    mesh = fileio.load_meshio(mesh_path)
     binvox = fileio.load_binvox(mask_path)
     affine = binvox_affine.infer_binvox_affine(binvox, mesh.points)
 
