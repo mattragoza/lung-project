@@ -81,11 +81,12 @@ def run_pygalmesh_generation(
 ) -> meshio.Mesh:
     import pygalmesh
 
-    if not np.issubdtype(mask.dtype, np.integer):
-        utils.log('WARNING: mask is not an integer dtype')
+    mask_uint16 = mask.astype(np.uint16)
+    if not np.allclose(mask_uint16, mask):
+        raise RuntimeError('mask cannot be cast to uint16')
 
     mesh = pygalmesh.generate_from_array(
-        mask.astype(np.uint16),
+        vol=mask_uint16,
         voxel_size=spacing,
         seed=random_seed,
         **pygalmesh_kws
