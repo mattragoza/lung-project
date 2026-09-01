@@ -45,7 +45,8 @@ class PhysicsAdapter:
         self.pde_solver = pde_solver
 
         if elastic_params not in VALID_ELASTIC_PARAMS:
-            raise ValueError(f'Invalid elasticity parameterization: {elastic_params}')
+            raise ValueError(f'Invalid elasticity parameters: {elastic_params}')
+
         self.elastic_params = tuple(elastic_params)
 
         self.default_rho = float(default_rho)
@@ -400,7 +401,7 @@ def _compute_lame_parameters(
     elif keys == {'mu', 'lam'}:
         return params['mu'], params['lam']
 
-    raise KeyError(f'Unsupported elastic parameter keys: {keys}')
+    raise KeyError(f'Unsupported elasticity parameters: {keys}')
 
 
 def _validate_material_parameters(

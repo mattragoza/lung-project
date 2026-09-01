@@ -11,18 +11,18 @@ from . import datasets, models, physics
 
 
 @dataclass
+class InitializeSpec:
+    num_trials: int = 1
+    noise_std: float = 0.0
+
+
+@dataclass
 class OptimizerSpec:
     cls: type
     kws: Dict[str, Any]
     global_steps: int = 10
     local_steps: int = 100
     tol: float = 1e-3
-
-
-@dataclass
-class InitializeSpec:
-    num_restarts: int = 1
-    noise_std: float = 0
 
 
 # ----- public entry point -----
@@ -35,7 +35,7 @@ def simulate_example(ex, config):
     mesh = sample['mesh']
 
     param_specs = build_parameter_specs(config)
-    init_spec   = build_initialize_spec(config)
+    init_spec = build_initialize_spec(config)
 
     adapter = physics.api.get_adapter(config)
     bc_spec = physics.api.get_bc_spec(config)
@@ -59,11 +59,11 @@ def optimize_example(ex, config, outputs, do_raster=True):
         config,
         valid={
             'targets',
-            'param_specs',
+            'parameters',
+            'initialization',
             'physics_adapter',
             'pde_solver',
             'optimizer',
-            'initialize',
             'evaluator',
             'boundary_condition'
         },
@@ -77,8 +77,8 @@ def optimize_example(ex, config, outputs, do_raster=True):
     mesh = sample['mesh']
 
     param_specs = build_parameter_specs(config)
-    optim_spec  = build_optimizer_spec(config)
-    init_spec   = build_initialize_spec(config)
+    optim_spec = build_optimizer_spec(config)
+    init_spec = build_initialize_spec(config)
 
     adapter = physics.api.get_adapter(config)
     bc_spec = physics.api.get_bc_spec(config)
@@ -141,11 +141,16 @@ def optimize_example(ex, config, outputs, do_raster=True):
 def build_parameter_specs(config) -> Dict[str, models.ParameterSpec]:
     target_list = config.get('targets', ['E'])
     utils.log(f'Targets: {target_list}')
-    param_specs_cfg = config.get('param_specs', {})
+    param_specs_cfg = config.get('parameters', {})
     param_specs = {}
     for name in target_list:
         param_specs[name] = models.ParameterSpec(**param_specs_cfg[name])
     return param_specs
+
+
+def build_initialize_spec(config) -> InitializeSpec:
+    init_kws = config.get('initialization', {})
+    return InitializeSpec(**init_kws)
 
 
 def build_optimizer_spec(config) -> OptimizerSpec:
@@ -158,11 +163,6 @@ def build_optimizer_spec(config) -> OptimizerSpec:
         local_steps=optimizer_kws.pop('local_steps', 100),
         tol=optimizer_kws.pop('tol', 1e-3)
     )
-
-
-def build_initialize_spec(config) -> InitializeSpec:
-    initialize_kws = config.get('initialize', {})
-    return InitializeSpec(**initialize_kws)
 
 
 # ----- optimization loops -----
@@ -180,8 +180,8 @@ def optimize_params(
     best_loss = None
     best_params = None
 
-    for trial in range(init_spec.num_restarts):
-        utils.log(f'Trial {trial + 1}/{init_spec.num_restarts}')
+    for trial in range(init_spec.num_trials):
+        utils.log(f'Trial {trial + 1}/{init_spec.num_trials}')
 
         param_dofs = initialize_param_dofs(
             adapter=adapter,
@@ -219,7 +219,7 @@ def initialize_param_dofs(
 
     dofs = {}
     for name in param_specs:
-        z0 = adapter.initialize_param_field(mesh, unit_m)
+        z0 = adapter.initialize_param_field(mesh, unit_m, fill_value=0.0)
 
         if not np.isclose(init_spec.noise_std, 0):
             noise = torch.randn(z0.shape, dtype=z0.dtype, device=z0.device)
@@ -312,9 +312,9 @@ def optimize_closure(optimizer, closure, max_steps: int = 100, tol: float = 1e-3
 
     loss = None
     for step in range(max_steps):
-        loss = optimizer.step(closure)
+        optimizer.step(closure)
 
-        if loss is None:
+        with torch.enable_grad():
             loss = closure()
 
         history.update(loss.detach(), params)
@@ -322,9 +322,6 @@ def optimize_closure(optimizer, closure, max_steps: int = 100, tol: float = 1e-3
         if history.converged(step, tol=tol):
             utils.log('Optimization converged')
             break
-
-    if loss is None:
-        loss = closure()
 
     return history
 
@@ -479,7 +476,7 @@ class OptimizationHistory:
         self.grad_history.append(curr_grad)
         self.param_history.append(curr_params)
 
-    def converged(self, it: int, tol: float=1e-3, eps: float=1e-12) -> bool:
+    def converged(self, it: int, tol: float=1e-3, eps: float=1e-8) -> bool:
         from numpy.linalg import norm
 
         loss_delta = np.nan
@@ -509,7 +506,7 @@ class OptimizationHistory:
         )
 
         if np.isnan(curr_loss) or np.isnan(curr_grad) or np.isnan(curr_norm):
-            raise RuntimeError('Optimization encountered NaN value')
+            raise RuntimeError('Optimization encountered NaN value(s)')
 
-        return loss_delta < tol or grad_delta < tol or param_delta < tol
+        return loss_delta < tol
 

@@ -59,7 +59,7 @@ class WarpFEMSolver(solvers.PDESolver):
         cg_rtol: float = 1e-5,
         eps_reg: float = 1e-3,
         eps_div: float = 1e-6,
-        g_vector: Tuple[float, float, float] = (0., 0., -9.81),
+        g_vector: Tuple[float, float, float] = (0., 0., -9.81), # m/s^2
         scalar_degree: int = 1,
         vector_degree: int = 1,
         scalar_dtype = wp.float32,
@@ -101,7 +101,7 @@ class WarpFEMSolver(solvers.PDESolver):
         self.device = device or wp.get_device(device)
         self.verbose = verbose
 
-        self._initialized = False
+        self._geometry_initialized = False
 
     # ----- geometry initialization -----
 
@@ -111,66 +111,54 @@ class WarpFEMSolver(solvers.PDESolver):
             verts: (N, 3) float tensor of vertex coords in meters
             cells: (M, 4) int tensor of tetra cell vertex indices
         '''
-        if not (verts.ndim == 2 and verts.shape[-1] == 3):
+        if verts.ndim != 2 or verts.shape[-1] != 3:
             raise ValueError(f'Invalid verts shape: {verts.shape!r}')
-        if not (cells.ndim == 2 and cells.shape[-1] == 4):
+
+        if cells.ndim != 2 or cells.shape[-1] != 4:
             raise ValueError(f'Invalid cells shape: {cells.shape!r}')
 
-        # ScopedDevice doesn't affect wp.from_torch- only new arrays,
+        # ScopedDevice doesn't affect wp.from_torch, only new arrays,
         # so we need to explicitly move the geometry to solver device
-        verts = verts.to(str(self.device))
-        cells = cells.to(str(self.device))
+        device = str(self.device)
+
+        verts = _as_warp_array(verts.to(device), dtype=self.vector_dtype)
+        cells = _as_warp_array(cells.to(device), dtype=wp.int32)
 
         with wp.ScopedDevice(self.device):
-            self.verts = _as_warp_array(verts, dtype=self.vector_dtype)
-            self.cells = _as_warp_array(cells, dtype=wp.int32)
+            self.geometry = wp.fem.Tetmesh(cells, verts, build_bvh=True)
 
-            self.init_geometric_domain()
-            self.init_function_spaces()
-            self.init_trial_and_test()
-            self.init_constants()
+            self.interior = wp.fem.Cells(self.geometry)
+            self.boundary = wp.fem.BoundarySides(self.geometry)
 
-        self._initialized = True
+            self.S = wp.fem.make_polynomial_space(
+                self.geometry, self.scalar_dtype, degree=self.scalar_degree
+            )
+            self.V = wp.fem.make_polynomial_space(
+                self.geometry, self.vector_dtype, degree=self.vector_degree
+            )
 
-    def init_geometric_domain(self):
-        self.geometry = wp.fem.Tetmesh(self.cells, self.verts, build_bvh=True)
-        self.interior = wp.fem.Cells(self.geometry)
-        self.boundary = wp.fem.BoundarySides(self.geometry)
+            self.u_interior = wp.fem.make_trial(self.V, domain=self.interior)
+            self.u_boundary = wp.fem.make_trial(self.V, domain=self.boundary)
+            self.v_interior = wp.fem.make_test(self.V, domain=self.interior)
+            self.v_boundary = wp.fem.make_test(self.V, domain=self.boundary)
 
-    def init_function_spaces(self):
-        self.S = wp.fem.make_polynomial_space(
-            geo=self.geometry,
-            dtype=self.scalar_dtype,
-            degree=self.scalar_degree
-        )
-        self.V = wp.fem.make_polynomial_space(
-            geo=self.geometry,
-            dtype=self.vector_dtype,
-            degree=self.vector_degree
-        )
+            self.g = self.vector_dtype(self.g_vector) # m/s^2
+            self.I = wp.diag(self.vector_dtype(1.))
 
-    def init_trial_and_test(self):
-        self.u_trial  = wp.fem.make_trial(self.V, domain=self.interior)
-        self.v_test   = wp.fem.make_test(self.V, domain=self.interior)
-        self.ub_trial = wp.fem.make_trial(self.V, domain=self.boundary)
-        self.vb_test  = wp.fem.make_test(self.V, domain=self.boundary)
+        self._geometry_initialized = True
 
-    def init_constants(self):
-        self.g = self.vector_dtype(self.g_vector) # m/s^2
-        self.I = wp.diag(self.vector_dtype(1.))
-
-    def require_initialized_geometry(self):
-        if not self._initialized:
+    def require_geometry_initialized(self):
+        if not self._geometry_initialized:
             raise RuntimeError('Geometry not initialized')
 
     # ----- physical field initialization -----
 
     def make_scalar_field(self, values=None, requires_grad=None):
-        self.require_initialized_geometry()
+        self.require_geometry_initialized()
         return _make_warp_field(self.S, values, requires_grad)
 
     def make_vector_field(self, values=None, requires_grad=None):
-        self.require_initialized_geometry()
+        self.require_geometry_initialized()
         return _make_warp_field(self.V, values, requires_grad)
 
     def make_input_fields(self, mu, lam, rho, u_bc):
@@ -200,8 +188,11 @@ class WarpFEMSolver(solvers.PDESolver):
             P = self.assemble_boundary_projector(normalize=True)
             u = self.init_unknown_field(u_bc, P, requires_grad=False)
 
-            J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
-            if not self.material.is_linear:
+            if self.material.is_linear:
+                J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
+            else:
+                #init_material = self.material.get_linear()
+                #J, M = self.solve_linear_system(init_material, mu, lam, rho, u, P)
                 J, M = self.solve_newton_method(self.material, mu, lam, rho, u, P)
 
         return wp.to_torch(u.dof_values)
@@ -214,8 +205,11 @@ class WarpFEMSolver(solvers.PDESolver):
             P = self.assemble_boundary_projector(normalize=True)
             u = self.init_unknown_field(u_bc, P, requires_grad=True)
 
-            J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
-            if not self.material.is_linear:
+            if self.material.is_linear:
+                J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
+            else:
+                #init_material = self.material.get_linear()
+                #J, M = self.solve_linear_system(init_material, mu, lam, rho, u, P)
                 J, M = self.solve_newton_method(self.material, mu, lam, rho, u, P)
 
             u_obs, mask = self.make_target_fields(u_obs, mask)
@@ -239,15 +233,8 @@ class WarpFEMSolver(solvers.PDESolver):
             'loss':  wp.to_torch(loss),
         }
         context = { # track variables for backward pass
-            'mu': mu,
-            'lam': lam,
-            'rho': rho,
-            'u_bc': u_bc,
-            'u_obs': u_obs,
-            'u_sim': u,
-            'res': res,
-            'loss': loss,
-            'tape': tape,
+            'mu': mu, 'lam': lam, 'rho': rho, 'u_bc': u_bc, 'u_obs': u_obs,
+            'u_sim': u, 'res': res, 'loss': loss, 'tape': tape
         }
         return outputs, context
 
@@ -314,7 +301,7 @@ class WarpFEMSolver(solvers.PDESolver):
             raise RuntimeError('Non-finite CG residual in adjoint solve')
 
     def solve_newton_method(self, material, mu, lam, rho, u, P):
-        base_res = None # base residual norm
+        base_ares = None # initial residual norm
 
         for step in range(self.newton_steps):
             r = self.assemble_residual(material, mu, lam, rho, u)
@@ -322,14 +309,14 @@ class WarpFEMSolver(solvers.PDESolver):
 
             self.project_linear_system(J, r.dof_values, P)
 
-            abs_res = _array_norm(r.dof_values)
-            if base_res is None:
-                base_res = abs_res + self.eps_div
+            ares = _array_norm(r.dof_values)
+            if base_ares is None:
+                base_ares = ares + self.eps_div
 
-            rel_res = abs_res / base_res
-            if rel_res < self.newton_rtol: # converged
+            rres = ares / base_ares
+            if rres < self.newton_rtol: # converged
                 if self.verbose:
-                    print('    Newton solver converged.')
+                    print('Newton solver converged.')
                 break
 
             M = wp.optim.linear.preconditioner(J, ptype='diag')
@@ -343,53 +330,49 @@ class WarpFEMSolver(solvers.PDESolver):
                 tol=self.cg_rtol,
                 maxiter=self.cg_maxiter
             )
-            cg_rres = cg_ares / cg_atol * self.cg_rtol
-
             if not np.isfinite(cg_ares):
-                raise RuntimeError(f'Non-finite GMRES residual in Newton step {step+1}')
+                raise RuntimeError(f'Non-finite GMRES residual in Newton step {step + 1}')
 
             alpha = self.adaptive_step_size(
-                material, mu, lam, rho, u, du, P, abs_res
+                material, mu, lam, rho, u, du, P, init_norm=ares
             )
+            if alpha <= 0:
+                raise RuntimeError(f'Line search failed at Newton step {step + 1}')
+
             if self.verbose:
+                cg_rres = cg_ares / cg_atol * self.cg_rtol
                 print(
-                    f'    step {step + 1}: '
+                    f'Newton step {step + 1}: '
                     f'cg_iter = {cg_iter:d} '
                     f'cg_rres = {cg_rres:.2e} '
-                    f'abs_res = {abs_res:.2e} '
-                    f'rel_res = {rel_res:.2e} '
+                    f'nm_ares = {ares:.2e} '
+                    f'nm_rres = {rres:.2e} '
                     f'alpha = {alpha:.2e}'
                 )
-            if alpha <= 0.0:
-                raise RuntimeError(f'Line search failed at Newton step {step+1}')
 
             u.dof_values += alpha * du.dof_values
 
         return J, M
 
     def adaptive_step_size(self, material, mu, lam, rho, u, du, P, init_norm):
-        curr_size = self.newton_alpha
-        best_size = 0.0
-        best_norm = init_norm
+        alpha = self.newton_alpha # initial step size
 
         u_curr = self.make_vector_field()
+        for _ in range(self.newton_tries):
 
-        for it in range(self.newton_tries):
             _copy_warp_array(u.dof_values, u_curr.dof_values)
-            u_curr.dof_values += curr_size * du.dof_values
+            u_curr.dof_values += alpha * du.dof_values
 
             r = self.assemble_residual(material, mu, lam, rho, u_curr)
             r.dof_values -= P @ r.dof_values
+
             curr_norm = _array_norm(r.dof_values)
+            if np.isfinite(curr_norm) and curr_norm < init_norm:
+                return alpha
 
-            if np.isfinite(curr_norm) and curr_norm < best_norm:
-                best_norm = curr_norm
-                best_size = curr_size
-                return best_size
+            alpha = alpha * self.newton_beta # decay factor
 
-            curr_size *= self.newton_beta
-
-        return best_size
+        return 0.0
 
     # ----- internal assembly -----
 
@@ -400,7 +383,7 @@ class WarpFEMSolver(solvers.PDESolver):
             material.residual_form,
             fields={
                 'u': u,
-                'v': self.v_test,
+                'v': self.v_interior,
                 'mu': mu,
                 'lam': lam,
                 'rho': rho
@@ -416,8 +399,8 @@ class WarpFEMSolver(solvers.PDESolver):
             material.jacobian_form,
             fields={
                 'u': u,
-                'du': self.u_trial,
-                'v': self.v_test,
+                'du': self.u_interior,
+                'v': self.v_interior,
                 'mu': mu,
                 'lam': lam
             },
@@ -431,7 +414,10 @@ class WarpFEMSolver(solvers.PDESolver):
     def assemble_boundary_projector(self, normalize=False):
         P = wp.fem.integrate(
             forms.inner_product_form,
-            fields={'u': self.ub_trial, 'v': self.vb_test},
+            fields={
+                'u': self.u_boundary,
+                'v': self.v_boundary
+            },
             domain=self.boundary,
             assembly='nodal',
             output_dtype=self.scalar_dtype
@@ -479,8 +465,6 @@ class WarpFEMSolver(solvers.PDESolver):
                 output=den
             )
 
-        error = num / (den + self.eps_div)
-
         wp.fem.integrate(
             forms.tv_regularization_form,
             fields={'mu': mu, 'lam': lam, 'rho': rho},
@@ -489,7 +473,8 @@ class WarpFEMSolver(solvers.PDESolver):
             output=reg
         )
 
-        loss = error + self.tv_reg_weight * reg
+        loss = num / (den + self.eps_div) + self.tv_reg_weight * reg
+
         loss.requires_grad = True
         return loss
 

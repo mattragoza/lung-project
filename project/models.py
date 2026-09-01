@@ -91,16 +91,20 @@ class ParameterSpec:
         std: float = 1.0,
         min: float = None,
         max: float = None,
-        eps: float = 1e-12
+        eps: float = 1e-8
     ):
-        assert mode in {'linear', 'log10', 'logit'}, mode
-        assert std > 0
+        if mode not in {'linear', 'log10', 'logit'}:
+            raise ValueError(f'Invalid parameter mode: {mode}')
+
+        if std <= 0:
+            raise ValueError(f'Invalid parameter std: {std}')
+
         self.mode = mode
         self.mean = mean
-        self.std  = std
-        self.min  = min
-        self.max  = max
-        self.eps  = eps
+        self.std = std
+        self.min = min
+        self.max = max
+        self.eps = eps
 
     def encode(self, x):
 
@@ -117,7 +121,7 @@ class ParameterSpec:
             logit = torch.log(s) - torch.log(1 - s)
             return (logit - self.mean) / self.std
 
-        raise ValueError(self.mode)
+        raise ValueError(f'Invalid parameter mode: {self.mode}')
 
     def decode(self, z):
 
@@ -138,7 +142,7 @@ class ParameterSpec:
             s = torch.sigmoid(logit)
             return s * (self.max - self.min) + self.min
 
-        raise ValueError(self.mode)
+        raise ValueError(f'Invalid parameter mode: {self.mode}')
 
 
 class SegmentationHead(nn.Module):
