@@ -367,3 +367,21 @@ def random_rigid_transform(points, sigma=0, rng=None):
 
     center = points.mean(axis=0)
     return (points - center) @ R.T + t + center
+
+
+def gaussian_filter(array, mask, affine, sigma, eps=1e-8):
+    import scipy.ndimage as ndi
+
+    array = np.asarray(array, dtype=np.float32)
+    mask = np.asarray(mask, dtype=np.float32)
+
+    if sigma <= 0:
+        return array * mask
+
+    sigma_v = sigma / get_affine_spacing(affine)
+
+    array_f = ndi.gaussian_filter(array * mask, sigma=sigma_v)
+    mask_f = ndi.gaussian_filter(mask, sigma=sigma_v)
+
+    return array_f / np.maximum(mask_f, eps) * mask
+

@@ -120,18 +120,11 @@ def run_threshold_segmentation(
 
     nifti = fileio.load_nibabel(image_path)
     image = nifti.get_fdata()
+    affine = nifti.affine
 
     if sigma is not None and sigma > 0:
-        from scipy.ndimage import gaussian_filter
-
         mask = fileio.load_nibabel(mask_path).get_fdata()
-        spacing = transforms.get_affine_spacing(nifti.affine)
-        sigma_vox = sigma / spacing
-
-        image_f = gaussian_filter(image * mask, sigma=sigma_vox)
-        mask_f = gaussian_filter(mask, sigma=sigma_vox)
-
-        image = image_f / np.maximum(mask_f, 1e-8) * mask
+        image = transforms.gaussian_filter(image, mask, affine, sigma)
 
     for label, config in thresholds.items():
         utils.check_keys(

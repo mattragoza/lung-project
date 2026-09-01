@@ -4,7 +4,7 @@ from typing import List, Dict, Tuple, Any
 from pathlib import Path
 import numpy as np
 
-from ...core import utils, fileio
+from ...core import utils, fileio, transforms
 
 
 def assign_material_properties(
@@ -32,10 +32,11 @@ def assign_material_properties(
 
     # load additional masks referenced by the config
     referenced_labels = set()
+
     for prop_name, prop_config in config.items():
         utils.check_keys(
             prop_config,
-            valid={'default', 'range', 'terms'},
+            valid={'default', 'terms', 'sigma', 'range'},
             where=f'material_properties.{prop_name}'
         )
         terms = prop_config.get('terms', {})
@@ -56,9 +57,16 @@ def assign_material_properties(
 
         terms = prop_config.get('terms', {})
         for term_input, term_config in terms.items():
-            offset = term_config.get('offset', 0.0)
-            weight = term_config.get('weight', 1.0)
-            field += weight * (inputs[term_input] + offset)
+            utils.check_keys(
+                term_config,
+                valid={'weight'},
+                where=f'material_properties.{prop_name}.terms.{term_input}'
+            )
+            field += term_config['weight'] * inputs[term_input]
+
+        sigma = prop_config.get('sigma')
+        if sigma is not None:
+            field = transforms.gaussian_filter(field, domain, affine, sigma)
 
         if prop_config.get('range'):
             vmin, vmax = map(float, prop_config['range'])
