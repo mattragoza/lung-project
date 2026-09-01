@@ -273,39 +273,24 @@ def smooth_mesh_values(verts, cells, node_vals, cell_vals, degree):
     return out_vals
 
 
-def compute_lame_parameters(E, nu=0.4):
-    assert 0 < nu < 0.5, nu
-    mu  = E / (2*(1 + nu))
+def mu_lam_from_E_nu(E, nu):
+    mu = E / (2*(1 + nu))
     lam = E * nu / ((1 + nu)*(1 - 2*nu))
     return mu, lam
 
 
-def compute_youngs_modulus(mu, nu=0.4):
-    assert 0 < nu < 0.5, nu
-    return 2*(1 + nu)*mu
+def E_nu_from_mu_lam(mu, lam):
+    E = mu * (3*lam + 2*mu) / (lam + mu)
+    nu = lam / (2*(lam + mu))
+    return E, nu
 
 
-def compute_density_from_CT(ct, m_atten_ratio=1., density_water=1000.):
-
-    # HU = 1000 (mu_x - mu_water) / mu_water
-    # HU / 1000 = mu_x / mu_water - 1
-    # mu_x = (HU / 1000 + 1) * mu_water
-
-    # m_atten_x = mu_x / rho_x
-    # rho_x = mu_x / m_atten_x
-    # mu_x = rho_x * m_atten_x
-
-    # rho_x = (HU / 1000 + 1) * mu_water / m_atten_x
-    # rho_x = (HU / 1000 + 1) * rho_water * m_atten_water / m_atten_x
-    # rho_x = (HU / 1000 + 1) * rho_water / m_atten_ratio
-
-    # where m_atten_ratio = m_atten_x / m_atten_water
-    assert m_atten_ratio > 0
-    return (ct / 1000 + 1) * density_water / m_atten_ratio
+def density_from_HU(hu, m_atten_ratio=1.0, rho_water=1000):
+    return (hu / 1000 + 1) * rho_water / m_atten_ratio
 
 
-def compute_emphysema_from_CT(ct, threshold=-950):
-    return (ct <= threshold)
+def emphysema_from_HU(hu, threshold=-950):
+    return (hu <= threshold)
 
 
 def sample_rigid_transform(

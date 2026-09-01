@@ -384,8 +384,8 @@ def _compute_lame_parameters(
 
     if keys == {'E', 'nu'}:
         E, nu = (params['E'], params['nu'])
-        mu = E / (2 * (1 + nu))
-        lam = E * nu / ((1 + nu) * (1 - 2*nu))
+        mu = E / (2*(1 + nu))
+        lam = E * nu / ((1 + nu)*(1 - 2*nu))
         return mu, lam
 
     elif keys == {'E', 'K'}:
