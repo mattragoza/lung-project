@@ -13,9 +13,9 @@ class TaskSpec:
 
     def __init__(
         self,
-        inputs:  List[str],
+        inputs: List[str],
         targets: List[str],
-        losses:  Dict[str, str],
+        losses: Dict[str, str],
         weights: Dict[str, float] = None,
         n_mat_labels: int = 5,
         rgb: bool = False
@@ -66,6 +66,10 @@ class TaskSpec:
                 raise ValueError(f'Invalid weight target: {target}')
             if weight < 0.0:
                 raise ValueError(f'Invalid weight value: {weight}')
+
+    @property
+    def loss_targets(self):
+        return [t for t in self.targets if t in self.losses]
 
     @property
     def physics_outputs(self) -> List[str]:
@@ -136,11 +140,6 @@ class TaskSpec:
         elif target in VALID_PHYSICS:
             return f'{target}_true'
         raise ValueError(target)
-
-    def base_value(self, target: str) -> float:
-        if target == 'E':
-            return 3.4863 # logE mean
-        return 0.0
 
     @property
     def metric_keys(self) -> List[str]:
