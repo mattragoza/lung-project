@@ -51,7 +51,7 @@ class WarpFEMSolver(solvers.PDESolver):
         relative_loss: bool = True,
         tv_reg_weight: float = 1e-4,
         newton_steps: int = 100,
-        newton_tries: int = 16,
+        newton_tries: int = 32,
         newton_alpha: float = 1.0,
         newton_beta: float = 0.5,
         newton_rtol: float = 1e-5,
