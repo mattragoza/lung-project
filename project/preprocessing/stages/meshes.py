@@ -29,23 +29,20 @@ def repair_surface_mesh(input_path, output_path, config):
 def generate_tetrahedral_mesh(mask_path, output_path, config, random_seed=0):
     utils.check_keys(
         config,
-        valid={'use_affine_spacing', 'mesh_parameters'},
+        valid={'use_affine', 'pygalmesh_kws'},
         where='mesh_generation'
     )
     from .. import volume_meshing
 
     nifti = fileio.load_nibabel(mask_path)
 
-    use_affine = config.get('use_affine_spacing', False)
-    pygalmesh_kws = config.get('mesh_parameters', {})
-
     utils.log('Generating tetrahedral mesh')
     mesh = volume_meshing.generate_mesh_from_mask(
         mask=nifti.get_fdata(),
         affine=nifti.affine,
-        use_affine=use_affine,
+        use_affine=config.get('use_affine', True),
         random_seed=random_seed,
-        pygalmesh_kws=pygalmesh_kws
+        pygalmesh_kws=config.get('pygalmesh_kws', {})
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -17,17 +17,17 @@ def _get_pygalmesh_spacing(affine: np.ndarray, use_affine: bool):
 def generate_mesh_from_mask(
     mask: np.ndarray,
     affine: np.ndarray,
-    use_affine: bool = False,
+    use_affine: bool = True,
     random_seed: int = 0,
     pygalmesh_kws: Dict[str, Any] = None,
     raw_label_key: str = 'medit:ref',
-    new_label_key: str = 'region'
+    new_label_key: str = 'label'
 ) -> meshio.Mesh:
     '''
     Generate a tetrahedral mesh from a voxel mask using pygalmesh.
 
     Args:
-        mask: 3D input voxel mask (binary or region labels)
+        mask: 3D input voxel mask (binary or integer labels)
         affine: (4, 4) voxel to world coordinate transform
         use_affine: If True, use world spacing when generating the mesh,
             otherwise mesh in voxel coordinates. The returned mesh will
@@ -76,22 +76,33 @@ def generate_mesh_from_mask(
 def run_pygalmesh_generation(
     mask: np.ndarray,
     spacing: np.ndarray,
-    random_seed: int,
+    random_seed: int = 0,
+    verbose: bool = False,
     **pygalmesh_kws
 ) -> meshio.Mesh:
-    import pygalmesh
+
+    import os, tempfile, pygalmesh
 
     mask_uint16 = mask.astype(np.uint16)
     if not np.allclose(mask_uint16, mask):
         raise RuntimeError('mask cannot be cast to uint16')
 
-    mesh = pygalmesh.generate_from_array(
-        vol=mask_uint16,
-        voxel_size=spacing,
-        seed=random_seed,
-        **pygalmesh_kws
-    )
-    utils.log(mesh)
+    with tempfile.NamedTemporaryFile(suffix='.inr', delete=False) as f:
+        inr_path = f.name
+
+    try:
+        pygalmesh.main.save_inr(mask_uint16, spacing, inr_path)
+
+        mesh = pygalmesh.generate_from_inr(
+            inr_path,
+            seed=random_seed,
+            verbose=verbose,
+            **pygalmesh_kws
+        )
+        utils.log(mesh)
+
+    finally:
+        os.remove(inr_path)
 
     if len(mesh.points) == 0:
         raise RuntimeError('mesh has zero vertices')
