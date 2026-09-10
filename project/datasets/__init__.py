@@ -3,8 +3,6 @@
 from . import api, base, torch
 
 from .api import (
-	get_subclass,
-	get_dataset,
-	load_example
+	get_subclass, get_dataset, load_example
 )
 

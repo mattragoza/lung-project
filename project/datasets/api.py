@@ -1,6 +1,6 @@
 # datasets/api.py
 
-from .common import utils
+from ..common import utils
 
 
 def get_subclass(config):
