@@ -1,9 +1,11 @@
+# visual/matplotlib.py
+
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import ipywidgets
 
-from ..core import utils, transforms
+from ..common import utils, transforms
 
 
 class SliceViewer:
