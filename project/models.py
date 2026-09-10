@@ -17,28 +17,25 @@ DEFAULT_UPSAMPLE = 'nearest'
 
 
 def build_model(task, config):
-    utils.check_keys(config, {'backbone', 'param_specs'})
+    utils.check_keys(config, {'backbone', 'heads'})
 
     backbone_kws = config.get('backbone', {}).copy()
     backbone_cls = globals()[backbone_kws.pop('_class')]
     backbone = backbone_cls(task.in_channels, **backbone_kws)
 
-    param_specs_cfg = config.get('param_specs', {})
+    heads_cfg = config.get('heads', {})
+
+    unused = set(heads_cfg) - set(task.targets)
+    if unused:
+        raise ValueError(f'Unused head config(s): {unused}')
 
     heads = {}
-    for tgt in task.targets:
-        in_channels = backbone.out_channels
-        out_channels = task.out_channels(tgt)
-
-        if tgt in task.valid_physics:
-            spec = ParameterSpec(**param_specs_cfg.get(tgt, {}))
-            head = ParameterHead(in_channels, out_channels, param_name=tgt, param_spec=spec)
-        elif tgt == 'material':
-            head = SegmentationHead(in_channels, out_channels, out_name='mat')
-        else:
-            head = RegressionHead(in_channels, out_channels, out_name=tgt)
-
-        heads[tgt] = head
+    for target in task.targets:
+        heads[target] = OutputHead(
+            in_channels=backbone.out_channels,
+            out_channels=task.out_channels(target),
+            **heads_cfg.get(target, {})
+        )
 
     return MultiTaskModel(backbone, heads)
 
@@ -52,41 +49,34 @@ class MultiTaskModel(nn.Module):
 
     def forward(self, x):
         feats = self.backbone(x)
-        outputs = {'feats': feats}
-        for name, head in self.heads.items():
-            outputs.update(head(outputs))
-        return outputs
+        return {
+            name: head(feats) for name, head in self.heads.items()
+        }
 
 
-class ParameterHead(nn.Module):
+class OutputHead(nn.Module):
 
     def __init__(
         self,
         in_channels: int,
         out_channels: int,
-        param_name: str,
-        param_spec: ParameterSpec,
-        use_bias: bool = True
+        use_bias: bool = True,
+        **spec_kws
     ):
         super().__init__()
         self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1, bias=use_bias)
-        self.param_name = param_name
-        self.param_spec = param_spec
+        self.spec = ParameterSpec(**spec_kws)
 
-    def forward(self, inputs):
-        z = self.conv(inputs['feats'])
-        x = self.param_spec.decode(z)
-        return {
-            f'{self.param_name}_pred': x,
-            f'{self.param_name}_z': z
-        }
+    def forward(self, x):
+        z = self.conv(x)
+        return self.spec.decode(z)
 
 
 class ParameterSpec:
 
     def __init__(
         self,
-        mode: str = 'log10',
+        mode: str = 'linear',
         mean: float = 0.0,
         std: float = 1.0,
         min: float = None,
@@ -143,34 +133,6 @@ class ParameterSpec:
             return s * (self.max - self.min) + self.min
 
         raise ValueError(f'Invalid parameter mode: {self.mode}')
-
-
-class SegmentationHead(nn.Module):
-
-    def __init__(self, in_channels: int, out_channels: int, out_name: str):
-        super().__init__()
-        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
-        self.out_name = out_name
-
-    def forward(self, inputs):
-        z = self.conv(inputs['feats'])
-        p = F.softmax(z, dim=1)
-        return {
-            f'{self.out_name}_logits': z,
-            f'{self.out_name}_probs': p
-        }
-
-
-class RegressionHead(nn.Module):
-
-    def __init__(self, in_channels: int, out_channels: int, out_name: str):
-        super().__init__()
-        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1)
-        self.out_name = out_name
-
-    def forward(self, inputs):
-        z = self.conv(inputs['feats'])
-        return {f'{self.out_name}_pred': z}
 
 
 # ----- architecture components -----

@@ -27,7 +27,7 @@ class PDESolver:
     def bind_geometry(self, verts: torch.Tensor, cells: torch.Tensor):
         raise NotImplementedError
 
-    def solve(
+    def solve_forward(
         self,
         mu: torch.Tensor,
         lam: torch.Tensor,
@@ -36,25 +36,21 @@ class PDESolver:
     ) -> torch.Tensor:
         raise NotImplementedError
 
-    def forward(
+    def loss_forward(
         self,
         mu: torch.Tensor,
         lam: torch.Tensor,
         rho: torch.Tensor,
         u_bc: torch.Tensor,
         u_obs: torch.Tensor
-    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, Any]]:
+    ) -> Tuple[dict, dict]:
         raise NotImplementedError
 
-    def backward(self, loss_grad: torch.Tensor, context: Dict) -> Dict[str, torch.Tensor]:
+    def loss_backward(self, loss_grad: torch.Tensor, context: dict) -> dict:
         raise NotImplementedError
 
-    def zero_grad(self):
-        raise NotImplementedError
-
-    def loss(self, mu, lam, rho, u_bc, u_obs, mask):
-        loss, res, u_sim = PDELossFn.apply(self, mu, lam, rho, u_bc, u_obs, mask)
-        return loss, {'res': res, 'u_sim': u_sim}
+    def simulate_loss(self, mu, lam, rho, u_bc, u_obs, mask) -> dict:
+        return PDELossFn.apply(self, mu, lam, rho, u_bc, u_obs, mask)
 
 
 class PDELossFn(torch.autograd.Function):
@@ -71,14 +67,9 @@ class PDELossFn(torch.autograd.Function):
         mask: torch.Tensor
     ):
         ctx.solver = solver
-        ctx.tensors = (mu, lam, rho, u_bc, u_obs)
-        solver.zero_grad()
-        outputs, ctx.context = solver.forward(mu, lam, rho, u_bc, u_obs, mask)
-        return (
-            outputs['loss'],
-            outputs['res'].detach(),
-            outputs['u_sim'].detach()
-        )
+        ctx.inputs = (mu, lam, rho, u_bc, u_obs)
+        outputs, ctx.context = solver.loss_forward(mu, lam, rho, u_bc, u_obs, mask)
+        return outputs['loss'], outputs['u_sim'], outputs['residual']
 
     @staticmethod
     def backward(
@@ -87,8 +78,8 @@ class PDELossFn(torch.autograd.Function):
         res_grad: Optional[torch.Tensor] = None,
         u_sim_grad: Optional[torch.Tensor] = None
     ):
-        input_grads = ctx.solver.backward(loss_grad, ctx.context)
-        mu, lam, rho, u_bc, u_obs = ctx.tensors
+        input_grads = ctx.solver.loss_backward(loss_grad, ctx.context)
+        mu, lam, rho, u_bc, u_obs = ctx.inputs
         return (
             None,
             _on_device(input_grads.get('mu'), mu.device),

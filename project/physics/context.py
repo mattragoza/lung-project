@@ -86,10 +86,9 @@ class PhysicsContext:
         self.verts = _cpu_tensor(verts_m, dtype=torch.float)
         self.volume = _cpu_tensor(volume_m3, dtype=torch.float)
 
-        self.adjacency = transforms.compute_incidence_matrix(
+        self.incidence = transforms.compute_incidence_matrix(
             verts=self.verts,
             cells=self.cells,
-            volume=self.volume
         )
 
         # ----- world-space sampling points -----

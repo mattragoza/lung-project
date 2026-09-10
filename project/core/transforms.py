@@ -21,6 +21,9 @@ def grid_coords(shape, axis=-1, **kwargs):
     return module.stack(coords, axis)
 
 
+# ----- affine / grid geometry -----
+
+
 def to_homo_coords(points):
     '''
     Args:
@@ -200,77 +203,116 @@ def get_grid_bounds(shape, affine, align_corners=True):
         return world.min(axis=0), world.max(axis=0)
 
 
+# ----- tetrahedral mesh geometry -----
+
+
 def compute_cell_volume(verts, cells):
-    a = verts[cells[:,0]]
-    b = verts[cells[:,1]]
-    c = verts[cells[:,2]]
-    d = verts[cells[:,3]]
-    M = np.stack([b - a, c - a, d - a], axis=-1) # (M,3,3)
+    '''
+    Compute volume of tetrahedral cells.
+
+    Args:
+        verts: (N, 3) float array
+        cells: (M, 4) int array
+    Returns:
+        volume: (M,) float array
+    '''
+    a = verts[cells[:,0]] # (M, 3)
+    b = verts[cells[:,1]] # (M, 3)
+    c = verts[cells[:,2]] # (M, 3)
+    d = verts[cells[:,3]] # (M, 3)
+
+    M = np.stack([
+        b - a,
+        c - a,
+        d - a,
+    ], axis=-1) # (M, 3, 3)
+
     return np.abs(np.linalg.det(M)) / 6
 
 
-def compute_incidence_matrix(verts, cells, volume):
+def compute_incidence_matrix(verts, cells):
     '''
-    Construct a sparse node-to-cell incidence matrix,
-    weighted by the tetrahedral cell volumes.
+    Construct sparse node-to-cell incidence matrix.
+
+    Args:
+        verts: (N, 3) float array or tensor
+        cells: (M, 4) int array or tensor
+    Returns:
+        A: (N, M) sparse matrix where A[i,j] = 1
+            iff node i is a vertex of cell j.
     '''
-    indices, entries = [], []
-    for cell_idx, vert_indices in enumerate(cells):
-        for vert_idx in vert_indices:
-            indices.append([vert_idx, cell_idx])
-            entries.append(volume[cell_idx])
+    shape = (len(verts), len(cells)) # (N, M)
 
-    shape = len(verts), len(cells)
-    indices = np.array(indices, dtype=int).T
-    entries = np.array(entries, dtype=float)
+    if torch.is_tensor(cells):
+        node_inds = cells.long().reshape(-1)
 
-    if torch.is_tensor(verts):
-        return torch.sparse_coo_tensor(indices, entries, shape)
+        cell_inds = torch.arange(shape[1], device=cells.device)
+        cell_inds = cell_inds.repeat_interleave(cells.shape[1])
+
+        indices = torch.stack([node_inds, cell_inds]) # (2, 4M)
+        values = torch.ones(
+            indices.shape[1], dtype=verts.dtype, device=verts.device
+        )
+
+        return torch.sparse_coo_tensor(
+            indices, values, shape, device=verts.device
+        ).coalesce()
 
     import scipy.sparse
-    return scipy.sparse.coo_array((entries, indices), shape)
+
+    node_inds = cells.reshape(-1)
+    cell_inds = np.repeat(np.arange(shape[1]), cells.shape[1])
+
+    values = np.ones(len(node_inds), dtype=verts.dtype)
+
+    return scipy.sparse.coo_array(
+        (values, (node_inds, cell_inds)), shape=shape
+    )
 
 
-def node_to_cell_values(cells, node_vals):
-    assert cells.ndim == 2 and cells.shape[-1] == 4, cells.shape
-    assert node_vals.ndim in {1, 2}, node_vals.shape
-    return node_vals[cells].mean(axis=1)
+def node_to_cell_values(node_values, incidence):
+    '''
+    Args:
+        node_values: (N, C) or (N,)
+        incidence:   (N, M)
+    Returns:
+        cell_values: (M, C) or (M,)
+    '''
+    N = incidence.shape[0]
 
-
-def cell_to_node_values(cells_to_nodes, cell_vals, eps=1e-12):
-    assert cell_vals.ndim in {1, 2}
-
-    if cell_vals.ndim == 1:
-        cell_vals = cell_vals[:,None]
-        do_squeeze = True
+    if torch.is_tensor(node_values):
+        ones = torch.ones(N, dtype=node_values.dtype, device=node_values.device)
     else:
-        do_squeeze = False
+        ones = np.ones(N, dtype=node_values.dtype)
 
-    num = cells_to_nodes @ cell_vals # (N, C) x (C, D) -> (N, D)
-    den = cells_to_nodes.sum(axis=1) # (N, C) -> (N,)
-    out = num / np.maximum(den, eps)[:,None]
+    counts = incidence.T @ ones
 
-    return out[:,0] if do_squeeze else out
+    if node_values.ndim == 1:
+        return (incidence.T @ node_values) / counts
 
-
-def cell_to_node_labels(verts, cells, cell_labels):
-    vol = compute_cell_volume(verts, cells)
-    num_verts = len(verts)
-    max_label = int(cell_labels.max())
-    acc = np.zeros((num_verts, max_label + 1), dtype=float)
-    for i, vert_inds in enumerate(cells):
-        for j in vert_inds:
-            acc[j, cell_labels[i]] += vol[i]
-    return np.argmax(acc, axis=1)
+    return (incidence.T @ node_values) / counts[:,None]
 
 
-def smooth_mesh_values(verts, cells, node_vals, cell_vals, degree):
-    assert degree in {0, 1}
-    if degree == 0:
-        out_vals = (cell_vals + node_to_cell_values(cells, node_vals)) / 2
-    elif degree == 1:
-        out_vals = (node_vals + cell_to_node_values(verts, cells, cell_vals)) / 2
-    return out_vals
+def cell_to_node_values(cell_values, cell_volume, incidence):
+    '''
+    Args:
+        cell_values: (M, C) or (M,)
+        cell_volume: (M,)
+        incidence:   (N, M)
+    Returns:
+        node_values: (N, C) or (N,)
+    '''
+    denom = incidence @ cell_volume
+
+    if cell_values.ndim == 1:
+        numer = incidence @ (cell_values * cell_volume)
+        return numer / denom
+
+    numer = incidence @ (cell_values * cell_volume[:,None])
+    return numer / denom[:,None]
+
+
+# ----- physical parameters -----
 
 
 def mu_lam_from_E_nu(E, nu):
@@ -291,6 +333,9 @@ def density_from_HU(hu, m_atten_ratio=1.0, rho_water=1000):
 
 def emphysema_from_HU(hu, threshold=-950):
     return (hu <= threshold)
+
+
+# ----- rigid transformations -----
 
 
 def sample_rigid_transform(

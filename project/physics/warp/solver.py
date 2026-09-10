@@ -180,7 +180,7 @@ class WarpFEMSolver(solvers.PDESolver):
 
     # ----- public solver interface -----
 
-    def solve(self, mu, lam, rho, u_bc):
+    def solve_forward(self, mu, lam, rho, u_bc):
 
         with wp.ScopedDevice(self.device):
             mu, lam, rho, u_bc = self.make_input_fields(mu, lam, rho, u_bc)
@@ -197,69 +197,64 @@ class WarpFEMSolver(solvers.PDESolver):
 
         return wp.to_torch(u.dof_values)
 
-    def forward(self, mu, lam, rho, u_bc, u_obs, mask):
+    def loss_forward(self, mu, lam, rho, u_bc, u_obs, mask):
 
         with wp.ScopedDevice(self.device):
             mu, lam, rho, u_bc = self.make_input_fields(mu, lam, rho, u_bc)
 
             P = self.assemble_boundary_projector(normalize=True)
-            u = self.init_unknown_field(u_bc, P, requires_grad=True)
+            u_sim = self.init_unknown_field(u_bc, P, requires_grad=True)
 
             if self.material.is_linear:
-                J, M = self.solve_linear_system(self.material, mu, lam, rho, u, P)
+                J, M = self.solve_linear_system(self.material, mu, lam, rho, u_sim, P)
             else:
-                #init_material = self.material.get_linear()
-                #J, M = self.solve_linear_system(init_material, mu, lam, rho, u, P)
-                J, M = self.solve_newton_method(self.material, mu, lam, rho, u, P)
+                J, M = self.solve_newton_method(self.material, mu, lam, rho, u_sim, P)
 
             u_obs, mask = self.make_target_fields(u_obs, mask)
 
             tape = wp.Tape()
             with tape:
                 res = self.assemble_residual(
-                    self.material, mu, lam, rho, u, requires_grad=True
+                    self.material, mu, lam, rho, u_sim, requires_grad=True
                 )
 
             tape.record_func(
-                backward=lambda: self.solve_adjoint_system(J, res, u, P, M),
-                arrays=[res.dof_values, u.dof_values]
+                backward=lambda: self.solve_adjoint_system(J, res, u_sim, P, M),
+                arrays=[res.dof_values, u_sim.dof_values]
             )
             with tape:
-                loss = self.evaluate_loss(mu, lam, rho, u, u_obs, mask)
+                loss = self.evaluate_loss(mu, lam, rho, u_sim, u_obs, mask)
 
+        # torch tensors returned to caller
         outputs = {
-            'u_sim': wp.to_torch(u.dof_values),
-            'res':   wp.to_torch(res.dof_values),
-            'loss':  wp.to_torch(loss),
+            'loss': wp.to_torch(loss),
+            'u_sim': wp.to_torch(u_sim.dof_values),
+            'residual': wp.to_torch(res.dof_values)
         }
-        context = { # track variables for backward pass
+
+        # warp objects needed for backward pass
+        context = { 
             'mu': mu, 'lam': lam, 'rho': rho, 'u_bc': u_bc, 'u_obs': u_obs,
-            'u_sim': u, 'res': res, 'loss': loss, 'tape': tape
+            'loss': loss,
+            'tape': tape
         }
+
         return outputs, context
 
-    def backward(self, loss_grad, context):
+    def loss_backward(self, loss_grad, context):
         input_grads = {}
 
         with wp.ScopedDevice(self.device):
             context['loss'].grad = _as_warp_array(loss_grad)
             context['tape'].backward()
 
-            input_grads['mu'] = _get_torch_grad(context['mu'].dof_values)
-            input_grads['lam'] = _get_torch_grad(context['lam'].dof_values)
-            input_grads['rho'] = _get_torch_grad(context['rho'].dof_values)
-            input_grads['u_bc'] = _get_torch_grad(context['u_bc'].dof_values)
-            input_grads['u_obs'] = _get_torch_grad(context['u_obs'].dof_values)
+        for key in ['mu', 'lam', 'rho', 'u_bc', 'u_obs']:
+            input_grads[key] = _get_torch_grad(context[key].dof_values)
 
-            for key in context: # try to explicitly free warp context
-                context[key] = None
-            context.clear()
+        for key in context: # try to explicitly free memory
+            context[key] = None
 
         return input_grads
-
-    def zero_grad(self):
-        if getattr(self, 'tape', None) is not None:
-            self.tape.reset()
 
     # ----- solving systems of equations -----
 

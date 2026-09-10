@@ -1,426 +1,230 @@
-from typing import List, Dict, Any
-
-from collections import defaultdict
-from pathlib import Path
+from typing import List, Dict, Iterable, Any, Optional
 
 import numpy as np
-import pandas as pd
 import torch
 
-from .core import utils, transforms
-from .core import metrics as mm
-from .visual import matplotlib as mpl_viz
-from .callbacks import Callback
+from .core import utils, metrics
 
 
-def _to_numpy(t):
-    return t.detach().cpu().numpy() if torch.is_tensor(t) else np.asarray(t)
+def _to_numpy(x) -> np.ndarray:
+    if torch.is_tensor(x):
+        return x.detach().cpu().numpy()
+    return np.asarray(x)
 
 
-def _evaluate(pred, target, weight=None, name=None, profile=None):
-    if profile is None:
-        profile = name.split('_')[0]
-    metrics = mm.evaluate_metrics(pred, target, weight, profile)
-    return utils.namespace(metrics, name) if name else metrics
+def _flatten_voxels(x) -> np.ndarray:
+    '''(C, I, J, K) -> (N, C)'''
+    x = _to_numpy(x)
+
+    if x.ndim != 4:
+        raise ValueError(f'Expected (C, I, J, K), got {x.shape}')
+
+    return x.reshape(x.shape[0], -1).T
 
 
-class PlotterCallback(Callback):
+def _flatten_scalar(x) -> np.ndarray:
+    '''(1, I, J, K) -> (N,)'''
+    x = _flatten_voxels(x)
 
-    def __init__(
+    if x.shape[1] != 1:
+        raise ValueError(f'Expected (N, 1), got {x.shape}')
+
+    return x[:,0]
+
+
+def _index_batch(
+    batch: Dict[str, Iterable[Any]] | None, index: int
+) -> Dict[str, Any] | None:
+    '''batch[key][index] -> output[key]'''
+    if batch is None:
+        return None
+
+    output = {}
+    for key, value in batch.items():
+        if utils.is_iterable(value, string_ok=False):
+            output[key] = value[index]
+        else:
+            output[key] = value
+
+    return output
+
+
+def _index_maybe(values: List[Any] | None, index: int) -> Any:
+    '''values[index] | None'''
+    return values[index] if values is not None else None
+
+
+def _cell_values(field):
+    return _to_numpy(field.cell_values) if field.cell_values else None
+
+
+def _evaluate(
+    name: str,
+    pred: np.ndarray,
+    true: Optional[np.ndarray] = None,
+    weight: Optional[np.ndarray] = None,
+    profile: Optional[str] = None
+) -> Dict[str, float]:
+    values = metrics.evaluate_profile(pred, true, weight, profile)
+    return utils.namespace(values, name)
+
+
+class Evaluator:
+
+    def evaluate_batch(
         self,
-        keys,
-        output_dir='plotter',
-        update_interval=1
-    ):
-        self.update_interval = update_interval
+        batch: Dict[str, Iterable[Any]],
+        preds: Optional[dict] = None,
+        sims:  Optional[list] = None,
+        groupby: Optional[str] = None
+    ) -> List[Dict[str, float]]:
 
-        # history[key][phase][step] = [values]
-        self.history = {
-            key: {p: defaultdict(list) for p in ['train', 'test', 'val']}
-                for key in keys
-        }
-        self.output_dir = Path(outputs)
-        self.output_dir.mkdir(exist_ok=True, parents=True)
-        self._init_plot()
+        all_rows = []
+        for sample_idx in range(len(batch['example'])):
 
-    def on_batch_end(self, epoch, phase, batch, step, outputs):
-        phase = str(phase).lower()
-        for key in self.history:
-            if key == 'mat_pred':
-                outputs = ensure_material_preds(outputs)
-            if key in outputs:
-                val = float(outputs[key].float().norm().item())
-                self.history[key][phase][step].append(val)
-        if batch % self.update_interval == 0:
-            self._update_plot()
+            new_rows = self.evaluate_sample(
+                _index_batch(batch, sample_idx),
+                _index_batch(preds, sample_idx),
+                _index_maybe(sims, sample_idx),
+                groupby
+            )
+            all_rows.extend(new_rows)
 
-    def on_phase_end(self, epoch, phase):
-        self._save_plot()
+        return all_rows
 
-    def _init_plot(self, n_cols=4):
-        import math
-        n_axes = len(self.history.keys())
-        n_rows = int(math.ceil(n_axes / n_cols))
-        self.fig, self.axes = mpl_viz.subplot_grid(
-            n_rows, n_cols, ax_height=2, ax_width=1.5,
-            spacing=(1.0, 1.0),
-            padding=(1.0, 0.5, 0.5, 0.5) # lrbt
+    def evaluate_sample(
+        self,
+        sample: Dict[str, Any],
+        pred: Optional[dict] = None,
+        sim:  Optional[dict] = None,
+        groupby: Optional[str] = None
+    ) -> List[Dict[str, float]]:
+
+        # full-domain evaluation
+        rows = [self.evaluate_group(sample, pred, sim)]
+
+        if groupby is None:
+            return rows
+
+        # subdomain evaluation via groupby labels
+        labels = _flatten_scalar(sample[groupby])
+
+        for label in np.unique(labels[labels != 0]):
+            rows.append(self.evaluate_group(
+                sample, pred, sim, groupby, label
+            ))
+
+        return rows
+
+    def evaluate_group(
+        self,
+        sample: Dict[str, Any],
+        pred: Optional[dict] = None,
+        sim:  Optional[dict] = None,
+        group: Optional[str] = None,
+        label: Optional[int] = None
+    ) -> Dict[str, float]:
+
+        values = {'group': group, 'label': label}
+
+        if pred is not None:
+            values |= self.evaluate_voxels(sample, pred, group, label)
+
+        if sim is not None:
+            values |= self.evaluate_mesh(sim, group, label)
+
+        return values
+
+    def evaluate_voxels(
+        self,
+        true_vols: Dict[str, Any],
+        pred_vols: Dict[str, Any],
+        group: Optional[str] = None,
+        label: Optional[int] = None
+    ) -> Dict[str, float]:
+
+        selected = _flatten_scalar(true_vols['mask'])
+
+        if group is not None:
+            selected &= _flatten_scalar(true_vols[group]) == label
+
+        values = {'num_voxels': int(selected.sum())}
+
+        if not selected.any():
+            utils.warn(f'WARNING: zero voxels selected')
+            return values
+
+        for name, pred_vox in pred_vols.items():
+            pred_vox = _flatten_voxels(pred_vox)
+
+            true_vox = None
+            if name in sample:
+                true_vox = _flatten_voxels(true_vols[name])
+
+            values |= _evaluate(
+                name=f'{name}_vox',
+                pred=_index_maybe(pred_vox, selected),
+                true=_index_maybe(true_vox, selected),
+                profile=self.task.metric_profile(name)
+            )
+
+        return values
+
+    def evaluate_mesh(
+        self,
+        sim: Dict[str, Any],
+        group: Optional[str] = None,
+        label: Optional[int] = None
+    ) -> dict:
+
+        cell_volume = _to_numpy(sim['ctx'].volume)
+        true_fields = sim['ctx'].fields
+        pred_fields = sim['params']
+
+        selected = np.ones(len(cell_volume), dtype=bool)
+
+        if group is not None:
+            selected &= _cell_values(true_fields[group]) == label
+
+        values = {'num_cells': int(selected.sum())}
+
+        if not selected.any():
+            utils.warn(f'WARNING: zero cells seleted')
+            return values
+
+        weight = cell_volume[selected]
+
+        for name, pred_field in pred_fields.items():
+            pred_cells = _cell_values(pred_field)
+
+            true_cells = None
+            if name in true_fields:
+                true_cells = _cell_values(true_fields[name])
+
+            values |= _evaluate(
+                name=f'{name}_cell',
+                pred=_index_maybe(pred_cells, selected),
+                true=_index_maybe(true_cells, selected),
+                weight=cell_volume,
+                profile=self.task.metric_profile(name)
+            )
+
+        values |= _evaluate(
+            name='u_cell',
+            pred=_index_maybe(_cell_values(sim['u_sim']), selected),
+            true=_index_maybe(_cell_values(sim['u_obs']), selected),
+            weight=weight,
+            profile='vector'
         )
-        axes_flat = self.axes.flatten()
-        for i, key in enumerate(self.history.keys()):
-            ax = axes_flat[i]
-            ax.set_xlabel('step')
-            ax.set_title(key)
 
-        self.fig.canvas.draw()
-
-    def _update_plot(self):
-        for ax in self.axes.flatten():
-            ax.clear()
-
-        axes_flat = self.axes.flatten()
-        for i, key in enumerate(self.history):
-            ax = axes_flat[i]
-            for phase in ['train', 'val', 'test']:
-                data = self.history[key][phase]
-                if not data:
-                    continue
-                items = sorted(data.items(), key=lambda x: x[0])
-                steps = [s for s, _ in items]
-                means = [float(np.mean(v)) for _, v in items]
-                ax.plot(steps, means, label=phase)
-            ax.set_title(key)
-
-        for ax in self.axes.flatten():
-            ax.set_xlabel('step')
-            ax.set_yscale('log')
-            ax.grid(True)
-            ax.legend()
-
-        self.fig.canvas.draw()
-        self.fig.canvas.flush_events()
-
-    def _save_plot(self):
-        out = self.output_dir / 'training_plot.png'
-        self.fig.savefig(out, bbox_inches='tight')
-
-
-class ViewerCallback(Callback):
-
-    def __init__(
-        self,
-        keys,
-        update_interval=10,
-        apply_mask=True,
-        shift_rgb=True,
-        scale_rgb=1.0,
-        n_labels=5,
-        output_dir='views',
-        **kwargs
-    ):
-        assert len(keys) > 0
-        self.update_interval = update_interval
-
-        self.apply_mask = apply_mask
-        self.shift_rgb = shift_rgb
-        self.scale_rgb = scale_rgb
-
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True, parents=True)
-
-        self._init_viewers(keys, n_labels)
-
-    def on_batch_end(self, epoch, phase, batch, step, outputs):
-        if batch % self.update_interval == 0:
-            self._update_viewers(outputs)
-
-    def _init_viewers(self, keys, n_labels):
-        from .visual.matplotlib import SliceViewer, get_color_kws
-        self.viewers = {}
-        for k in keys:
-            self.viewers[k] = SliceViewer(title=k, **get_color_kws(k, n_labels))
-
-    def _update_viewers(self, outputs, k=0):
-        if self.apply_mask:
-            mask = _to_numpy(outputs['mask'][k])
-            assert mask.ndim == 4 and mask.shape[0] == 1
-
-        for key, viewer in self.viewers.items():
-            if key.startswith('mat_pred'):
-                outputs = ensure_material_preds(outputs)
-
-            if key not in outputs:
-                continue
-
-            array = _to_numpy(outputs[key][k])
-            assert array.ndim == 4, array.shape
-
-            if key in {'image', 'img_true', 'img_pred'} and array.shape[0] == 3: # RGB
-                if self.scale_rgb:
-                    array = array * self.scale_rgb
-                if self.shift_rgb: # map [-1, 1] -> [0, 1]
-                    array = (array + 1) / 2 
-                if self.apply_mask:
-                    array = array * mask
-                # array shape: (3, I, J, K)
-            else:
-                if self.apply_mask:
-                    array = array * mask
-                array = array[0] # (I, J, K)
-
-            viewer.update_array(array)
-
-    def on_phase_end(self, epoch, phase):
-        for key, viewer in self.viewers.items():
-            out = self.output_dir / f'{key}_viewer.png'
-            viewer.fig.savefig(out, bbox_inches='tight')
-
-
-class EvaluatorCallback(Callback):
-
-    def __init__(
-        self,
-        output_dir: str = 'metrics',
-        use_labels: bool = False
-    ):
-        self.example_rows  = defaultdict(list)
-        self.material_rows = defaultdict(list)
-
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True, parents=True)
-
-        self.ex_path = _get_new_path(self.output_dir / 'example_metrics.csv')
-        self.mat_path = _get_new_path(self.output_dir / 'material_metrics.csv')
-
-        print(self.ex_path)
-        print(self.mat_path)
-
-        self.use_labels = use_labels
-
-    def on_batch_end(self, epoch, phase, batch, step, outputs):
-        self.evaluate(epoch, phase, batch, step, outputs)
-
-    def on_phase_end(self, epoch, phase):
-        self.summarize(epoch, phase)
-
-    @torch.no_grad()
-    def evaluate(
-        self,
-        epoch: int,
-        phase: str,
-        batch: int,
-        step: int,
-        outputs: Dict[str, torch.Tensor]
-    ):
-        base = {
-            'epoch': int(epoch),
-            'phase': str(phase),
-            'batch': int(batch),
-            'step': int(step),
-            'loss': float(outputs['loss'].item())
-        }
-
-        if _has_output(outputs, 'loss_ratio'):
-            base['loss_base'] = float(outputs['loss_base'].item())
-            base['loss_ratio'] = float(outputs['loss_ratio'].item())
-
-        if self.use_labels:
-            outputs = ensure_material_preds(outputs)
-
-        for k, ex in enumerate(outputs['example']):
-            ex_base = {**base, 'subject': ex.subject}
-
-            ex_metrics = self.compute_metrics(outputs, index=k)
-            self.example_rows[phase].append(ex_base | ex_metrics)
-
-            if not self.use_labels:
-                continue
-
-            for l in get_material_labels(outputs, index=k):
-                mat_base = {**ex_base, 'material': int(l)}
-                mat_metrics = self.compute_metrics(outputs, index=k, label=l)
-                self.material_rows[phase].append(mat_base | mat_metrics)
-
-    def compute_metrics(self, outputs, index, label=None):
-        ret = {}
-        if _has_output(outputs, 'mask'):
-            ret |= self.compute_voxel_metrics(outputs, index, label)
-        if _has_output(outputs, 'sim'):
-            ret |= self.compute_mesh_metrics(outputs, index, label)
-        return ret
-
-    def compute_voxel_metrics(self, outputs, index, label=None):
-
-        mask = _to_numpy(outputs['mask'][index].bool()).reshape(-1, 1)
-
-        if label is not None:
-            mat_true = _to_numpy(outputs['mat_true'][index]).reshape(-1, 1)
-            sel = mask & (mat_true == label)
-        else:
-            sel = mask
-
-        num_voxels = int(np.count_nonzero(sel))
-
-        if num_voxels == 0:
-            sid = outputs['example'][index].subject
-            utils.warn(f'WARNING: Mask is empty for subject {sid} (material {label})')
-            return {'num_voxels': num_voxels}
-
-        ret = {'num_voxels': num_voxels}
-
-        for name in _voxel_param_fields(outputs):
-            pred_key = f'{name}_pred'
-            true_key = f'{name}_true'
-            pred = _to_numpy(outputs[pred_key][index]).reshape(-1, 1)
-            if true_key in outputs:
-                true = _to_numpy(outputs[true_key][index]).reshape(-1, 1)
-                ret |= _evaluate(pred[sel], true[sel], name=f'{name}_vox')
-            else:
-                ret |= _evaluate(pred[sel], None, name=f'{name}_vox')
-    
-        if label is not None and 'mat_pred' in outputs:
-            mat_pred = _to_numpy(outputs['mat_pred'][index]).reshape(-1, 1)
-            ret |= _evaluate(mat_pred == label, mat_true == label, name='mat_vox')
-
-            for key in ['mat_pred_a', 'mat_pred_r', 'mat_pred_o']:
-                if outputs.get(key) is not None:
-                    mat_pred_ = _to_numpy(outputs[key][index]).reshape(-1, 1)
-                    ret |= _evaluate(mat_pred_ == label, mat_true == label, name=key)
-
-        return ret
-
-    def compute_mesh_metrics(self, outputs, index, label=None):
-
-        sim_output = outputs['sim'][index]
-        if sim_output is None:
-            return {}
-
-        vol_cells = _to_numpy(sim_output['volume'])
-
-        if label is not None:
-            mat_cells = _to_numpy(sim_output['material'].cell_values)
-            sel = (mat_cells == label)
-        else:
-            sel = np.ones_like(vol_cells, dtype=bool)
-
-        num_cells = int(np.count_nonzero(sel))
-        if num_cells == 0:
-            return {'num_cells': 0}
-
-        vol_sel = vol_cells[sel]
-        vol_sum = float(np.sum(vol_sel))
-        if not np.isfinite(vol_sum) or vol_sum <= 0:
-            sid = outputs['example'][index].subject
-            utils.warn(f'WARNING: Invalid cell volume for subject {sid} (material {label}); skipping')
-            return {'num_cells': 0, 'volume': vol_sum}
-
-        ret = {'num_cells': num_cells, 'volume': vol_sum}
-
-        if 'u_pred' in sim_output:
-            u_pred = _to_numpy(sim_output['u_pred'].cell_values) # meters
-            if 'u_true' in sim_output:
-                u_true = _to_numpy(sim_output['u_true'].cell_values) # meters
-                ret |= _evaluate(u_pred[sel], u_true[sel], vol_sel, name='u_cell')
-            else:
-                ret |= _evaluate(u_pred[sel], None, vol_sel, name='u_cell')
-
-        if 'residual' in sim_output:
-            residual = _to_numpy(sim_output['residual'].cell_values)
-            ret |= _evaluate(residual[sel], None, vol_sel, name='res_cell')
-
-        for name in _mesh_param_fields(sim_output):
-            pred_key = f'{name}_pred'
-            true_key = f'{name}_true'
-
-            pred = _to_numpy(sim_output[pred_key].cell_values)
-            if sim_output.get(true_key) is not None:
-                true = _to_numpy(sim_output[true_key].cell_values)
-                ret |= _evaluate(pred[sel], true[sel], vol_sel, name=f'{name}_cell')
-            else:
-                ret |= _evaluate(pred[sel], None, vol_sel, name=f'{name}_cell')
-
-        return ret
-
-    def summarize(self, epoch, phase):
-
-        def _concat_rows(dct):
-            dfs = [pd.DataFrame(rows) for rows in dct.values() if rows]
-            return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-
-        ex_df_all = _concat_rows(self.example_rows)
-        mat_df_all = _concat_rows(self.material_rows)
-
-        for df, path in [(ex_df_all, self.ex_path), (mat_df_all, self.mat_path)]:
-            if df.empty:
-                continue
-            tmp = path.with_suffix(path.suffix + '.tmp')
-            try:
-                utils.log(f'Saving {path}')
-                df.to_csv(tmp, index=False)
-                tmp.replace(path)
-            finally:
-                tmp.unlink(missing_ok=True)
-
-        # current phase metrics
-        m = pd.DataFrame(self.example_rows[phase])
-        utils.log(f'{phase.capitalize()} metrics @ epoch {epoch}: \n{m}')
-
-
-def _get_new_path(path: Path) -> Path:
-    while path.is_file():
-        path = Path(str(path) + '.new')
-    return path
-
-
-def _has_output(outputs, key) -> bool:
-    return outputs.get(key) is not None
-
-
-PARAM_NAMES = {'E', 'nu', 'G', 'K', 'mu', 'lam', 'rho'}
-
-
-def _voxel_param_fields(outputs) -> List[str]:
-    names = []
-    for k, v in outputs.items():
-        if not k.endswith('_pred'):
-            continue
-        name = k[:-5]
-        if name not in PARAM_NAMES:
-            continue
-        if torch.is_tensor(v) and v.ndim == 5 and v.shape[1] == 1:
-            names.append(name)
-    return sorted(set(names))
-
-
-def _mesh_param_fields(sim_output) -> List[str]:
-    names = []
-    for k, v in sim_output.items():
-        if not k.endswith('_pred'):
-            continue
-        name = k[:-5]
-        if name not in PARAM_NAMES:
-            continue
-        if getattr(v, 'cell_values') is not None:
-            names.append(name)
-    return sorted(set(names))
-
-
-def get_material_labels(outputs, index):
-    labels = set()
-    if _has_output(outputs, 'mat_true'):
-        mat_tensor = outputs['mat_true'][index]
-        mat_voxels = _to_numpy(mat_tensor).reshape(-1, 1)
-        labels |= set(np.unique(mat_voxels[mat_voxels > 0]))
-
-    if _has_output(outputs, 'sim'):
-        sim_output = outputs['sim'][index]
-        if sim_output and _has_output(sim_output, 'material'):
-            mat_field = sim_output['material']
-            if getattr(mat_field, 'cells') is not None:
-                mat_cells = _to_numpy(mat_field.cell_values)
-                labels |= set(np.unique(mat_cells[mat_cells > 0]))
-
-    return sorted(labels)
+        values |= _evaluate(
+            name='res_cell',
+            pred=_index_maybe(_cell_values(sim['residual']), selected),
+            weight=weight,
+            profile='vector'
+        )
+
+        return values
 
 
 def ensure_material_preds(outputs):
@@ -459,6 +263,9 @@ def ensure_material_preds(outputs):
         outputs['mat_pred'][k] = torch.from_numpy(mat_pred_a)
 
     return outputs
+
+
+# DEPRECATED
 
 
 def predict_material_map(

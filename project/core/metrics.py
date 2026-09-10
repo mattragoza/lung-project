@@ -1,3 +1,4 @@
+from typing import List, Dict, Callable, Optional
 import numpy as np
 import scipy.stats
 
@@ -9,258 +10,281 @@ EPS = 1e-12
 class MetricRegistry:
 
     def __init__(self):
-        self._fns = {}
+        self._metrics = {}
         self._profiles = {}
 
-    def add_metric(self, name, fn, requires_target: bool):
-        self._fns[name] = (fn, requires_target)
+    def add_metric(self, name: str, func: Callable, uses_target: bool):
+        self._metrics[name] = (func, uses_target)
 
-    def add_profile(self, name, metrics):
-        assert all(name in self._fns for name in metrics)
+    def add_profile(self, name: str, metrics: List[str]):
+        missing = [m for m in metrics if m not in self._metrics]
+        if missing:
+            raise KeyError(f'Metrics not found in registry: {missing}')
         self._profiles[name] = list(metrics)
 
-    def eval(self, pred, target=None, weight=None, profile=None):
-        '''
-        Args:
-            pred:   (N, C) float array
-            target: (N, C) float array
-            weight: (N,) float array
-            profile: str
-        '''
-        pred = np.asarray(pred, dtype=float)
-        if pred.ndim > 2:
-            raise ValueError(f'Expected (N, C) array, got {pred.shape}')
-        elif pred.ndim == 1:
-            pred = pred[:,None]
+    def evaluate_metric(
+        self,
+        name: str,
+        pred: np.ndarray,
+        target: Optional[np.ndarray] = None,
+        weight: Optional[np.ndarray] = None,
+    ) -> Optional[float]:
 
-        if target is not None:
+        if name not in self._metrics:
+            raise KeyError(f'Metric not in registry: {name}')
+        func, uses_target = self._metrics[name]
+
+        pred = np.asarray(pred, dtype=float)
+        if pred.ndim == 1:
+            pred = pred[:,np.newaxis]
+        if pred.ndim != 2:
+            raise ValueError(f'Expected (N, C) pred array, got {pred.shape}')
+
+        if target is not None and uses_target:
             target = np.asarray(target, dtype=float)
-            if target.ndim > 2:
-                raise ValueError(f'Expected (N, C) array, got {target.shape}')
-            elif target.ndim == 1:
-                target = target[:,None]
+            if target.ndim == 1:
+                target = target[:,np.newaxis]
+            if target.ndim != 2:
+                raise ValueError(f'Expected (N, C) target array, got {target.shape}')
             if target.shape != pred.shape:
-                raise ValueError(f'Shape mismatch: {pred.shape} vs {target.shape}')
+                raise ValueError(f'Shape mismatch: {pred.shape} vs. {target.shape}')
 
         if weight is not None:
             weight = np.asarray(weight, dtype=float)
             if weight.ndim != 1:
-                raise ValueError(f'Expected (N,) array, got {weight.shape}')
+                raise ValueError(f'Expected (N,) weight array, got {weight.shape}')
             if weight.shape[0] != pred.shape[0]:
-                raise ValueError(f'Length mismatch: {weight.shape} vs {pred.shape}')
+                raise ValueError(f'Shape mismatch: {weight.shape} vs. {pred.shape}')
 
-        fn_names = self._profiles[profile] or self._fns.keys()
+        if uses_target and target is None:
+            return None
+        elif uses_target:
+            return func(pred, target, weight)
+        elif not uses_target:
+            return func(pred, weight)
+
+    def evaluate_metrics(
+        self,
+        pred: np.ndarray,
+        target: Optional[np.ndarray] = None,
+        weight: Optional[np.ndarray] = None,
+        names: Optional[List[str]] = None
+    ) -> Dict[str, float]:
+
+        if names is None:
+            names = self._metrics.keys()
 
         outputs = {}
-        for name in fn_names:
-            fn, requires_target = self._fns[name]
-            if requires_target and target is None:
-                #if profile is not None:
-                #    raise ValueError(f'metric {name} requires a target')
-                # with no profile specified, just skip invalid metrics
-                continue
-            elif requires_target:
-                outputs[name] = fn(pred, target, weight)
-            else:
-                outputs[name] = fn(pred, weight)
+        for name in names:
+            value = self.evaluate_metric(name, pred, target, weight)
+            if value is not None:
+                outputs[name] = value
+
         return outputs
 
+    def evaluate_profile(
+        self,
+        pred: np.ndarray,
+        target: Optional[np.ndarray] = None,
+        weight: Optional[np.ndarray] = None,
+        profile: Optional[str] = None
+    ) -> Dict[str, float]:
 
-# ----- public interface -----
+        if profile is None:
+            names = self._metrics.keys()
+        elif profile in self._profiles:
+            names = self._profiles[profile]
+        else:
+            raise KeyError(f'Profile not in registry: {profile}')
 
-
-def evaluate_metrics(pred, target=None, weight=None, profile=None):
-    return registry.eval(pred, target, weight, profile)
-
-
-# ----- helper functions -----
-
-
-def _sum(a, w=None) -> float:
-    a = np.asarray(a, dtype=float)
-    if w is None:
-        return float(np.sum(a))
-    w = np.asarray(w).flatten()
-    assert w.size == a.shape[0]
-    assert np.isfinite(w).all()
-    assert (w >= 0).all()
-    assert w.sum() > 0
-    return float(np.sum(a * w))
+        return self.evaluate_metrics(pred, target, weight, names)
 
 
-def _mean(a, w=None) -> float:
-    a = np.asarray(a, dtype=float)
-    if w is None:
-        return float(np.mean(a))
-    n, d = _sum(a, w), _sum(w)
-    return float(_divide(n, d))
+# ---- public registry API -----
 
 
-def _rms(a, w=None) -> float:
-    return float(np.sqrt(_mean(a**2, w)))
+REGISTRY = MetricRegistry()
+evaluate_metric = REGISTRY.evaluate_metric
+evaluate_metrics = REGISTRY.evaluate_metrics
+evaluate_profile = REGISTRY.evaluate_profile
 
 
-def _std(a, w=None) -> float:
-    return float(_rms(a - _mean(a, w), w))
+# ----- basic math functions -----
 
 
-def _divide(n: float, d: float) -> float:
-    assert np.isfinite(n)
-    assert np.isfinite(d)
-    if np.isclose(d, 0):
+def _sum(values: np.ndarray, weights: Optional[np.ndarray] = None) -> float:
+
+    values = np.asarray(values, dtype=float)
+
+    if values.ndim != 1:
+        raise ValueError('values must be 1-d')
+    if not np.isfinite(values).all():
+        raise ValueError('values must be finite')
+
+    if weights is None:
+        return float(np.sum(values))
+
+    weights = np.asarray(weights, dtype=float)
+
+    if weights.ndim != 1:
+        raise ValueError('weights must be 1-d')
+    if weights.shape != values.shape:
+        raise ValueError('invalid weights shape')
+    if not np.isfinite(weights).all():
+        raise ValueError('weights must be finite')
+    if not np.all(weights >= 0):
+        raise ValueError('weights must be non-negative')
+    if not np.sum(weights) > 0:
+        raise ValueError('total weight must be positive')
+
+    return float(np.sum(values * weights))
+
+
+def _divide(numer: float, denom: float) -> float:
+
+    if not np.isfinite(numer):
+        raise ValueError('numerator must be finite')
+    if not np.isfinite(denom):
+        raise ValueError('denominator must be finite')
+
+    if abs(denom) < EPS:
+        utils.warn('WARNING: division by zero')
         return float(np.nan)
-    return float(n / d)
+
+    return float(numer / denom)
+
+
+def _mean(values: np.ndarray, weight: Optional[np.ndarray] = None) -> float:
+
+    values = np.asarray(values, dtype=float)
+
+    if values.ndim != 1:
+        raise ValueError('values must be 1-d')
+    if not np.isfinite(values).all():
+        raise ValueError('values must be finite')
+
+    if weight is None:
+        return float(np.mean(values))
+
+    return float(_divide(_sum(values, weight), _sum(weight)))
+
+
+def _rms(values: np.ndarray, weight: Optional[np.ndarray] = None) -> float:
+    return float(np.sqrt(_mean(values**2, weight)))
+
+
+def _std(values: np.ndarray, weight: Optional[np.ndarray] = None) -> float:
+    deviation = values - _mean(values, weight)
+    return float(_rms(deviation, weight))
 
 
 # ----- metric definitions -----
 
 
-def mean_norm(pred: np.ndarray, weight=None) -> float:
-    '''
-    mean(||pred||)
-    '''
-    mag = np.linalg.norm(pred, axis=1)
-    return _mean(mag, weight)
+def mean_norm(pred: np.ndarray, weight: Optional[np.ndarray] = None) -> float:
+    '''mean(|pred|)'''
+    return _mean(np.linalg.norm(pred, axis=1), weight)
 
 
-def std_norm(pred: np.ndarray, weight=None) -> float:
-    '''
-    std(||pred||)
-    '''
-    mag = np.linalg.norm(pred, axis=1)
-    return _std(mag, weight)
+def rms_norm(pred: np.ndarray, weight: Optional[np.ndarray] = None) -> float:
+    '''rms(|pred|) = sqrt(mean(|pred|^2))'''
+    return _rms(np.linalg.norm(pred, axis=1), weight)
 
 
-def rms_norm(pred: np.ndarray, weight=None) -> float:
-    '''
-    sqrt(mean(||pred||^2))
-    '''
-    mag = np.linalg.norm(pred, axis=1)
-    return _rms(mag, weight)
+def std_norm(pred: np.ndarray, weight: Optional[np.ndarray] = None) -> float:
+    '''std(|pred|) = rms(|pred| - mean(|pred|))'''
+    return _std(np.linalg.norm(pred, axis=1), weight)
 
 
 def absolute_error(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
-    '''
-    mean(||pred - target||)
-    '''
-    err = np.linalg.norm(pred - target, axis=1)
-    return _mean(err, weight)
+    '''mean(|pred - target|)'''
+    return _mean(np.linalg.norm(pred - target, axis=1), weight)
 
 
 def relative_error(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
-    '''
-    sum(||pred - target||) / sum(||target||)
-    '''
-    err = np.linalg.norm(pred - target, axis=1)
-    mag = np.linalg.norm(target, axis=1)
-    num = _sum(err, weight)
-    den = _sum(mag, weight)
-    return _divide(num, den)
+    '''sum(|pred - target|) / sum(|target|)'''
+    numer = _sum(np.linalg.norm(pred - target, axis=1), weight)
+    denom = _sum(np.linalg.norm(target, axis=1), weight)
+    return _divide(numer, denom)
 
 
 def absolute_rmse(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
-    '''
-    RMSE = sqrt(mean(||pred - target||^2))
-    '''
-    err = np.linalg.norm(pred - target, axis=1)
-    return _rms(err, weight)
+    '''rms(|pred - target|)'''
+    return _rms(np.linalg.norm(pred - target, axis=1), weight)
 
 
 def normalized_rmse(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
-    '''
-    NRMSE = RMS(||pred - target||) / RMS(||target||)
-    '''
-    err = np.linalg.norm(pred - target, axis=1)
-    mag = np.linalg.norm(target, axis=1)
-
-    num = _rms(err, weight)
-    den = _rms(mag, weight)
-
-    return _divide(num, den)
-
-
-def standardized_rmse(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
-    '''
-    SRMSE = RMS(||pred - target||) / STD(||target||)
-
-    NOTE: Returns NaN when target is constant.
-    '''
-    err = np.linalg.norm(pred - target, axis=1)
-    mag = np.linalg.norm(target, axis=1)
-
-    if len(np.unique(target)) < 2:
-        #utils.log('WARNING: standardized_rmse is undefined: target is constant')
-        pass
-
-    num = _rms(err, weight)
-    den = _std(mag, weight)
-
+    '''rms(|pred - target|) / rms(|target|)'''
+    num = _rms(np.linalg.norm(pred - target, axis=1), weight)
+    den = _rms(np.linalg.norm(target, axis=1), weight)
     return _divide(num, den)
 
 
 def pearson_corr(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
-    '''
-    Pearson's correlation coefficient (component-wise)
-    '''
+    '''Pearson's correlation coefficient'''
+
     pred, target = pred.flatten(), target.flatten()
-    if len(np.unique(pred)) < 2:
-        #utils.log('WARNING: pearson_corr is undefined: pred is constant')
+
+    if weight is not None:
+        weight = np.repeat(weight, pred.size // weight.size)
+
+    dev_p = pred - _mean(pred, weight) 
+    dev_t = target - _mean(target, weight)
+
+    var_p = _mean(dev_p * dev_p, weight)
+    var_t = _mean(dev_t * dev_t, weight)
+
+    if np.sqrt(var_p) < EPS:
+        utils.warn('WARNING: pearson_corr is undefined for constant pred')
         return np.nan
 
-    if len(np.unique(target)) < 2:
-        #utils.log('WARNING: pearson_corr is undefined: target is constant')
+    if np.sqrt(var_t) < EPS:
+        utils.warn('WARNING: pearson_corr is undefined for constant target')
         return np.nan
 
-    return float(scipy.stats.pearsonr(pred, target).statistic)
+    cov = _mean(dev_p * dev_t, weight)
+
+    return _divide(cov, np.sqrt(var_p * var_t))
 
 
 def spearman_corr(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
-    '''
-    Spearman's rank correlation coefficient (component-wise)
+    '''Spearman's rank correlation coefficient
+
+    NOTE: Implemented as weighted Pearson correlation of ordinal ranks.
     '''
     pred, target = pred.flatten(), target.flatten()
-    if len(np.unique(pred)) < 2:
-        #utils.log('WARNING: spearman_corr is undefined: pred is constant')
-        return np.nan
 
-    if len(np.unique(target)) < 2:
-        #utils.log('WARNING: spearman_corr is undefined: target is constant')
-        return np.nan
+    rank_p = scipy.stats.rankdata(pred)
+    rank_t = scipy.stats.rankdata(target)
 
-    return float(scipy.stats.spearmanr(pred, target).statistic)
+    return pearson_corr(rank_p, rank_t, weight)
 
 
 def dice_score(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
-    '''
-    Dice coefficient: 2|A ^ B| / (|A| + |B|)
-    '''
-    A, B = (pred > 0), (target > 0)
-    num = 2 * (A & B).sum()
-    den = A.sum() + B.sum()
-    return _divide(num, den)
+    '''Dice coefficient: 2*|A & B| / (|A| + |B|)'''
+
+    A, B = (pred > 0).flatten(), (target > 0).flatten()
+
+    numer = 2 * _sum(A & B, weight)
+    denom = _sum(A, weight) + _sum(B, weight)
+
+    return _divide(numer, denom)
 
 
-# ----- register metrics / profiles -----
+# ----- register metrics and profiles -----
 
-registry = MetricRegistry()
+REGISTRY.add_metric('mean', mean_norm, uses_target=False)
+REGISTRY.add_metric('rms', rms_norm, uses_target=False)
+REGISTRY.add_metric('std', std_norm, uses_target=False)
+REGISTRY.add_metric('mae', absolute_error, uses_target=True)
+REGISTRY.add_metric('mre', relative_error, uses_target=True)
+REGISTRY.add_metric('rmse', absolute_rmse, uses_target=True)
+REGISTRY.add_metric('nrmse', normalized_rmse, uses_target=True)
+REGISTRY.add_metric('pcorr', pearson_corr, uses_target=True)
+REGISTRY.add_metric('scorr', spearman_corr, uses_target=True)
+REGISTRY.add_metric('dice', dice_score, uses_target=True)
 
-registry.add_metric('mean', mean_norm, requires_target=False)
-registry.add_metric('rms',  rms_norm,  requires_target=False)
-registry.add_metric('std',  std_norm,  requires_target=False)
-
-registry.add_metric('mae',   absolute_error,  requires_target=True)
-registry.add_metric('mre',   relative_error,  requires_target=True)
-registry.add_metric('rmse',  absolute_rmse,   requires_target=True)
-registry.add_metric('nrmse', normalized_rmse, requires_target=True)
-registry.add_metric('pcorr', pearson_corr,    requires_target=True)
-registry.add_metric('scorr', spearman_corr,   requires_target=True)
-
-registry.add_metric('srmse', standardized_rmse, requires_target=True)
-registry.add_metric('dice', dice_score, requires_target=True)
-
-for name in ['E', 'nu', 'G', 'K', 'mu', 'lam', 'rho', 'u']:
-    registry.add_profile(name, ['mean', 'std', 'mae', 'mre', 'rms', 'rmse', 'nrmse', 'srmse', 'pcorr', 'scorr'])
-
-registry.add_profile('res', ['mean', 'rms'])
-registry.add_profile('mat', ['dice'])
+REGISTRY.add_profile('scalar', ['mean', 'std', 'rms', 'mae', 'mre', 'rmse', 'nrmse', 'pcorr', 'scorr'])
+REGISTRY.add_profile('vector', ['mean', 'std', 'rms', 'mae', 'mre', 'rmse', 'nrmse'])
+REGISTRY.add_profile('binary', ['dice'])
 

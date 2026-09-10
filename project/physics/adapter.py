@@ -44,10 +44,12 @@ class PhysicsAdapter:
     ):
         self.pde_solver = pde_solver
 
+        elastic_params = tuple(elastic_params)
+
         if elastic_params not in VALID_ELASTIC_PARAMS:
             raise ValueError(f'Invalid elasticity parameters: {elastic_params}')
 
-        self.elastic_params = tuple(elastic_params)
+        self.elastic_params = elastic_params
 
         self.default_rho = float(default_rho)
         self.noise_level = float(noise_level)
@@ -100,8 +102,8 @@ class PhysicsAdapter:
         unit_m: float,
         params: Dict[str, torch.Tensor],
         bc_spec: Optional[Any] = None,
-        p_obs: float = 1.0,
-        ret_outputs: bool = False
+        ret_outputs: bool = False,
+        p_obs: float = 1.0
     ):
         ctx = self.get_physics_context(mesh, unit_m)
 
@@ -114,30 +116,26 @@ class PhysicsAdapter:
             mask = torch.ones(u_obs.shape[0], dtype=torch.float)
 
         self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
-        loss, outputs = self.pde_solver.loss(mu, lam, rho, u_bc, u_obs, mask)
+        loss, u_sim, res = self.pde_solver.simulate_loss(
+            mu, lam, rho, u_bc, u_obs, mask
+        )
 
-        if ret_outputs:
-            try:
-                mu_t, lam_t, rho_t = self.get_canonical_parameters(ctx)
-            except KeyError:
-                mu_t = lam_t = rho_t = None
-        
-            return loss, self._package_outputs(
-                ctx,
-                #true_native=true_params,
-                #pred_native=params,
-                mu_true=mu_t,
-                lam_true=lam_t,
-                rho_true=rho_t,
-                mu_pred=mu,
-                lam_pred=lam, 
-                rho_pred=rho,
-                u_true=u_obs,
-                u_pred=outputs['u_sim'],
-                pde_res=outputs['res'],
-            )
+        if not ret_outputs:
+            return loss, None
 
-        return loss
+        outputs = {
+            'ctx': ctx,
+            'params': {
+                key: _as_mesh_field(ctx, val, self.scalar_degree)
+                    for key, val in params.items()
+            },
+            'u_bc': _as_mesh_field(ctx, u_bc, self.vector_degree),
+            'u_obs': _as_mesh_field(ctx, u_obs, self.vector_degree),
+            'u_sim': _as_mesh_field(ctx, u_sim, self.vector_degree),
+            'residual': _as_mesh_field(ctx, res, self.vector_degree),
+        }
+
+        return loss, outputs
 
     def initialize_param_field(
         self,
@@ -193,7 +191,7 @@ class PhysicsAdapter:
         u_bc = self.get_boundary_condition(ctx, bc_spec)
 
         self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
-        u_sim = self.pde_solver.solve(mu, lam, rho, u_bc)
+        u_sim = self.pde_solver.solve_forward(mu, lam, rho, u_bc)
 
         return _as_mesh_field(ctx, u_sim, self.vector_degree)
 
@@ -230,6 +228,7 @@ class PhysicsAdapter:
             moduli[key] = self.resolve_material_parameter(ctx, key, overrides)
 
         mu, lam = _compute_lame_parameters(moduli)
+
         _validate_material_parameters(mu, lam, rho)
 
         return mu, lam, rho
@@ -252,7 +251,11 @@ class PhysicsAdapter:
             pass
 
         if key == 'rho':
-            return self.default_rho
+            if self.scalar_degree == 0:
+                shape = ctx.cells.shape[:1]
+            elif self.scalar_degree == 1:
+                shape = ctx.verts.shape[:1]
+            return torch.full(shape, self.default_rho)
 
         raise KeyError(f'No value provided for parameter: {key}')
 
@@ -284,11 +287,11 @@ class PhysicsAdapter:
             u_bc = self.get_boundary_condition(ctx, bc_spec)
 
             self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
-            u_obs = self.pde_solver.solve(mu, lam, rho, u_bc)
+            u_sim = self.pde_solver.solve_forward(mu, lam, rho, u_bc)
 
             ctx.obs_cache[bc_spec] = (
                 _as_mesh_field(ctx, u_bc, self.vector_degree),
-                _as_mesh_field(ctx, u_obs, self.vector_degree),
+                _as_mesh_field(ctx, u_sim, self.vector_degree),
             )
 
         u_bc_field, u_obs_field = ctx.obs_cache[bc_spec]
@@ -309,71 +312,6 @@ class PhysicsAdapter:
 
         noise = torch.randn(*u_obs.shape, generator=rng)
         return u_obs + sigma * noise
-
-    # ----- output packaging -----
-
-    def _package_outputs(
-        self,
-        ctx: context.PhysicsContext,
-        mu_true: torch.Tensor,
-        mu_pred: torch.Tensor,
-        lam_true: torch.Tensor,
-        lam_pred: torch.Tensor,
-        rho_true: torch.Tensor,
-        rho_pred: torch.Tensor,
-        u_true: torch.Tensor,
-        u_pred: torch.Tensor,
-        pde_res: torch.Tensor,
-        *args, **kwargs
-    ) -> Dict[str, context.MeshField]:
-
-        ret = {
-            'volume':   ctx.volume,
-            'u_pred':   _as_mesh_field(ctx, u_pred, self.vector_degree),
-            'mu_pred':  _as_mesh_field(ctx, mu_pred, self.scalar_degree),
-            'lam_pred': _as_mesh_field(ctx, lam_pred, self.scalar_degree),
-            'rho_pred': _as_mesh_field(ctx, rho_pred, self.scalar_degree),
-        }
-        if 'material' in ctx.fields:
-            ret['material'] = ctx.fields['material']
-
-        if u_true is not None:
-            ret['u_true'] = _as_mesh_field(ctx, u_true, self.vector_degree)
-        if mu_true is not None:
-            ret['mu_true'] = _as_mesh_field(ctx, mu_true, self.scalar_degree)
-        if lam_true is not None:
-            ret['lam_true'] = _as_mesh_field(ctx, lam_true, self.scalar_degree)
-        if rho_true is not None:
-            ret['rho_true'] = _as_mesh_field(ctx, rho_true, self.scalar_degree)
-        if pde_res is not None:
-            ret['residual'] = _as_mesh_field(ctx, pde_res, self.vector_degree)
-
-        #for name in pred_native:
-        #    ret[f'{name}_pred'] = _as_mesh_field(ctx, pred_native[name], self.scalar_degree)
-        #for name in true_native:
-        #    ret[f'{name}_true'] = _as_mesh_field(ctx, true_native[name], self.scalar_degree)
-
-        return ret
-
-
-def _as_mesh_field(
-    ctx: context.PhysicsContext,
-    values: torch.Tensor,
-    degree: int
-) -> context.MeshField:
-    '''
-    Convert values at cell or node dofs into both representations.
-    '''
-    if degree == 0:
-        cell_vals = values.detach().cpu()
-        node_vals = transforms.cell_to_node_values(ctx.verts, ctx.cells, cell_vals, ctx.volume)
-    elif degree == 1:
-        node_vals = values.detach().cpu()
-        cell_vals = transforms.node_to_cell_values(ctx.cells, node_vals)
-    else:
-        raise ValueError(f'Cannot convert degree {degree}')
-
-    return context.MeshField(cell_vals, node_vals)
 
 
 def _compute_lame_parameters(
@@ -435,4 +373,31 @@ def _validate_material_parameters(
     ratio = K / mu
     if torch.any(ratio > max_ratio):
         utils.warn(f'Material is nearly incompressible (K/G = {ratio.max().item()})')
+
+
+
+def _as_mesh_field(
+    ctx: context.PhysicsContext,
+    values: torch.Tensor,
+    degree: int
+) -> context.MeshField:
+
+    values = values.detach().cpu()
+
+    if degree == 0:
+        cell_values = values
+        node_values = transforms.cell_to_node_values(
+            cell_values, ctx.volume, ctx.incidence
+        )
+
+    elif degree == 1:
+        node_values = values
+        cell_values = transforms.node_to_cell_values(
+            node_values, ctx.incidence
+        )
+
+    else:
+        raise ValueError(f'Invalid degree: {degree}')
+
+    return context.MeshField(cell_values, node_values)
 

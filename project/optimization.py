@@ -124,13 +124,16 @@ def optimize_example(ex, config, outputs, do_raster=True):
 
     utils.log(f'Evaluating outputs')
 
-    outputs = build_eval_outputs(ex, sample, loss, sim_output, rasters)
-    utils.pprint(outputs)
-
     evaluator = build_evaluator(config)
-    evaluate_outputs(evaluator, outputs)
+    result = evaluator.evaluate_sample(
+        sample, rasters, sim_output, groupby=None
+    )
+    df = pd.DataFrame(result)
+    print(df)
+    df.to_csv(csv_path)
 
     save_output_mesh(mesh, sim_output, output_path)
+
     if do_raster:
         save_output_rasters(rasters, affine, raster_dir)
 
@@ -258,7 +261,7 @@ def run_optimization_trial(
             params=params,
             bc_spec=bc_spec,
             ret_outputs=False
-        )
+        )[0]
 
     history: Dict[str, OptimizationHistory] = {}
 
@@ -370,36 +373,10 @@ def rasterize_params(
     return rasters
 
 
-def build_eval_outputs(ex, sample, loss, sim_output, rasters=None):
-    outputs = {
-        'example': [ex],
-        'mask': sample['mask'].cpu().unsqueeze(0),
-        'sim': [sim_output],
-        'loss': loss.detach().cpu()
-    }
-    if 'mat_true' in sample:
-        outputs['mat_true'] = sample['mat_true'].cpu().unsqueeze(0)
-
-    if rasters:
-        for name, pred_vox in rasters.items():
-            pred_key = f'{name}_pred'
-            true_key = f'{name}_true'
-            outputs[pred_key] = pred_vox.cpu().unsqueeze(0)
-            if true_key in sample:
-                outputs[true_key] = sample[true_key].cpu().unsqueeze(0)
-
-    return outputs
-
-
 def build_evaluator(config):
     from . import evaluation
     evaluator_kws = config.get('evaluator', {})
-    return evaluation.EvaluatorCallback(**evaluator_kws)
-
-
-def evaluate_outputs(evaluator, outputs):
-    evaluator.evaluate(epoch=0, phase='optimize', batch=0, step=0, outputs=outputs)
-    evaluator.on_phase_end(epoch=0, phase='optimize')
+    return evaluation.Evaluator(**evaluator_kws)
 
 
 def get_output_mesh(mesh, sim_output):

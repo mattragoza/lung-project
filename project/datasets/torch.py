@@ -2,11 +2,19 @@ from typing import List, Dict, Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from .base import Example
+from ..core import fileio
 
-from ..core import fileio, paths
+
+def _cpu_tensor(a, dtype):
+    return torch.as_tensor(a, dtype=dtype, device='cpu')
+
+
+def _load_tensor(path, dtype=torch.float):
+    '''Load nifti as (C, I, J, K) cpu tensor.'''
+    array = fileio.load_nibabel(path).get_fdata()
+    return _cpu_tensor(array, dtype).unsqueeze(0)
 
 
 class TorchDataset(torch.utils.data.Dataset):
@@ -21,149 +29,138 @@ class TorchDataset(torch.utils.data.Dataset):
         do_augment: bool = False,
         rand_rotate:  bool = False,
         rand_reflect: bool = False,
-        sigma_trans: float = 0.0,
-        use_pseudo: bool = False,
-        use_cache: bool = False,
-        n_mat_labels: int = 5,
-        rgb: bool = False
+        rand_translate: float = 0.0,
+        use_cache: bool = False
     ):
         self.examples = examples
 
-        # transform parameters
+        # image preprocessing
         self.normalize  = normalize
         self.image_mean = image_mean
         self.image_std  = image_std
         self.apply_mask = apply_mask
 
-        # data augmentation
-        self.do_augment   = do_augment
-        self.rand_rotate  = rand_rotate
-        self.rand_reflect = rand_reflect
-        self.sigma_trans  = sigma_trans
+        # rigid data augmentation
+        self.do_augment     = do_augment
+        self.rand_rotate    = rand_rotate
+        self.rand_reflect   = rand_reflect
+        self.rand_translate = rand_translate
 
-        # expected data shapes
-        self.n_mat_labels = n_mat_labels
-        self.rgb = rgb
-
-        self.use_pseudo = use_pseudo
         self.use_cache = use_cache
-        self._cache = {}
+        self._cache    = {}
 
     def __len__(self):
         return len(self.examples)
 
     def __getitem__(self, idx):
         ex = self.examples[idx]
+
         if self.use_cache:
             if idx not in self._cache:
                 self._cache[idx] = self.load_example(ex)
-            out = self._cache[idx]
+            sample = self._cache[idx]
         else:
-            out = self.load_example(ex)
+            sample = self.load_example(ex)
+
         if self.do_augment:
-            out = self.augment_sample(out)
-        return self.add_derived_keys(out)
+            sample = apply_data_augmentation(
+                sample,
+                do_rotate=self.rand_rotate,
+                do_reflect=self.rand_reflect,
+                sigma_translate=self.rand_translate,
+                rng=0
+            )
+
+        return sample
 
     def clear_cache(self):
         self._cache.clear()
 
-    def load_example(self, ex):
-        paths.require_paths(ex, keys=['input_image', 'domain_mask', 'target_mesh'])
+    def load_example(self, ex: Example) -> Dict[str, Any]:
 
+        # load required assets
         image = fileio.load_nibabel(ex.paths['input_image'])
-        mask  = fileio.load_nibabel(ex.paths['domain_mask'])
-        mesh  = fileio.load_meshio(ex.paths['target_mesh'])
+        mask = fileio.load_nibabel(ex.paths['domain_mask'])
+        mesh = fileio.load_meshio(ex.paths['target_mesh'])
 
-        image_a = image.get_fdata()
-        if self.rgb and not (image_a.ndim == 4 and image_a.shape[-1] == 3) or image_a.ndim != 3:
-            raise ValueError(f'Invalid image shape: {image_a.shape}')
+        # ----- shape validation -----
 
-        if image_a.ndim == 3: # add channel dim
-            image_a = image_a[...,None]
+        affine = image.affine
+        image = image.get_fdata()
+        mask = mask.get_fdata()
 
-        mask_a = mask.get_fdata()
-        if mask_a.shape != image_a.shape[:3]:
-            raise ValueError(f'Mask shape mismatch: {mask_a.shape} vs. {image_a.shape}')
+        if affine.shape != (4, 4):
+            raise ValueError(f'Invalid affine shape: {affine.shape} vs. (4, 4)')
 
-        def _as_cpu_tensor(a, dtype):
-            return torch.as_tensor(a, dtype=dtype, device='cpu')
+        if image.ndim != 3 or not all(d > 1 for d in image.shape):
+            raise ValueError(f'Invalid 3D image shape: {image.shape} vs. (I, J, K)')
 
-        affine_t = _as_cpu_tensor(image.affine, dtype=torch.float)
-        image_t  = _as_cpu_tensor(image_a, dtype=torch.float).permute(3,0,1,2) # (C, X, Y, Z)
-        mask_t   = _as_cpu_tensor(mask_a, dtype=torch.long).unsqueeze(0) > 0   # (1, X, Y, Z)
+        if mask.shape != image.shape:
+            raise ValueError(f'Mask shape mismatch: {mask.shape} vs. {image.shape}')
+
+        # ----- conversion to tensors -----
+
+        affine = _cpu_tensor(affine, dtype=torch.float)             # (4, 4)
+        image = _cpu_tensor(image, dtype=torch.float).unsqueeze(0)  # (C, I, J, K)
+        mask = _cpu_tensor(mask, dtype=torch.int).unsqueeze(0) > 0  # (C, I, J, K)
+
+        # ----- image preprocessing -----
 
         if self.normalize:
-            image_t = (image_t - self.image_mean) / self.image_std
+            image = (image - self.image_mean) / self.image_std
 
         if self.apply_mask:
-            image_t = image_t * mask_t
+            image = image * mask
+
+        # ----- output packaging -----
 
         sample = {
-            'example':  ex,
-            'affine':   affine_t,
-            'img_true': image_t,
-            'mask':     mask_t,
-            'mesh':     mesh
+            'example': ex,
+            'affine': affine,
+            'image': image,
+            'mask': mask,
+            'mesh': mesh
         }
-        if 'material_map' in ex.paths:
-            mat_a = fileio.load_nibabel(ex.paths['material_map']).get_fdata()
-            mat_t = _as_cpu_tensor(mat_a, dtype=torch.long).unsqueeze(0)
-            sample['mat_true'] = mat_t
 
-        if self.use_pseudo:
-            elastic_a = fileio.load_nibabel(ex.paths['elastic_pseudo']).get_fdata()
-            elastic_t = _as_cpu_tensor(elastic_a, dtype=torch.float).unsqueeze(0)
-            sample['E_true'] = elastic_t
+        # ----- load optional assets -----
 
-        elif 'elastic_field' in ex.paths:
-            elastic_a = fileio.load_nibabel(ex.paths['elastic_field']).get_fdata()
-            elastic_t = _as_cpu_tensor(elastic_a, dtype=torch.float).unsqueeze(0)
-            sample['E_true'] = elastic_t
+        if 'elastic_field' in ex.paths:
+            sample['E'] = _load_tensor(ex.paths['elastic_field'])
 
         if 'poisson_field' in ex.paths:
-            poisson_a = fileio.load_nibabel(ex.paths['poisson_field']).get_fdata()
-            poisson_t = _as_cpu_tensor(poisson_a, dtype=torch.float).unsqueeze(0)
-            sample['nu_true'] = poisson_t
+            sample['nu'] = _load_tensor(ex.paths['poisson_field'])
 
         if 'density_field' in ex.paths:
-            density_a = fileio.load_nibabel(ex.paths['density_field']).get_fdata()
-            density_t = _as_cpu_tensor(density_a, dtype=torch.float).unsqueeze(0)
-            sample['rho_true'] = density_t
+            sample['rho'] = _load_tensor(ex.paths['density_field'])
+
+        if 'material_map' in ex.paths:
+            sample['material'] = _load_tensor(ex.paths['material_map'], torch.long)
+
+        if 'anatomical_map' in ex.paths:
+            sample['anatomy'] = _load_tensor(ex.paths['anatomical_map'], torch.long)
 
         return sample
 
-    def augment_sample(self, sample, rng=None):
-        return apply_data_augmentation(
-            sample,
-            do_rotate=self.rand_rotate,
-            do_reflect=self.rand_reflect,
-            sigma_trans=self.sigma_trans,
-            rng=rng
-        )
 
-    def add_derived_keys(self, sample, eps=1e-12):
-        sample = sample.copy()
-
-        if 'mat_true' in sample:
-            mat_label = sample['mat_true'][0].long() # (1, I, J, K) -> (I, J, K)
-            mat_onehot = F.one_hot(mat_label, self.n_mat_labels + 1) # (C, I, J, K)
-            sample['mat_onehot'] = mat_onehot.permute(3,0,1,2).float()
-
-        for key in ['E_true', 'rho_true']:
-            if key in sample:
-                sample[f'log{key}'] = torch.log10(sample[key].clamp_min(eps))
-
-        return sample
+def collate_fn(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
+    output = {}
+    for key in samples[0]:
+        values = [sample[key] for sample in samples]
+        try:
+            output[key] = torch.stack(values, dim=0)
+        except TypeError:
+            output[key] = values
+    return output
 
 
 @torch.no_grad()
 def apply_data_augmentation(
     sample: Dict[str, Any],
-    do_rotate: bool=False,
-    do_reflect: bool=False,
-    sigma_trans: float=0.0, # in voxels
-    device: str='cuda',
-    rng=None
+    do_rotate: bool = False,
+    do_reflect: bool = False,
+    sigma_trans: float = 0.0, # in voxels
+    device: str = 'cuda',
+    rng: Optional = None
 ):
     from ..core import transforms, interpolation
 
@@ -207,13 +204,13 @@ def apply_data_augmentation(
             reshape=False
         ).reshape(t.shape).to(t.device, dtype=t.dtype)
 
-    sample['img_true'] = resample_volume(sample['img_true'], mode='linear')
-    sample['mask']     = resample_volume(sample['mask'], mode='nearest')
+    sample['image'] = resample_volume(sample['image'], mode='linear')
+    sample['mask'] = resample_volume(sample['mask'], mode='nearest')
 
-    if 'mat_true' in sample:
-        sample['mat_true'] = resample_volume(sample['mat_true'], mode='nearest')
+    if 'mat_label' in sample:
+        sample['mat_label'] = resample_volume(sample['mat_label'], mode='nearest')
 
-    for key in ['E_true', 'nu_true', 'rho_true']:
+    for key in ['E', 'nu', 'rho']:
         if key in sample:
             sample[key] = resample_volume(sample[key], mode='linear')
 
@@ -223,17 +220,20 @@ def apply_data_augmentation(
     return sample
 
 
-def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    output = {}
-    for key in batch[0]:
-        vals = [ex[key] for ex in batch]
-        if all(torch.is_tensor(v) for v in vals):
-            output[key] = torch.stack(vals, dim=0)
-        elif all(v is None for v in vals):
-            output[key] = None
-        else:
-            output[key] = vals
-    return output
+def add_derived_keys(sample, n_mat_labels, eps=1e-12):
+    import torch.nn.functional as F
+    sample = sample.copy()
+
+    if 'mat_label' in sample:
+        mat_label = sample['mat_label'][0].long() # (1, I, J, K) -> (I, J, K)
+        mat_onehot = F.one_hot(mat_label, n_mat_labels + 1) # (C, I, J, K)
+        sample['mat_onehot'] = mat_onehot.permute(3,0,1,2).float()
+
+    for key in ['E', 'rho']:
+        if key in sample:
+            sample[f'log{key}'] = torch.log10(sample[key].clamp_min(eps))
+
+    return sample
 
 
 def accumulate_stats(loader, keys, use_mask=True):
