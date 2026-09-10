@@ -1,4 +1,4 @@
-# TODO: consider splitting geometry vs other.
+# common/transforms.py
 
 import numpy as np
 import torch

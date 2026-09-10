@@ -1,3 +1,5 @@
+# common/outputs.py
+
 from pathlib import Path
 
 
