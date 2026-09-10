@@ -1,4 +1,4 @@
-# project/optimization.py
+# optimization.py
 
 from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass

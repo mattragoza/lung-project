@@ -1,9 +1,11 @@
+# project/evaluation.py
+
 from typing import List, Dict, Iterable, Any, Optional
 
 import numpy as np
 import torch
 
-from .core import utils, metrics
+from .common import utils, metrics
 
 
 def _to_numpy(x) -> np.ndarray:
