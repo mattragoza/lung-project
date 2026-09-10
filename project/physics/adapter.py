@@ -1,16 +1,16 @@
 # physics/adapter.py
 
-from typing import Dict, Tuple, Any, Optional
+from typing import Dict, Tuple, Optional, Any
 
 import meshio
 import numpy as np
 import torch
 
-from ..core import transforms, utils
-
+from ..common import utils, transforms
 from . import context, solvers
 
-ELASTIC_KEYS = ('E', 'nu', 'G', 'K', 'mu', 'lam')
+
+ELASTIC_KEYS  = ('E', 'nu', 'G', 'K', 'mu', 'lam')
 MATERIAL_KEYS = ELASTIC_KEYS + ('rho',)
 
 VALID_ELASTIC_PARAMS = {

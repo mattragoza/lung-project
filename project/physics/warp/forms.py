@@ -1,16 +1,7 @@
+# physics/warp/forms.py
+
 import warp as wp
 import warp.fem
-
-
-def _resolve_material_type(name: str):
-    n = name.lower()
-    if n in {'linear_elastic', 'linear', 'le'}:
-        return LinearElasticMaterial
-    elif n in {'st_venant_kirchoff', 'stvk', 'vk'}:
-        return StVenantKirchoffMaterial
-    elif n in {'neo_hookean', 'neohookean', 'nh'}:
-        return NeoHookeanMaterial
-    raise ValueError(f'Invalid material type: {name!r}')
 
 
 # ----- linear elasticity -----
@@ -242,36 +233,4 @@ def tv_regularization_form(
         wp.sqrt(wp.dot(grad_lam, grad_lam) + eps_reg * eps_reg) +
         wp.sqrt(wp.dot(grad_rho, grad_rho) + eps_reg * eps_reg)
     )
-
-
-# ----- material type registry -----
-
-
-class WarpMaterial:
-
-    @staticmethod
-    def get_linear():
-        return LinearElasticMaterial
-
-    @staticmethod
-    def get_subclass(name: str):
-        return _resolve_material_type(name)
-
-
-class LinearElasticMaterial(WarpMaterial):
-    residual_form = linear_elastic_residual_form
-    jacobian_form = linear_elastic_jacobian_form
-    is_linear = True
-
-
-class StVenantKirchoffMaterial(WarpMaterial):
-    residual_form = st_venant_kirchoff_residual_form
-    jacobian_form = st_venant_kirchoff_jacobian_form
-    is_linear = False
-
-
-class NeoHookeanMaterial(WarpMaterial):
-    residual_form = neo_hookean_residual_form
-    jacobian_form = neo_hookean_jacobian_form
-    is_linear = False
 

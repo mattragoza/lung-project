@@ -1,6 +1,6 @@
 # physics/solvers.py
 
-from typing import List, Dict, Tuple, Optional, Any
+from typing import Dict, Tuple, Optional, Any
 
 import torch
 
@@ -9,7 +9,7 @@ def _resolve_solver_name(name: str):
 
     if name in {'warp', 'warp.fem', 'WarpFEMSolver'}:
         from . import warp
-        return warp.solver.WarpFEMSolver
+        return warp.WarpFEMSolver
 
     elif name in {'fenics', 'dolfin', 'FenicsFEMSolver'}:
         from . import fenics
@@ -34,6 +34,12 @@ class PDESolver:
         rho: torch.Tensor,
         u_bc: torch.Tensor
     ) -> torch.Tensor:
+        '''
+        Args:
+            mu, lam, rho, u_bc: torch.Tensors
+        Returns:
+            u_sim: torch.Tensor
+        '''
         raise NotImplementedError
 
     def loss_forward(
@@ -44,12 +50,31 @@ class PDESolver:
         u_bc: torch.Tensor,
         u_obs: torch.Tensor
     ) -> Tuple[dict, dict]:
+        '''
+        Args:
+            mu, lam, rho, u_bc, u_obs: torch.Tensors
+        Returns:
+            outputs, context: dicts
+        '''
         raise NotImplementedError
 
     def loss_backward(self, loss_grad: torch.Tensor, context: dict) -> dict:
+        '''
+        Args:
+            loss_grad: torch.Tensor
+            context: dict
+        Returns:
+            input_grads: dict
+        '''
         raise NotImplementedError
 
-    def simulate_loss(self, mu, lam, rho, u_bc, u_obs, mask) -> dict:
+    def simulate_loss(self, mu, lam, rho, u_bc, u_obs, mask) -> tuple:
+        '''
+        Args:
+            mu, lam, rho, u_bc, u_obs, mask: torch.Tensors
+        Returns:
+            outputs: torch.Tensors
+        '''
         return PDELossFn.apply(self, mu, lam, rho, u_bc, u_obs, mask)
 
 

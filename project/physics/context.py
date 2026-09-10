@@ -1,19 +1,18 @@
 # physics/context.py
 
-from typing import Optional, Dict, Tuple, Any
+from typing import Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 
 import meshio
 import numpy as np
 import torch
 
-from . import bcs
+from ..common import transforms
+from .bc_spec import BoundaryConditionSpec
 
-from ..core import transforms
 
-
-def _cpu_tensor(array, dtype=torch.float):
-    return torch.as_tensor(array, dtype=dtype, device='cpu')
+def _cpu_tensor(a, dtype=torch.float):
+    return torch.as_tensor(a, dtype=dtype, device='cpu')
 
 
 def _get_mesh_field(mesh, name, dtype=torch.float, scale=1.0):
@@ -129,6 +128,6 @@ class PhysicsContext:
 
             self.fields[name] = field
 
-            bc_spec = bcs.BoundaryConditionSpec(type='mesh_key', value=name)
+            bc_spec = BoundaryConditionSpec(type='mesh_key', value=name)
             self.obs_cache[bc_spec] = (field, field)
 

@@ -1,4 +1,7 @@
+# physics/warp/solver.py
+
 from typing import Dict, Tuple, Optional
+
 import math
 import numpy as np
 import torch
@@ -7,8 +10,8 @@ import warp as wp
 import warp.fem
 import warp.optim.linear
 
-from . import forms
-from .. import solvers
+from ..solvers import PDESolver
+from . import materials, forms
 
 
 def _as_warp_array(t: torch.Tensor, **kwargs) -> wp.array:
@@ -29,13 +32,17 @@ def _get_torch_grad(a: wp.array) -> torch.Tensor | None:
 
 def _make_warp_field(space, values=None, requires_grad=None):
     f = space.make_field()
+
     if values is not None:
         a = _as_warp_array(values, dtype=f.dof_values.dtype)
         _copy_warp_array(src=a, dst=f.dof_values)
+
     if requires_grad is not None:
         f.dof_values.requires_grad = bool(requires_grad)
+
     elif values is not None:
         f.dof_values.requires_grad = values.requires_grad
+
     return f
 
 
@@ -43,7 +50,7 @@ def _array_norm(a: wp.array) -> float:
     return torch.linalg.norm(wp.to_torch(a)).item()
 
 
-class WarpFEMSolver(solvers.PDESolver):
+class WarpFEMSolver(PDESolver):
 
     def __init__(
         self,
@@ -68,7 +75,7 @@ class WarpFEMSolver(solvers.PDESolver):
         verbose: bool = False
     ):
         # physical material model
-        self.material = forms.WarpMaterial.get_subclass(material_type)
+        self.material = materials.WarpMaterial.get_subclass(material_type)
 
         # objective function
         self.relative_loss = bool(relative_loss)
