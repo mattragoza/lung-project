@@ -3,16 +3,24 @@
 from . import utils
 
 
+def make_dir_exist(path):
+    path.mkdir(parents=True, exist_ok=True)
+
+
 def load_nibabel(path):
     import nibabel as nib
     utils.log(f'Loading {path}')
     return nib.load(path)
 
 
-def save_nibabel(path, array, affine):
+def save_nibabel(path, array, affine=None):
     import nibabel as nib
     utils.log(f'Saving {path}')
-    nifti = nib.nifti1.Nifti1Image(array, affine)
+    if affine is not None:
+        nifti = nib.nifti1.Nifti1Image(array, affine)
+    else:
+        nifti = array
+    make_dir_exist(path.parent)
     nib.save(nifti, path)
 
 
@@ -25,13 +33,8 @@ def load_simpleitk(path):
 def save_simpleitk(path, image):
     import SimpleITK as sitk
     utils.log(f'Saving {path}')
+    make_dir_exist(path.parent)
     sitk.WriteImage(image, path)
-
-
-def load_binvox(path):
-    import binvox as bv
-    utils.log(f'Loading {path}')
-    return bv.Binvox.read(path, mode='dense')
 
 
 def load_meshio(path):
@@ -45,6 +48,7 @@ def load_meshio(path):
 def save_meshio(path, mesh):
     import meshio
     utils.log(f'Saving {path}')
+    make_dir_exist(path.parent)
     meshio.xdmf.write(path, mesh)
 
 
@@ -52,6 +56,12 @@ def load_trimesh(path, resolver=None):
     import trimesh
     utils.log(f'Loading {path}')
     return trimesh.load_scene(path, resolver=resolver, process=False)
+
+
+def load_binvox(path):
+    import binvox as bv
+    utils.log(f'Loading {path}')
+    return bv.Binvox.read(path, mode='dense')
 
 
 def load_imageio(path):

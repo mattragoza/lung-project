@@ -1,14 +1,15 @@
-# preprocessing/registration.py
+# preprocessing/image_registration.py
 
 from __future__ import annotations
+
 import os
 from pathlib import Path
-
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ..core import utils, fileio
+from ..common import utils, fileio
+
 
 WEIGHTS_ROOT = Path(os.environ.get('LP_ROOT', '.')) / 'network_weights'
 
@@ -39,6 +40,41 @@ def _correlation_r2(a, b, m):
     return (numer / denom * m).mean()**2
 
 
+
+def run_image_registration(
+    fixed_image: Path,
+    fixed_mask: Path,
+    moving_image: Path,
+    moving_mask: Path,
+    output_path: Path,
+    method: str,
+    kwargs: dict
+):
+    key = method.lower()
+
+    if key == 'corrfield':
+        run_corrfield_registration(
+            fixed_image=fixed_image,
+            moving_image=moving_image,
+            fixed_mask=fixed_mask,
+            output_path=output_path,
+            **kwargs
+        )
+
+    elif key == 'unigradicon':
+        run_unigradicon_registration(
+            fixed_image=fixed_image,
+            moving_image=moving_image,
+            fixed_mask=fixed_mask,
+            moving_mask=moving_mask,
+            output_path=output_path,
+            **kwargs
+        )
+
+    else:
+        raise ValueError(f'Invalid registration method: {method!r}')
+
+
 # ----- unigradicon backend -----
 
 
@@ -55,10 +91,12 @@ def run_unigradicon_registration(
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
+
         transform_path = tmpdir / 'transform.hdf5'
         raw_disp_path = tmpdir / 'raw_disp.nii.gz'
 
         weights_link = Path('network_weights')
+
         if not weights_link.exists():
             weights_link.symlink_to(weights_root, target_is_directory=True)
 
@@ -70,11 +108,13 @@ def run_unigradicon_registration(
             transform_out=transform_path,
             **kwargs
         )
+
         convert_itk_transform(
             input_path=transform_path,
             output_path=raw_disp_path,
             ref_path=fixed_image
         )
+
         canonicalize_itk_disp(
             input_path=raw_disp_path,
             output_path=output_path
@@ -204,7 +244,7 @@ def run_corrfield_registration(
     moving_image: Path,
     fixed_mask: Path,
     output_path: Path,
-    device: str='cuda'
+    device: str = 'cuda'
 ):
     fixed_nifti  = fileio.load_nibabel(fixed_image)
     moving_nifti = fileio.load_nibabel(moving_image)
@@ -248,6 +288,7 @@ def register_corrfield(
         warped_image: (I, J, K) array
     '''
     import corrfield
+
     assert moving_image.shape == fixed_image.shape == fixed_mask.shape
 
     moving_tensor = _as_tensor(moving_image, device)
@@ -299,6 +340,7 @@ def deform_image(image: torch.Tensor, disp: torch.Tensor):
         warped: (I, J, K)
     '''
     import corrfield
+
     I, J, K = disp.shape[:3]
 
     grid = F.affine_grid(
@@ -328,15 +370,15 @@ def deform_image(image: torch.Tensor, disp: torch.Tensor):
 def register_simpleitk(
     image_mov: sitk.Image,
     image_fix: sitk.Image,
-    transform: str='similarity',
-    center: str='geometry',
-    metric: str='MI',
-    scale_init: float=1.0,
-    num_scale_steps: int=0,
-    scale_step_size: float=0.1,
-    learning_rate: float=1.0,
-    num_iterations: int=0,
-    print_every: int=10,
+    transform: str = 'similarity',
+    center: str = 'geometry',
+    metric: str = 'MI',
+    scale_init: float = 1.0,
+    num_scale_steps: int = 0,
+    scale_step_size: float = 0.1,
+    learning_rate: float = 1.0,
+    num_iterations: int = 0,
+    print_every: int = 10
 ):
     '''
     Perform rigid image registration using SITK.
@@ -449,7 +491,7 @@ def transform_simpleitk(
     image_mov: sitk.Image,
     image_fix: sitk.Image,
     transform: sitk.Transform,
-    default=0
+    default = 0
 ):
     '''
     Apply transformation to image using SITK.
@@ -466,6 +508,7 @@ def transform_simpleitk(
             transform and resampling on fixed image grid.
     '''
     import SimpleITK as sitk
+
     resampler = sitk.ResampleImageFilter()
     resampler.SetReferenceImage(image_fix)
     resampler.SetInterpolator(sitk.sitkBSpline)

@@ -1,6 +1,6 @@
 # preprocessing/pipelines/shapenet.py
 
-from ...core import utils
+from ...common import utils
 from ..runner import run_stage
 from .. import stages
 
@@ -13,38 +13,45 @@ def preprocess(ex, config):
         {'image_generation', 'image_interpolation', 'random_seed'},
         where='preprocessing[shapenet]'
     )
+
     base_seed = config.get('random_seed', 0)
     subj_seed = utils.make_seed(base_seed, ex.subject)
 
     run_stage(
-        stages.masks.convert_binvox_mask,
+        stages.convert_binvox_to_nifti,
         mask_path=ex.paths['source_mask'],
         mesh_path=ex.paths['source_mesh'],
         output_path=ex.paths['binary_mask'],
         config=config.get('binary_mask', {})
     )
+    run_stage( # TODO integrate this
+        stages.preprocess_binary_mask,
+        input_path=ex.paths['TODO'],
+        output_path=ex.paths['TODO'],
+        config=config.get('TODO')
+    )
     run_stage(
-        stages.meshes.repair_surface_mesh,
+        stages.repair_surface_mesh,
         input_path=ex.paths['source_mesh'],
         output_path=ex.paths['surface_mesh'],
         config=config.get('surface_mesh', {})
     )
     run_stage(
-        stages.regions.map_regions_from_surface,
+        stages.label_regions_from_surface,
         mask_path=ex.paths['binary_mask'],
         mesh_path=ex.paths['source_mesh'],
         output_path=ex.paths['region_map'],
         config=config.get('region_map', {})
     )
     run_stage(
-        stages.meshes.generate_tetrahedral_mesh,
+        stages.generate_tetrahedral_mesh,
         mask_path=ex.paths['region_map'],
         output_path=ex.paths['volume_mesh'],
         config=config.get('volume_mesh', {}),
         random_seed=subj_seed
     )
     run_stage(
-        stages.materials.assign_materials_to_regions,
+        stages.assign_materials_to_regions,
         mask_path=ex.paths['region_map'],
         output_path=ex.paths['material_map'],
         density_path=ex.paths['density_field'],
@@ -54,7 +61,7 @@ def preprocess(ex, config):
         random_seed=subj_seed
     )
     run_stage(
-        stages.fields.interpolate_materials,
+        stages.interpolate_materials,
         regions_path=ex.paths['region_map'],
         materials_path=ex.paths['material_map'],
         mesh_path=ex.paths['volume_mesh'],
@@ -62,21 +69,21 @@ def preprocess(ex, config):
         config=config.get('material_mesh', {})
     )
     run_stage(
-        stages.synthetic_images.generate_image,
+        stages.generate_synthetic_image,
         mask_path=ex.paths['material_map'],
         output_path=ex.paths['input_image'],
         config=config.get('image_generation', {}),
         random_seed=subj_seed
     )
     run_stage( # interp mesh
-        stages.fields.interpolate_image,
+        stages.interpolate_image,
         image_path=ex.paths['input_image'],
         mesh_path=ex.paths['material_mesh'],
         output_path=ex.paths['interp_mesh'],
         config=config.get('image_interpolation', {})
     )
     run_stage( # simulate mesh
-        stages.simulation.simulate_displacement_field,
+        stages.simulate_displacement_field,
         mesh_path=ex.paths['interp_mesh'],
         output_path=ex.paths['simulate_mesh'],
         unit_m=ex.metadata['unit'],

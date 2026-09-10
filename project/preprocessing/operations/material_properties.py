@@ -1,9 +1,37 @@
-# preprocessing/materials.py
+# preprocessing/material_properties.py
 
 import numpy as np
 import pandas as pd
 
-from ..core import utils
+from ..common import utils
+
+
+def compute_property_fields(inputs, affine, config):
+    domain = inputs['domain']
+    fields = {}
+
+    for prop_name, prop_config in config.items():
+        default = prop_config.get('default', 0.)
+        field = np.full(domain.shape, default, dtype=np.float32)
+
+        terms = prop_config.get('terms', {})
+        for input_name, term_config in terms.items():
+            fields += term_config['weight'] * inputs[input_name]
+
+        sigma = prop_config.get('sigma', 0.)
+        if sigma > 0:
+            field = transform.gaussian_filter(field, domain, affine, sigma)
+
+        value_range = prop_config.get('range')
+        if value_range is not None:
+            field = np.clip(field, *map(float, value_range))
+
+        fields[prop_name] = field
+
+    return fields
+
+
+# ----- material catalog-based -----
 
 
 DATA_COLUMNS = ['key', 'val', 'freq']

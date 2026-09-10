@@ -1,4 +1,4 @@
-# preprocessing/volume_meshing.py
+# preprocessing/tetrahedral_meshing.py
 
 from typing import Dict, Set, Any
 import collections

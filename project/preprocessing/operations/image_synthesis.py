@@ -6,7 +6,7 @@ from typing import Dict
 import numpy as np
 import scipy.ndimage
 
-from ..core import utils, transforms, interpolation
+from ..common import utils, transforms, interpolation
 
 
 def generate_simple_image(

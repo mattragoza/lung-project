@@ -1,9 +1,10 @@
 # preprocessing/runner.py
 
 from typing import List, Dict, Tuple, Optional, Any
+
 from pathlib import Path
 
-from ..core import utils
+from ..common import utils
 
 
 def run_stage(func, *args, **kwargs) -> Tuple[bool, Any]:

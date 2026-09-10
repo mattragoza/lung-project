@@ -1,13 +1,14 @@
-# preprocessing/segmentation.py
+# preprocessing/image_segmentation.py
 
 from typing import List, Dict, Any, Optional
-from pathlib import Path
 
-from ..core import utils, fileio, transforms
+from pathlib import Path
+import numpy as np
+
+from ..common import utils, fileio, transforms
+
 
 VALID_METHODS = ['totalsegmentator', 'visionfeature', 'hu_threshold']
-DEFAULT_METHOD = 'totalsegmentator'
-DEFAULT_TS_TASK = 'total'
 
 TS_LABELS_BY_TASK = {
     'total': [
@@ -38,28 +39,63 @@ VF_LABELS = [
 ]
 
 
+def run_segmentation_tasks(
+    image_path: Path,
+    output_dir: Path,
+    output_path: Path,
+    tasks: List[dict]
+):
+    utils.log('Starting image segmentation')
+
+    fileio.make_dir_exist(segment_dir)
+
+    threshold_tasks = []
+    for task_config in tasks:
+        method = task_config.get('method', '').lower()
+
+        if method == 'hu_threshold':
+            # postpone until we have the domain mask
+            threshold_tasks.append(task_config)
+            continue 
+
+        run_segmentation_task(
+            image_path=image_path,
+            output_dir=segment_dir,
+            **task_config
+        )
+
+    utils.log('Combining segmentation masks')
+    nifti = image_segmentation.combine_segmentation_masks(
+        segment_dir, class_type='lung'
+    )
+
+    fileio.save_nibabel(output_path, nifti)
+
+    for task_config in threshold_tasks:
+        image_segmentation.run_segmentation_task(
+            image_path=image_path,
+            mask_path=output_path,
+            output_dir=segment_dir,
+            **task_config
+        )
+
+
 def run_segmentation_task(
     image_path: Path,
     output_dir: Path,
-    config: Dict[str, Any],
-    mask_path: Optional[Path] = None
+    method: str,
+    kwargs: dict,
+    mask_path: Path | None = None
 ):
-    utils.check_keys(
-        config,
-        valid={'method', 'kwargs'},
-        where='image_segmentation.tasks[]'
-    )
+    key = method.lower()
 
-    method = config.get('method', DEFAULT_METHOD).lower()
-    kwargs = config.get('kwargs', {})
-
-    if method == 'totalsegmentator':
+    if key == 'totalsegmentator':
         return run_totalsegmentator_task(image_path, output_dir, **kwargs)
 
-    elif method == 'visionfeature':
+    elif key == 'visionfeature':
         return run_visionfeature_segmentation(image_path, output_dir, **kwargs)
 
-    elif method == 'hu_threshold':
+    elif key == 'hu_threshold':
         return run_threshold_segmentation(
             image_path, mask_path, output_dir, **kwargs
         )
@@ -70,7 +106,7 @@ def run_segmentation_task(
 def run_totalsegmentator_task(
     image_path: Path,
     output_dir: Path,
-    task: str = DEFAULT_TS_TASK,
+    task: str = 'total',
     **kwargs
 ):
     utils.log(f'Running TotalSegmentator task: {task!r}')
@@ -85,9 +121,9 @@ def run_totalsegmentator_task(
 def run_visionfeature_segmentation(
     image_path: Path, output_dir: Path, **kwargs
 ):
-    import os
-
     utils.log('Running VisionFeature segmentation')
+
+    import os
 
     # save and restore nnUNet environment
     nnunet_raw = os.environ.pop('nnUNet_raw')
@@ -114,8 +150,6 @@ def run_threshold_segmentation(
     thresholds: Dict[str, Dict[str, Any]],
     sigma: Optional[float] = None
 ):
-    import numpy as np
-
     utils.log('Running threshold-based segmentation')
 
     nifti = fileio.load_nibabel(image_path)

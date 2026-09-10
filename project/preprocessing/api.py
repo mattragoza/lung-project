@@ -1,26 +1,30 @@
 # preprocessing/api.py
 
-from .pipelines import shapenet, copdgene, emory4dct, bmc4dct, phantom
 
+def get_pipeline(name: str):
+    from . import pipelines
 
-PIPELINE_REGISTRY = {
-    'shapenet': shapenet,
-    'copdgene': copdgene,
-    'emory4dct': emory4dct,
-    'emory-4dct': emory4dct,
-    'bmc4dct': bmc4dct,
-    'bmc-4dct': bmc4dct,
-    'phantom': phantom
-}
+    key = name.lower()
+
+    if key in {'shapenet'}:
+        return pipelines.shapenet
+
+    elif key in {'copdgene'}:
+        return pipelines.copdgene
+
+    elif key in {'emory4dct', 'emory-4dct'}:
+        return piplines.emory4dct
+
+    elif key in {'bmc4dct', 'bmc-4dct'}:
+        return pipelines.bmc4dct
+
+    elif key in {'phantom'}:
+        return pipelines.phantom
+
+    raise ValueError(f'Invalid pipeline: {name!r}')
 
 
 def preprocess_example(ex, config):
-    key = ex.dataset.lower()
-
-    try:
-        pipeline = PIPELINE_REGISTRY[key]
-    except KeyError:
-        raise ValueError(f'Invalid dataset: {ex.dataset!r}')
-
+    pipeline = get_pipeline(ex.dataset)
     return pipeline.preprocess(ex, config)
 
