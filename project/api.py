@@ -23,7 +23,7 @@ def get_examples(config: dict) -> list:
     from . import datasets
 
     utils.log('Gathering examples')
-    dataset = datasets.get_dataset(config)
+    dataset = datasets.api.get_dataset(config)
 
     example_kws = config.get('examples', {})
     return dataset.list_examples(**example_kws)

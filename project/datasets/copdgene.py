@@ -1,13 +1,17 @@
+# datasets/copdgene.py
+
 from typing import List, Dict, Tuple, Iterable, Optional, Any
+
 from pathlib import Path
 
-from . import base
-
-from ..core import utils
+from ..common import utils
+from .base import Dataset, Example
 
 
 def _parse_raw_name(name: str) -> Dict[str, str]:
-    # Expected format: <subject>_<state>_<kernel>_<site>_COPD
+    '''
+    Name format: "<subject>_<state>_<kernel>_<site>_COPD"
+    '''
     parts = name.split('_')
     if len(parts) == 5 and parts[4] == 'COPD':
         return {
@@ -37,7 +41,7 @@ def _resolve_site(site: Optional[str]) -> str:
     return site
 
 
-class COPDGeneDataset(base.Dataset):
+class COPDGeneDataset(Dataset):
     '''
     <data_root>/
         Images/
@@ -99,7 +103,10 @@ class COPDGeneDataset(base.Dataset):
         from itertools import permutations
         return permutations(self.states(), 2)
 
-    def source_path(self, subject: str, visit: str, state: str, asset_type: str):
+    def source_path(
+        self, subject: str, visit: str, state: str, asset_type: str
+    ) -> Path:
+
         meta = self.subject_metadata(subject)
         kernel = _resolve_kernel(meta[self.KERNEL_COLUMN])
         site = _resolve_site(meta[self.SITE_COLUMN])
@@ -120,7 +127,7 @@ class COPDGeneDataset(base.Dataset):
         variant: str,
         asset_type: str,
         asset_name: str
-    ):
+    ) -> Path:
         base_dir = self.root / 'Processed' / variant / subject
 
         if asset_type == 'image':
@@ -215,7 +222,7 @@ class COPDGeneDataset(base.Dataset):
                     paths['domain_mask'] = paths['init_state']['domain_mask']
                     paths['target_mesh'] = paths['forward_mesh']
 
-                yield base.Example(
+                yield Example(
                     dataset='COPDGene',
                     variant=variant,
                     subject=sid,

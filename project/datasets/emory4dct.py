@@ -1,8 +1,11 @@
-from typing import Optional, Any, Dict, List, Tuple, Iterable
-from pathlib import Path
-import numpy as np
+# datasets/emory4dct.py
 
-from . import base
+from typing import List, Dict, Tuple, Iterable, Any
+
+from pathlib import Path
+
+from ..common import utils
+from .base import Dataset, Example
 
 
 def _parse_case_number(s: str) -> int:
@@ -13,7 +16,7 @@ def _parse_case_number(s: str) -> int:
     raise RuntimeError(f'Failed to parse case number: {s!r}')
 
 
-class Emory4DCTDataset(base.Dataset):
+class Emory4DCTDataset(Dataset):
     '''
     <data_root>/
         downloads/
@@ -99,7 +102,7 @@ class Emory4DCTDataset(base.Dataset):
                 if a != b:
                     yield (a, b)
 
-    def source_path(self, subject: str, state: str, asset_type: str):
+    def source_path(self, subject: str, state: str, asset_type: str) -> Path:
         meta = self.subject_metadata(subject)
         base_dir = self.root / 'extracted' / meta.case_dir
         case_num = meta.case_num
@@ -122,7 +125,7 @@ class Emory4DCTDataset(base.Dataset):
         variant: str,
         asset_type: str,
         asset_name: str
-    ):
+    ) -> Path:
         base_dir = self.root / 'processed' / variant / subject
 
         if asset_type == 'image':
@@ -218,7 +221,7 @@ class Emory4DCTDataset(base.Dataset):
                     paths['input_image'] = paths['init_state']['resampled_image']
                     paths['region_map'] = paths['init_state']['region_map']
 
-                yield base.Example(
+                yield Example(
                     dataset='Emory-4DCT',
                     variant=variant,
                     subject=sid,

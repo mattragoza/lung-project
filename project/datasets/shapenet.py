@@ -1,10 +1,12 @@
-from typing import Optional, Any, List, Dict, Tuple, Iterable
-from dataclasses import dataclass
+# datasets/shapenet.py
+
+from typing import List, Dict, Tuple, Iterable, Optional, Any
+
 from pathlib import Path
 import numpy as np
 
-from . import base
-from ..core import utils
+from ..common import utils
+from .base import Dataset, Example
 
 
 def _parse_sid_code(subj: str) -> str:
@@ -93,7 +95,7 @@ def _resolve_names_from_tags(tags, sep='_'):
     return names
 
 
-class ShapeNetDataset(base.Dataset):
+class ShapeNetDataset(Dataset):
     '''
     <data_root>/
         downloads/
@@ -226,7 +228,7 @@ class ShapeNetDataset(base.Dataset):
                 paths['density_field'] = self.derived_path(sid, v, 'field', names['density_field'])
                 paths['elastic_field'] = self.derived_path(sid, v, 'field', names['elastic_field'])
 
-            yield base.Example(
+            yield Example(
                 dataset='ShapeNet',
                 variant=variant,
                 subject=sid,
