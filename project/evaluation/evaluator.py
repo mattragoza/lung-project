@@ -1,4 +1,4 @@
-# project/evaluation.py
+# evaluation/evaluator.py
 
 from typing import List, Dict, Iterable, Any, Optional
 
