@@ -1,11 +1,11 @@
-from __future__ import annotations
-from typing import Optional
 import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .core import utils, transforms
+from .common import utils
+
 
 DEFAULT_KERNEL_SIZE = 3
 DEFAULT_RELU_LEAK = 0.01
@@ -64,75 +64,15 @@ class OutputHead(nn.Module):
         **spec_kws
     ):
         super().__init__()
+
+        from . import param_spec
+
         self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1, bias=use_bias)
-        self.spec = ParameterSpec(**spec_kws)
+        self.spec = param_spec.ParameterSpec(**spec_kws)
 
     def forward(self, x):
         z = self.conv(x)
         return self.spec.decode(z)
-
-
-class ParameterSpec:
-
-    def __init__(
-        self,
-        mode: str = 'linear',
-        mean: float = 0.0,
-        std: float = 1.0,
-        min: float = None,
-        max: float = None,
-        eps: float = 1e-8
-    ):
-        if mode not in {'linear', 'log10', 'logit'}:
-            raise ValueError(f'Invalid parameter mode: {mode}')
-
-        if std <= 0:
-            raise ValueError(f'Invalid parameter std: {std}')
-
-        self.mode = mode
-        self.mean = mean
-        self.std = std
-        self.min = min
-        self.max = max
-        self.eps = eps
-
-    def encode(self, x):
-
-        if self.mode == 'linear':
-            return (x - self.mean) / self.std
-
-        if self.mode == 'log10':
-            log_x = torch.log10(x.clamp_min(self.eps))
-            return (log_x - self.mean) / self.std
-
-        if self.mode == 'logit':
-            s = (x - self.min) / (self.max - self.min)
-            s = s.clamp(self.eps, 1 - self.eps)
-            logit = torch.log(s) - torch.log(1 - s)
-            return (logit - self.mean) / self.std
-
-        raise ValueError(f'Invalid parameter mode: {self.mode}')
-
-    def decode(self, z):
-
-        if self.mode == 'linear':
-            x = self.mean + self.std * z
-            if self.min is not None or self.max is not None:
-                x = x.clamp(self.min, self.max)
-            return x
-
-        elif self.mode == 'log10':
-            log_x = self.mean + self.std * z
-            if self.min is not None or self.max is not None:
-                log_x = log_x.clamp(self.min, self.max)
-            return torch.pow(10, log_x)
-
-        elif self.mode == 'logit':
-            logit = self.mean + self.std * z
-            s = torch.sigmoid(logit)
-            return s * (self.max - self.min) + self.min
-
-        raise ValueError(f'Invalid parameter mode: {self.mode}')
 
 
 # ----- architecture components -----
@@ -144,10 +84,10 @@ class ConvUnit3D(torch.nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: int=DEFAULT_KERNEL_SIZE,
-        relu_leak: float=DEFAULT_RELU_LEAK,
-        norm_type: str=DEFAULT_NORM_TYPE,
-        num_groups: int=DEFAULT_NUM_GROUPS
+        kernel_size: int = DEFAULT_KERNEL_SIZE,
+        relu_leak: float = DEFAULT_RELU_LEAK,
+        norm_type: str = DEFAULT_NORM_TYPE,
+        num_groups: int = DEFAULT_NUM_GROUPS
     ):
         super().__init__()
         self.conv = torch.nn.Conv3d(
@@ -200,7 +140,7 @@ class ConvBlock3D(torch.nn.Sequential):
         in_channels: int,
         out_channels: int,
         n_conv_units: int,
-        hid_channels: int=None,
+        hid_channels: int = None,
         **conv_unit_kws
     ):
         super().__init__()
@@ -228,8 +168,8 @@ class UNet3Dv2(torch.nn.Module):
         conv_channels: int,
         n_conv_units: int,
         n_sub_levels: int,
-        pooling_type: str=DEFAULT_POOL_TYPE,
-        upsample_mode: str=DEFAULT_UPSAMPLE,
+        pooling_type: str = DEFAULT_POOL_TYPE,
+        upsample_mode: str = DEFAULT_UPSAMPLE,
         **kwargs
     ):
         assert n_sub_levels >= 0
@@ -288,9 +228,9 @@ class EncoderBlock(torch.nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        apply_pooling: bool=True,
-        pooling_type: str=DEFAULT_POOL_TYPE,
-        pooling_size: int=DEFAULT_POOL_SIZE,
+        apply_pooling: bool = True,
+        pooling_type: str = DEFAULT_POOL_TYPE,
+        pooling_size: int = DEFAULT_POOL_SIZE,
         **conv_block_kws
     ):
         super().__init__()
@@ -323,8 +263,8 @@ class DecoderBlock(torch.nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        upsample_mode: str=DEFAULT_UPSAMPLE,
-        scale_factor: int=DEFAULT_POOL_SIZE,
+        upsample_mode: str = DEFAULT_UPSAMPLE,
+        scale_factor: int = DEFAULT_POOL_SIZE,
         **conv_block_kws
     ):
         super().__init__()
@@ -352,13 +292,13 @@ class UNet3D(torch.nn.Module):
         conv_channels: int,
         n_enc_blocks: int,
         n_conv_units: int,
-        n_init_units: int=None,
-        kernel_size: int=DEFAULT_KERNEL_SIZE,
-        relu_leak: float=DEFAULT_RELU_LEAK,
-        norm_type: str=DEFAULT_NORM_TYPE,
-        num_groups: int=DEFAULT_NUM_GROUPS,
-        pooling_type: str=DEFAULT_POOL_TYPE,
-        upsample_mode: str=DEFAULT_UPSAMPLE
+        n_init_units: int = None,
+        kernel_size: int = DEFAULT_KERNEL_SIZE,
+        relu_leak: float = DEFAULT_RELU_LEAK,
+        norm_type: str = DEFAULT_NORM_TYPE,
+        num_groups: int = DEFAULT_NUM_GROUPS,
+        pooling_type: str = DEFAULT_POOL_TYPE,
+        upsample_mode: str = DEFAULT_UPSAMPLE
     ):
         super().__init__()
         assert n_enc_blocks > 0
@@ -417,44 +357,6 @@ class UNet3D(torch.nn.Module):
             x = dec_block(x, features[i+1])
 
         return x
-
-
-# consider deprecating past this point
-
-
-class ParameterMap(nn.Module):
-    '''
-    Maps an unconstrained log-space parameter to Young's modulus (Pa).
-
-    Args:
-        bounds_mode: 'hard' | 'soft' | 'none'
-        lower_bound: float, in param_space
-        upper_bound: float, in param_space
-        beta: sharpness for soft clamping
-    '''
-    def __init__(
-        self,
-        param_space: str,
-        bounds_mode: str,
-        lower_bound: float,
-        upper_bound: float,
-        beta: float=10.0
-    ):
-        super().__init__()
-        assert bounds_mode in {'soft', 'hard', 'none'}
-        self.param_space = str(param_space)
-        self.bounds_mode = str(bounds_mode)
-        self.lower_bound = float(lower_bound)
-        self.upper_bound = float(upper_bound)
-        self.beta = float(beta)
-
-    def forward(self, x):
-        if self.bounds_mode == 'hard':
-            x = torch.clamp(x, self.lower_bound, self.upper_bound)
-        elif self.bounds_mode == 'soft':
-            x = soft_clamp(x, self.lower_bound, self.upper_bound, beta=self.beta)
-        return torch.pow(10.0, x)
-
 
 
 def soft_clamp(x, lo, hi, beta=10.0):

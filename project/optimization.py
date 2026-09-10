@@ -1,13 +1,15 @@
-from typing import Any, List, Dict, Tuple
+# project/optimization.py
+
+from typing import List, Dict, Tuple, Any
 from dataclasses import dataclass
 
 import numpy as np
 import torch
 import meshio
 
-from .core import utils, fileio
+from .common import utils, fileio
 
-from . import datasets, models, physics
+from . import datasets, physics, param_spec
 
 
 @dataclass
@@ -31,14 +33,14 @@ class OptimizerSpec:
 def simulate_example(ex, config):
 
     unit_m = float(ex.metadata['unit'])
-    sample = datasets.api.load_example(ex)
+    sample = datasets.load_example(ex)
     mesh = sample['mesh']
 
     param_specs = build_parameter_specs(config)
     init_spec = build_initialize_spec(config)
 
-    adapter = physics.api.get_adapter(config)
-    bc_spec = physics.api.get_bc_spec(config)
+    adapter = physics.get_adapter(config)
+    bc_spec = physics.get_bc_spec(config)
 
     param_dofs = initialize_param_dofs(
         adapter=adapter,
@@ -73,15 +75,15 @@ def optimize_example(ex, config, outputs, do_raster=True):
     raster_dir = outputs.raster_dir(ex)
 
     unit_m = float(ex.metadata['unit'])
-    sample = datasets.api.load_example(ex)
+    sample = datasets.load_example(ex)
     mesh = sample['mesh']
 
     param_specs = build_parameter_specs(config)
     optim_spec = build_optimizer_spec(config)
     init_spec = build_initialize_spec(config)
 
-    adapter = physics.api.get_adapter(config)
-    bc_spec = physics.api.get_bc_spec(config)
+    adapter = physics.get_adapter(config)
+    bc_spec = physics.get_bc_spec(config)
 
     utils.log('Start optimization')
 
@@ -141,13 +143,13 @@ def optimize_example(ex, config, outputs, do_raster=True):
 # ----- context configuration -----
 
 
-def build_parameter_specs(config) -> Dict[str, models.ParameterSpec]:
+def build_parameter_specs(config) -> Dict[str, param_spec.ParameterSpec]:
     target_list = config.get('targets', ['E'])
     utils.log(f'Targets: {target_list}')
     param_specs_cfg = config.get('parameters', {})
     param_specs = {}
     for name in target_list:
-        param_specs[name] = models.ParameterSpec(**param_specs_cfg[name])
+        param_specs[name] = param_spec.ParameterSpec(**param_specs_cfg[name])
     return param_specs
 
 
@@ -176,7 +178,7 @@ def optimize_params(
     mesh: meshio.Mesh,
     unit_m: float,
     bc_spec: Any,
-    param_specs: Dict[str, models.ParameterSpec],
+    param_specs: Dict[str, param_spec.ParameterSpec],
     optim_spec: OptimizerSpec,
     init_spec: InitializeSpec,
 ):
@@ -216,7 +218,7 @@ def initialize_param_dofs(
     adapter: physics.adapter.PhysicsAdapter,
     mesh: meshio.Mesh,
     unit_m: float,
-    param_specs: Dict[str, models.ParameterSpec],
+    param_specs: Dict[str, param_spec.ParameterSpec],
     init_spec: InitializeSpec
 ) -> Dict[str, torch.nn.Parameter]:
 
@@ -249,7 +251,7 @@ def run_optimization_trial(
     mesh: meshio.Mesh,
     unit_m: float,
     bc_spec: Any,
-    param_specs: Dict[str, models.ParameterSpec],
+    param_specs: Dict[str, param_spec.ParameterSpec],
     param_dofs: Dict[str, torch.nn.Parameter],
     optim_spec: OptimizerSpec
 ) -> Tuple[dict, dict]:
