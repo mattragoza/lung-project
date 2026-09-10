@@ -1,7 +1,6 @@
 from typing import List, Dict, Tuple, Any
-import argparse
 
-from . import utils
+import argparse
 
 
 def parse_args(argv: List[str]) -> argparse.Namespace:
@@ -50,6 +49,7 @@ def set_config_value(config, keys, val):
 
 
 # legacy
+
 
 def as_bool(val):
     if isinstance(val, str):

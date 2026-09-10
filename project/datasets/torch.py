@@ -1,10 +1,10 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Optional, Any
 
 import numpy as np
 import torch
 
+from ..common import fileio
 from .base import Example
-from ..core import fileio
 
 
 def _cpu_tensor(a, dtype):
@@ -160,7 +160,7 @@ def apply_data_augmentation(
     do_reflect: bool = False,
     sigma_trans: float = 0.0, # in voxels
     device: str = 'cuda',
-    rng: Optional = None
+    rng: Optional[int] = None
 ):
     from ..core import transforms, interpolation
 

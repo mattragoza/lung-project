@@ -1,18 +1,20 @@
-from .core import paths, utils
+from .common import utils
 
 
-def get_config(argv):
-    from .core import cli, fileio
+def get_config(argv: list) -> dict:
+    from .common import cli, fileio
 
     args = cli.parse_args(argv)
+
     config = fileio.load_config(args.config)
     config = cli.apply_overrides(config, args.set)
 
     utils.pprint(config, 4, 20)
+
     return config
 
 
-def get_examples(config):
+def get_examples(config: dict) -> list:
     utils.check_keys(
         config,
         valid={'name', 'root', 'examples'},
@@ -21,13 +23,13 @@ def get_examples(config):
     from . import datasets
 
     utils.log('Gathering examples')
-    dataset = datasets.api.get_dataset(config)
+    dataset = datasets.get_dataset(config)
 
     example_kws = config.get('examples', {})
     return dataset.list_examples(**example_kws)
 
 
-def run_validate(examples, config):
+def run_validate(examples: list, config: dict):
     from . import validation
 
     config = config.copy()

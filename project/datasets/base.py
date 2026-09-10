@@ -1,35 +1,50 @@
-from typing import Optional, List, Dict, Iterable, Any
-from dataclasses import dataclass
+from typing import List, Dict, Optional, Any, Iterable
+
 from pathlib import Path
+from dataclasses import dataclass
 
 
-def _resolve_subject_list(subjects: str|Path|Iterable[str], col='subject', sep='\t') -> List[str]:
-    from ..core import fileio
+def _resolve_subject_list(
+    subjects: str|Path|Iterable[str],
+    col: str = 'subject',
+    sep: str = '\t'
+) -> List[str]:
+    from ..common import fileio
+
     if isinstance(subjects, (str, Path)):
         subjects = str(subjects)
+
         if subjects.endswith('.csv'):
             return fileio.load_subject_list(subjects, key=col, sep=sep)
+
         elif subjects.endswith('.txt'):
             return fileio.load_subject_list(subjects, key=0, header=None)
+
     elif hasattr(subjects, '__iter__'):
         return [str(v) for v in subjects]
+
     raise TypeError(f'Invalid subject list: {subjects!r}')
 
 
 def _resolve_dataset_name(name: str):
     n = name.lower()
+
     if n in {'shapenet', 'shapenetsem'}:
         from . import shapenet
         return shapenet.ShapeNetDataset
+
     elif n in {'copdgene'}:
         from . import copdgene
         return copdgene.COPDGeneDataset
+
     elif n in {'emory4dct', 'emory-4dct', 'dirlab'}:
         from . import emory4dct
         return emory4dct.Emory4DCTDataset
+
     elif n in {'bmc4dct', 'bmc-4dct', '4d_lungs'}:
         from . import bmc4dct
         return bmc4dct.BMC4DCTDataset
+
     raise ValueError(f'Invalid dataset name: {name!r}')
 
 

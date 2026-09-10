@@ -1,11 +1,16 @@
-from typing import List, Dict, Iterable, Optional, Any
-import sys, time, random
+from typing import Dict, Iterable, Optional, Any
+
+import sys, random
+
+from .outputs import Outputs
+from .pprint import pprint
+from .timer import Timer
+
+VERBOSE = True
 
 
 # ----- logging functions -----
 
-
-VERBOSE = True
 
 def set_verbose(val: bool) -> None:
     global VERBOSE
@@ -73,38 +78,4 @@ def make_seed(*parts) -> int:
     s = ':'.join([str(part) for part in parts])
     h = hashlib.sha256(s.encode('utf-8')).digest()
     return int.from_bytes(h[:8], byteorder='little', signed=False)
-
-
-def pprint(*args, **kwargs) -> None:
-    from .pprint import pprint as pprint_
-    return pprint_(*args, **kwargs)
-
-
-class Timer:
-
-    def __init__(self):
-        import torch
-        torch.cuda.synchronize()
-        torch.cuda.reset_peak_memory_stats()
-        self.t_last = time.perf_counter()
-
-    def tick(self, sync=False, unit_b=2**30):
-        import torch
-        if sync:
-            torch.cuda.synchronize()
-        curr_alloc = torch.cuda.memory_allocated() / unit_b
-        curr_rsvd  = torch.cuda.memory_reserved() / unit_b
-        peak_alloc = torch.cuda.max_memory_allocated() / unit_b
-        peak_rsvd  = torch.cuda.max_memory_reserved() / unit_b
-        torch.cuda.reset_peak_memory_stats()
-        t_curr = time.perf_counter()
-        t_delta = t_curr - self.t_last
-        self.t_last = t_curr
-        return {
-            't_delta': round(t_delta, 4),
-            'curr_alloc': round(curr_alloc, 4),
-            'curr_rsvd':  round(curr_rsvd, 4),
-            'peak_alloc': round(peak_alloc, 4),
-            'peak_rsvd':  round(peak_rsvd, 4)
-        }
 
