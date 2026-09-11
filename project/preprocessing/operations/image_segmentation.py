@@ -1,14 +1,16 @@
-# preprocessing/image_segmentation.py
+# preprocessing/operations/image_segmentation.py
 
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 from pathlib import Path
 import numpy as np
 
-from ..common import utils, fileio, transforms
+from ...common import fileio, utils
 
 
 VALID_METHODS = ['totalsegmentator', 'visionfeature', 'hu_threshold']
+DEFAULT_METHOD = 'totalsegmentator'
+DEFAULT_TS_TASK = 'total'
 
 TS_LABELS_BY_TASK = {
     'total': [
@@ -16,78 +18,37 @@ TS_LABELS_BY_TASK = {
         'lung_middle_lobe_right',
         'lung_lower_lobe_right',
         'lung_upper_lobe_left',
-        'lung_lower_lobe_left'
+        'lung_lower_lobe_left',
     ],
     'lung_vessels': [
         'lung_airways',
         'lung_airways_wall',
         'lung_arteries',
-        'lung_veins'
+        'lung_veins',
     ],
     'lung_vessels_LEGACY': ['lung_trachea_bronchia', 'lung_vessels'],
     'body': ['body', 'body_trunc', 'body_extremeties', 'skin'],
-    'lung_nodules': ['lung', 'lung_nodules']
+    'lung_nodules': ['lung', 'lung_nodules'],
 }
 
 VF_LABELS = [
-    "nodule",
-    "ggo",
-    "consolidation",
-    "emphysema",
-    "honeycombing",
-    "pleural_effusion"
+    'nodule',
+    'ggo',
+    'consolidation',
+    'emphysema',
+    'honeycombing',
+    'pleural_effusion',
 ]
-
-
-def run_segmentation_tasks(
-    image_path: Path,
-    output_dir: Path,
-    output_path: Path,
-    tasks: List[dict]
-):
-    utils.log('Starting image segmentation')
-
-    fileio.make_dir_exist(segment_dir)
-
-    threshold_tasks = []
-    for task_config in tasks:
-        method = task_config.get('method', '').lower()
-
-        if method == 'hu_threshold':
-            # postpone until we have the domain mask
-            threshold_tasks.append(task_config)
-            continue 
-
-        run_segmentation_task(
-            image_path=image_path,
-            output_dir=segment_dir,
-            **task_config
-        )
-
-    utils.log('Combining segmentation masks')
-    nifti = image_segmentation.combine_segmentation_masks(
-        segment_dir, class_type='lung'
-    )
-
-    fileio.save_nibabel(output_path, nifti)
-
-    for task_config in threshold_tasks:
-        image_segmentation.run_segmentation_task(
-            image_path=image_path,
-            mask_path=output_path,
-            output_dir=segment_dir,
-            **task_config
-        )
 
 
 def run_segmentation_task(
     image_path: Path,
     output_dir: Path,
-    method: str,
-    kwargs: dict,
-    mask_path: Path | None = None
+    method: str = DEFAULT_METHOD,
+    kwargs: Optional[Dict[str, Any]] = None
 ):
     key = method.lower()
+    kwargs = kwargs or {}
 
     if key == 'totalsegmentator':
         return run_totalsegmentator_task(image_path, output_dir, **kwargs)
@@ -96,9 +57,7 @@ def run_segmentation_task(
         return run_visionfeature_segmentation(image_path, output_dir, **kwargs)
 
     elif key == 'hu_threshold':
-        return run_threshold_segmentation(
-            image_path, mask_path, output_dir, **kwargs
-        )
+        return run_threshold_segmentation(image_path, output_dir, **kwargs)
 
     raise ValueError(f'Invalid segmentation method: {method!r}')
 
@@ -106,7 +65,7 @@ def run_segmentation_task(
 def run_totalsegmentator_task(
     image_path: Path,
     output_dir: Path,
-    task: str = 'total',
+    task: str = DEFAULT_TS_TASK,
     **kwargs
 ):
     utils.log(f'Running TotalSegmentator task: {task!r}')
@@ -114,51 +73,52 @@ def run_totalsegmentator_task(
     from totalsegmentator import python_api
 
     return python_api.totalsegmentator(
-        input=image_path, output=output_dir, task=task, **kwargs
+        input=image_path,
+        output=output_dir,
+        task=task,
+        **kwargs
     )
 
 
 def run_visionfeature_segmentation(
-    image_path: Path, output_dir: Path, **kwargs
+    image_path: Path,
+    output_dir: Path,
+    **kwargs
 ):
     utils.log('Running VisionFeature segmentation')
 
+    # Save and restore nnUNet environment variables
+    # VisionFeature sets its own nnUNet environment
     import os
 
-    # save and restore nnUNet environment
-    nnunet_raw = os.environ.pop('nnUNet_raw')
-    nnunet_pre = os.environ.pop('nnUNet_preprocessed')
-    nnunet_res = os.environ.pop('nnUNet_results')
+    names = ['nnUNet_raw', 'nnUNet_preprocessed', 'nnUNet_results']
+    saved = {name: os.environ.pop(name, None) for name in names}
 
     try:
         from VisionFeature import segmentation_api
-        
+
         return segmentation_api.segment_case(
-            image_path=image_path, output_dir=output_dir, **kwargs
+            image_path=image_path,
+            output_dir=output_dir,
+            **kwargs
         )
 
     finally:
-        if nnunet_raw: os.environ['nnUNet_raw'] = nnunet_raw
-        if nnunet_pre: os.environ['nnUNet_preprocessed'] = nnunet_pre
-        if nnunet_res: os.environ['nnUNet_results'] = nnunet_res
+        for name, value in saved.items():
+            if value is not None:
+                os.environ[name] = value
 
 
 def run_threshold_segmentation(
     image_path: Path,
-    mask_path: Path,
     output_dir: Path,
-    thresholds: Dict[str, Dict[str, Any]],
-    sigma: Optional[float] = None
+    thresholds: Dict[str, Dict[str, Any]]
 ):
     utils.log('Running threshold-based segmentation')
 
     nifti = fileio.load_nibabel(image_path)
     image = nifti.get_fdata()
     affine = nifti.affine
-
-    if sigma is not None and sigma > 0:
-        mask = fileio.load_nibabel(mask_path).get_fdata()
-        image = transforms.gaussian_filter(image, mask, affine, sigma)
 
     for label, config in thresholds.items():
         utils.check_keys(
@@ -178,18 +138,21 @@ def run_threshold_segmentation(
 
         operator = config.get('operator', '<')
         if operator == '<':
-            mask = (image < threshold)
+            mask = image < threshold
         elif operator == '>':
-            mask = (image > threshold)
+            mask = image > threshold
         elif operator == '<=':
-            mask = (image <= threshold)
+            mask = image <= threshold
         elif operator == '>=':
-            mask = (image >= threshold)
+            mask = image >= threshold
         else:
             raise ValueError(f'Invalid threshold operator: {operator!r}')
 
-        mask_path = output_dir / f'{label}.nii.gz'
-        fileio.save_nibabel(mask_path, mask.astype(np.int16), nifti.affine)
+        fileio.save_nibabel(
+            output_dir / f'{label}.nii.gz',
+            mask.astype(np.int16),
+            nifti.affine
+        )
 
 
 def combine_segmentation_masks(mask_dir: Path, class_type: str = 'lung'):

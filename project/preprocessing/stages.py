@@ -1,14 +1,14 @@
 # preprocessing/stages.py
 
-from typing import List, Dict, Tuple, Any
-
 from pathlib import Path
+from typing import Any, Dict, Tuple
+
 import numpy as np
 
-from ..common import utils, fileio, transforms
+from ..common import fileio, utils
 
 
-# ----- conversion to NIFTI -----
+# ----- conversion / mask preprocessing -----
 
 
 def convert_image_to_nifti(
@@ -44,7 +44,7 @@ def convert_binvox_to_nifti(
         binvox, mesh.points, **config
     )
 
-    fileio.save_nibabel(output_path, mask.astype(np.uint8), affine)
+    fileio.save_nibabel(output_path, nifti)
 
 
 def preprocess_binary_mask(
@@ -58,7 +58,7 @@ def preprocess_binary_mask(
 
     utils.log('Preprocessing binary mask')
     mask, affine = mask_processing.preprocess_binary_mask(
-        mask=nifti.get_fdata(), affine=nifti.affine, **config
+        nifti.get_fdata(), nifti.affine, **config
     )
 
     fileio.save_nibabel(output_path, mask, affine)
@@ -70,16 +70,18 @@ def preprocess_binary_mask(
 def resample_image_spacing(
     input_path: Path,
     output_path: Path,
-    ref_path: Path,
+    reference_path: Path,
     config: Dict[str, Any]
 ):
     from .operations import image_resampling
 
     src_image = fileio.load_simpleitk(input_path)
-    ref_image = fileio.load_simpleitk(ref_path)
+    ref_image = fileio.load_simpleitk(reference_path)
 
     utils.log('Resampling image on reference grid')
-    image = image_resampling.resample_image(src_image, ref_image, **config)
+    image = image_resampling.resample_image_spacing(
+        src_image, ref_image, **config
+    )
 
     fileio.save_simpleitk(output_path, image)
 
@@ -89,18 +91,32 @@ def resample_image_spacing(
 
 def create_segmentation_masks(
     image_path: Path,
-    segment_dir: Path, # individual masks for each class
-    output_path: Path, # combined mask for entire domain
+    segment_dir: Path,
+    output_path: Path,
     config: Dict[str, Any]
 ):
+    '''
+    Run segmentation tasks and write individual + combined domain masks.
+    '''
+    utils.check_keys(config, valid={'tasks'}, where='image_segmentation')
     from .operations import image_segmentation
 
-    image_segmentation.run_segmentation_tasks(
-        image_path=image_path,
-        output_dir=segment_dir,
-        output_path=output_path,
-        **config
+    utils.log('Starting image segmentation')
+    fileio.make_dir_exist(segment_dir)
+
+    for task_config in config.get('tasks', []):
+        image_segmentation.run_segmentation_task(
+            image_path=image_path,
+            output_dir=segment_dir,
+            **task_config
+        )
+
+    utils.log('Combining segmentation masks')
+    nifti = image_segmentation.combine_segmentation_masks(
+        segment_dir, class_type='lung'
     )
+
+    fileio.save_nibabel(output_path, nifti)
 
 
 # ----- image registration -----
@@ -114,7 +130,12 @@ def estimate_displacement_field(
     output_path: Path,
     config: Dict[str, Any]
 ):
+    utils.check_keys(
+        config, valid={'method', 'kwargs'}, where='image_registration'
+    )
     from .operations import image_registration
+
+    utils.log('Starting image registration')
 
     image_registration.run_image_registration(
         fixed_image=fixed_image,
@@ -139,15 +160,24 @@ def label_anatomical_regions(
         valid={'roi_order', 'filter_kws'},
         where='anatomical_regions'
     )
+
+    roi_order = config['roi_order']
+    filter_kws = config.get('filter_kws', {})
+
     from .operations import region_labeling
 
-    masks = {}
-    for name in config['roi_order']:
-        nifti = fileio.load_nibabel(input_dir / f'{name}.nii.gz')
-        masks[name] = (nifti.get_fdata() != 0)
-        affine = nifti.affine
+    if not input_dir.is_dir():
+        raise RuntimeError(f'{input_dir} is not a valid directory')
 
-    labels = region_labeling.label_anatomical_regions(masks, **config)
+    masks, affine = {}, None
+    for name in roi_order:
+        nifti = fileio.load_nibabel(input_dir / f'{name}.nii.gz')
+        masks[name], affine = nifti.get_fdata(), nifti.affine
+
+    utils.log('Assigning labels to anatomical regions')
+    labels = region_labeling.label_anatomical_regions(
+        masks, roi_order=roi_order, filter_kws=filter_kws
+    )
 
     fileio.save_nibabel(output_path, labels, affine)
 
@@ -156,16 +186,17 @@ def label_regions_from_surface(
     mask_path: Path,
     mesh_path: Path,
     output_path: Path,
-    config: Dict[str, Any]
+    config: Dict[str, Any],
 ):
     from .operations import region_labeling
 
     nifti = fileio.load_nibabel(mask_path)
     scene = fileio.load_trimesh(mesh_path)
 
+    utils.log('Assigning labels using surface regions')
     labels = region_labeling.label_regions_from_surface(
-        nifti.get_fdata(),
-        nifti.affine,
+        mask=nifti.get_fdata(),
+        affine=nifti.affine,
         scene=scene,
         **config
     )
@@ -187,33 +218,26 @@ def assign_material_properties(
     from .operations import material_properties
 
     nifti = fileio.load_nibabel(image_path)
-    image = nifti.get_fdata(dtype=np.float32)
     domain = fileio.load_nibabel(domain_path).get_fdata() > 0
-    affine = nifti.affine
 
-    inputs = {'image': image, 'domain': domain}
+    inputs = {'image': nifti.get_fdata(), 'domain': domain}
+    for name in material_properties.get_referenced_names(config) - inputs.keys():
+        mask = fileio.load_nibabel(segment_dir / f'{name}.nii.gz').get_fdata() > 0
+        inputs[name] = mask & domain
 
-    # load additional masks referenced by the config
-    referenced = set()
-    for prop_config in config.values():
-        referenced.update(prop_config.get('terms', {}))
+    utils.log('Assigning material property fields')
+    fields = material_properties.compute_property_fields(inputs, nifti.affine, config)
 
-    for name in referenced - inputs.keys():
-        nifti = fileio.load_nibabel(segment_dir / f'{label}.nii.gz')
-        inputs[label] = (nifti.get_fdata() > 0) & domain
+    fileio.make_dir_exist(fields_dir)
+    for name, array in fields.items():
+        fileio.save_nibabel(fields_dir / f'{name}.nii.gz', array, nifti.affine)
 
-    fields = material_properties.compute_propertyfields(
-        inputs, affine, config
-    )
-
-    for name, field in fields.items():
-        fileio.save_nibabel(fields_dir / f'{name}.nii.gz', field, affine)
-
-    # NOTE: This treats the domain as a single material "type"
-    fileio.save_nibabel(output_path, domain.astype(np.uint8), affine)
+    # The current patient-specific phantom uses one material label while
+    #   storing the actual physical parameters in separate dense fields.
+    fileio.save_nibabel(output_path, domain.astype(np.uint8), nifti.affine)
 
 
-def assign_materials_to_regions(
+def assign_materials_to_regions( # deprecate
     mask_path: Path,
     output_path: Path,
     density_path: Path,
@@ -227,77 +251,78 @@ def assign_materials_to_regions(
         valid={'material_catalog', 'material_sampling'},
         where='material_labels'
     )
-    from . import material_properties
+    from .operations import material_properties
 
     nifti = fileio.load_nibabel(mask_path)
-    region_mask = nifti.get_fdata().astype(np.int16)
+    region_labels = nifti.get_fdata().astype(np.int16)
 
     utils.log('Loading material catalog')
-    mat_df = materials.load_material_catalog(config['material_catalog'])
+    mat_df = material_properties.load_material_catalog(config['material_catalog'])
     utils.log(mat_df)
 
-    region_mats = materials.assign_materials_to_regions(
-        region_mask,
+    material_labels = material_properties.assign_materials_to_region_mask(
+        region_labels,
         mat_df,
         sampling_kws=config.get('material_sampling'),
-        random_seed=random_seed
+        random_seed=random_seed,
+    )
+    E, nu, rho = material_properties.assign_material_properties(
+        material_labels,
+        mat_df,
     )
 
-    mat_labels = np.unique(region_mats[region_mats > 0])
-    assert len(mat_labels) > 1, f'single material: {mat_labels}'
+    for path in (density_path, elastic_path, poisson_path):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
 
-    mat_mask = region_mats[region_mask]
-
-    # NOTE we can always recover material properties from material label + catalog,
-    #   we choose to save the material property masks here for supervised training
-    E_mask, nu_mask, rho_mask = materials.assign_material_properties(mat_mask, mat_df)
-
-    fileio.save_nibabel(elastic_path, E_mask.astype(np.float32), nifti.affine)
-    fileio.save_nibabel(poisson_path, nu_mask.astype(np.float32), nifti.affine)
-    fileio.save_nibabel(density_path, rho_mask.astype(np.float32), nifti.affine)
-    fileio.save_nibabel(output_path, mat_mask.astype(np.int16), nifti.affine)
+    fileio.save_nibabel(elastic_path, E.astype(np.float32), nifti.affine)
+    fileio.save_nibabel(poisson_path, nu.astype(np.float32), nifti.affine)
+    fileio.save_nibabel(density_path, rho.astype(np.float32), nifti.affine)
+    fileio.save_nibabel(output_path, material_labels.astype(np.int16), nifti.affine)
 
 
 # ----- mesh generation / repair -----
 
 
-def generate_tetrahedral_mesh(mask_path, output_path, config, random_seed=0):
-    utils.check_keys(
-        config,
-        valid={'use_affine', 'pygalmesh_kws'},
-        where='mesh_generation'
-    )
-    from .. import tetrahedral_meshing
+def generate_tetrahedral_mesh(
+    mask_path: Path,
+    output_path: Path,
+    random_seed: int = 0,
+    config: Dict[str, Any]
+):
+    from .operations import tetrahedral_meshing
 
     nifti = fileio.load_nibabel(mask_path)
 
     utils.log('Generating tetrahedral mesh')
-
     mesh = tetrahedral_meshing.generate_mesh_from_mask(
         mask=nifti.get_fdata(),
         affine=nifti.affine,
-        use_affine=config.get('use_affine', True),
         random_seed=random_seed,
-        pygalmesh_kws=config.get('pygalmesh_kws', {})
+        **config
     )
 
     fileio.save_meshio(output_path, mesh)
 
 
-def repair_triangular_mesh(input_path, output_path, config):
+def repair_triangular_mesh(
+    input_path: Path,
+    output_path: Path,
+    config: Dict[str, Any],
+):
     utils.check_keys(
         config,
         valid={'run_pymeshfix'},
-        where='surface_mesh'
+        where='surface_mesh',
     )
-    from .. import triangular_meshing
+    from .operations import triangular_meshing
 
     mesh = fileio.load_trimesh(input_path).to_mesh()
 
     utils.log('Repairing triangular mesh')
-
     mesh = triangular_meshing.repair_triangular_mesh(
-        mesh, config.get('run_pymeshfix'), ret_meshio=True
+        mesh,
+        use_pymeshfix=config.get('run_pymeshfix', False),
+        ret_meshio=True,
     )
 
     fileio.save_meshio(output_path, mesh)
@@ -310,31 +335,86 @@ def interpolate_mesh_fields(
     mesh_path: Path,
     image_path: Path,
     disp_path: Path,
-    fields_dir: Path,
+    output_path: Path,
+    config: Dict[str, Any],
+    fields_dir: Optional[Path] = None
+):
+    utils.check_keys(
+        config,
+        valid={'displacement_key', 'interpolate_kws'},
+        where='field_interpolation'
+    )
+    from .operations import field_interpolation
+
+    disp_key = config.get('displacement_key', 'u')
+    interp_kws = config.get('interpolate_kws', {})
+
+    mesh = fileio.load_meshio(mesh_path)
+    nifti = fileio.load_nibabel(image_path)
+
+    fields = {
+        'image': nifti.get_fdata(),
+        disp_key: fileio.load_nibabel(disp_path).get_fdata()
+    }
+
+    if fields_dir is not None:
+        fields.update({
+            'E': fileio.load_nibabel(fields_dir / 'youngs_modulus.nii.gz').get_fdata(),
+            'nu': fileio.load_nibabel(fields_dir / 'poisson_ratio.nii.gz').get_fdata(),
+            'rho': fileio.load_nibabel(fields_dir / 'density.nii.gz').get_fdata(),
+        })
+
+    utils.log('Interpolating voxel fields onto mesh')
+    mesh = field_interpolation.interpolate_mesh_fields(
+        mesh, fields, nifti.affine, interp_kws,
+    )
+
+    fileio.save_meshio(output_path, mesh)
+
+
+def interpolate_materials(
+    mesh_path: Path,
+    regions_path: Path,
+    materials_path: Path,
+    output_path: Path,
+    config: Dict[str, Any],
+):
+    utils.check_keys(config, valid={'material_catalog'}, where='material_mesh')
+    from .operations import field_interpolation, material_properties
+
+    mesh = fileio.load_meshio(mesh_path)
+    region_labels = fileio.load_nibabel(regions_path).get_fdata().astype(int)
+    material_labels = fileio.load_nibabel(materials_path).get_fdata().astype(int)
+
+    utils.log('Loading material catalog')
+    mat_df = material_properties.load_material_catalog(config['material_catalog'])
+    utils.log(mat_df)
+
+    mesh = field_interpolation.interpolate_materials(
+        mesh,
+        region_labels,
+        material_labels,
+        mat_df,
+    )
+
+    fileio.save_meshio(output_path, mesh)
+
+
+def interpolate_image(
+    image_path: Path,
+    mesh_path: Path,
     output_path: Path,
     config: Dict[str, Any]
 ):
     from .operations import field_interpolation
 
-    mesh = fileio.load_meshio(mesh_path)
     nifti = fileio.load_nibabel(image_path)
     image = nifti.get_fdata(dtype=np.float32)
-    affine = nifti.affine
+    mesh = fileio.load_meshio(mesh_path)
 
-    u = fileio.load_nibabel(disp_path).get_fdata(dtype=np.float32)
-    E = fileio.load_nibabel(fields_dir / 'youngs_modulus.nii.gz').get_fdata(dtype=np.float32)
-    nu = fileio.load_nibabel(fields_dir / 'poisson_ratio.nii.gz').get_fdata(dtype=np.float32)
-    rho = fileio.load_nibabel(fields_dir / 'density.nii.gz').get_fdata(dtype=np.float32)
-
-    u_key = config.get('displacement_key', 'u')
-    kwargs = config.get('interpolate_args', {})
-
-    fields = {'image': image, u_key: disp, 'E': E, 'nu': nu, 'rho': rho}
-
-    utils.log(f'Interpolating voxel fields onto mesh')
-
+    utils.log('Interpolating image onto mesh')
     mesh = field_interpolation.interpolate_mesh_fields(
-        mesh, fields, affine, **kwargs
+        mesh, {'image': image}, nifti.affine, **config
     )
 
     fileio.save_meshio(output_path, mesh)
@@ -356,16 +436,15 @@ def simulate_displacement_field(
     )
     from .. import physics
 
-    mesh = fileio.load_meshio(mesh_path) # world coordinates
+    mesh = fileio.load_meshio(mesh_path)
 
-    if len(mesh.cells) != 1 or mesh.cells[0].type != 'tetra':
-        block_types = [block.type for block in mesh.cells]
-        raise ValueError(f'Expected exactly one tetra cell block: {block_types}')
+    cell_blocks = [block.type for block in mesh.cells]
+    if cell_blocks != ['tetra']:
+        raise ValueError(f'Expected one tetra cell block: {cell_blocks!r}')
 
     adapter = physics.api.get_adapter(config)
     bc_spec = physics.api.get_bc_spec(config)
-
-    u_sim = adapter.simulate_displacement(mesh, unit_m, bc_spec) # meters
+    u_sim = adapter.simulate_displacement(mesh, unit_m, bc_spec)  # meters
 
     def _to_numpy(t):
         return t.detach().cpu().numpy()
@@ -383,56 +462,28 @@ def simulate_displacement_field(
 def generate_synthetic_image(
     mask_path: Path,
     output_path: Path,
-    config: Dict[str, Any],
-    random_seed: int = 0
+    random_seed: int = 0,
+    config: Dict[str, Any]
 ):
     utils.check_keys(
         config,
-        valid={'material_catalog', 'texture_source', 'intensity_model', 'noise_model', 'use_simple'},
+        valid={
+            'material_catalog',
+            'texture_source',
+            'intensity_model',
+            'noise_model',
+            'use_simple',
+        },
         where='image_generation'
     )
-    from . import material_properties, textures, image_synthesis
+    from .operations import image_synthesis
 
     nifti = fileio.load_nibabel(mask_path)
     mask = nifti.get_fdata().astype(int)
 
-    mat_df = materials.load_material_catalog(config['material_catalog'])
-
-    tex_path = config['texture_source']['annotations']
-    tex_df = textures.load_texture_annotations(tex_path)
-
-    use_solid = config['texture_source']['use_solid']
-    tex_cache = textures.TextureCache(tex_df)
-
-    proc_kws = config['texture_source']['preprocessing']
-    proc_spec = textures.PreprocessSpec(**proc_kws)
-
-    def texture_map(label: int):
-        tid = mat_df.loc[label].texture_id
-        return tex_cache.get(tid, use_solid, proc_spec)
-
-    utils.log('Computing intensity model')
-    intensity_kws = config.get('intensity_model', {})
-    outputs = materials.compute_intensity_model(
-        mat_df['density_val'], mat_df['elastic_val'], **intensity_kws
+    image = image_synthesis.generate_synthetic_image(
+        mask, nifti.affine, config, random_seed=random_seed
     )
-    mat_df['density_feat'] = outputs['density_feat']
-    mat_df['elastic_feat'] = outputs['elastic_feat']
-    mat_df['intensity_bias'] = outputs['intensity_bias']
-    mat_df['intensity_range'] = outputs['intensity_range']
-    utils.log(mat_df)
-
-    utils.log('Generating volumetric image')
-    if config.get('use_simple', False):
-        rgb = not proc_spec.grayscale
-        image = image_synthesis.generate_simple_image(
-            mask, texture_map, seed=random_seed, rgb=rgb
-        )
-    else:
-        noise_kws = config.get('noise_model', {})
-        image = image_synthesis.generate_volumetric_image(
-            mask, nifti.affine, mat_df, tex_cache, **noise_kws, random_seed=random_seed
-        )
 
     fileio.save_nibabel(output_path, image, nifti.affine)
 

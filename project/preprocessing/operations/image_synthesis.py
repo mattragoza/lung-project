@@ -1,12 +1,63 @@
-# preprocessing/image_synthesis.py
+# preprocessing/operations/image_synthesis.py
 
-from __future__ import annotations
-from typing import Dict
+from typing import Dict, Any
 
 import numpy as np
 import scipy.ndimage
 
-from ..common import utils, transforms, interpolation
+from ...common import utils, transforms, interpolation
+
+
+def generate_synthetic_image(
+    material_mask: np.ndarray,
+    affine: np.ndarray,
+    config: Dict[str, Any],
+    random_seed: int = 0
+) -> np.ndarray:
+    '''
+    Generate a synthetic image from a voxel material-label map.
+    '''
+    from . import material_properties, textures
+
+    mat_df = material_properties.load_material_catalog(config['material_catalog'])
+
+    texture_config = config['texture_source']
+    tex_df = textures.load_texture_annotations(texture_config['annotations'])
+    tex_cache = textures.TextureCache(tex_df)
+    proc_spec = textures.PreprocessSpec(**texture_config.get('preprocessing', {}))
+    use_solid = texture_config.get('use_solid', False)
+
+    def texture_map(label: int):
+        tid = mat_df.loc[label].texture_id
+        return tex_cache.get(tid, use_solid, proc_spec)
+
+    utils.log('Computing intensity model')
+    outputs = material_properties.compute_intensity_model(
+        mat_df['density_val'],
+        mat_df['elastic_val'],
+        **config.get('intensity_model', {})
+    )
+    for name, values in outputs.items():
+        mat_df[name] = values
+    utils.log(mat_df)
+
+    utils.log('Generating volumetric image')
+    if config.get('use_simple', False):
+        return generate_simple_image(
+            material_mask,
+            texture_map,
+            seed=random_seed,
+            rgb=not proc_spec.grayscale
+        )
+
+    return generate_volumetric_image(
+        material_mask,
+        affine,
+        mat_df,
+        tex_cache,
+        **config.get('noise_model', {}),
+        random_seed=random_seed
+    )
 
 
 def generate_simple_image(
@@ -18,7 +69,8 @@ def generate_simple_image(
     interp_mode: str = 'wrap',
     seed: int = 0,
     rgb = True
-):
+) -> np.ndarray:
+
     mat_mask = np.asarray(mat_mask, dtype=int)
     assert mat_mask.ndim == 3
 
@@ -57,16 +109,16 @@ def generate_volumetric_image(
     mat_df: pd.DataFrame,
     tex_cache: textures.TextureCache,
     # noise settings
-    tex_noise_len: float=0.,
-    tex_noise_std: float=0.,
-    mul_noise_len: float=0.,
-    mul_noise_std: float=0.,
-    add_noise_len: float=0.,
-    add_noise_std: float=0.,
-    mat_sigma: float=1.,
-    psf_sigma: float=0.,
-    random_seed=0,
-):
+    tex_noise_len: float = 0.,
+    tex_noise_std: float = 0.,
+    mul_noise_len: float = 0.,
+    mul_noise_std: float = 0.,
+    add_noise_len: float = 0.,
+    add_noise_std: float = 0.,
+    mat_sigma: float = 1.,
+    psf_sigma: float = 0.,
+    random_seed = 0
+) -> np.ndarray:
     '''
     Args:
         mat_mask: (I, J, K) voxel mask of material labels

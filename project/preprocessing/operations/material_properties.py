@@ -1,37 +1,58 @@
-# preprocessing/material_properties.py
+# preprocessing/operations/material_properties.py
+
+from typing import Dict, Set, Any
 
 import numpy as np
 import pandas as pd
 
-from ..common import utils
+from ...common import transforms, utils
 
 
-def compute_property_fields(inputs, affine, config):
-    domain = inputs['domain']
+def get_referenced_names(config: Dict[str, Any]) -> Set[str]:
+    referenced = set()
+    for prop_config in config.values():
+        referenced.update(prop_config.get('terms', {}).keys())
+    return referenced
+
+
+def compute_property_fields(
+    inputs: Dict[str, np.ndarray],
+    affine: np.ndarray,
+    config: Dict[str, Any]
+) -> Dict[str, np.ndarray]:
+
     fields = {}
-
-    for prop_name, prop_config in config.items():
-        default = prop_config.get('default', 0.)
-        field = np.full(domain.shape, default, dtype=np.float32)
-
-        terms = prop_config.get('terms', {})
-        for input_name, term_config in terms.items():
-            fields += term_config['weight'] * inputs[input_name]
-
-        sigma = prop_config.get('sigma', 0.)
-        if sigma > 0:
-            field = transform.gaussian_filter(field, domain, affine, sigma)
-
-        value_range = prop_config.get('range')
-        if value_range is not None:
-            field = np.clip(field, *map(float, value_range))
-
-        fields[prop_name] = field
+    for name, kwargs in config.items():
+        fields[name] = compute_property_field(inputs, affine, **kwargs)
 
     return fields
 
 
-# ----- material catalog-based -----
+def compute_property_field(
+    inputs: Dict[str, np.ndarray],
+    affine: np.ndarray,
+    base_value: float = 0.0,
+    terms: List[Dict[str, float]],
+    sigma: Optional[float] = None,
+    range: Tuple[float, float] | None = None
+) -> np.ndarray:
+
+    domain = np.asarray(inputs['domain'], dtype=bool)
+    output = np.full(domain.shape, base_value, dtype=float)
+
+    for name, weight in term:
+        output += float(weight) * inputs[name]
+
+    if sigma is not None and sigma > 0:
+        output = transforms.gaussian_filter(output, domain, affine, sigma)
+
+    if range is not None:
+        output = np.clip(output, *map(float, range))
+
+    return output
+
+
+# DEPRECATED
 
 
 DATA_COLUMNS = ['key', 'val', 'freq']
@@ -236,7 +257,7 @@ def assign_material_properties(material_labels, mat_df):
     density_by_material = mat_df['density_val'].to_numpy()
 
     if material_labels.min() < 0:
-        raise ValueError(material_labels.unique())
+        raise ValueError(np.unique(material_labels))
 
     elastic_values = elastic_by_material[material_labels]
     poisson_values = poisson_by_material[material_labels]
@@ -252,3 +273,24 @@ def infer_material_by_region(region_labels, material_labels):
         most_common[r] = int(np.bincount(m).argmax())
     return most_common
 
+
+
+def assign_materials_to_region_mask(
+    region_labels,
+    mat_df,
+    sampling_kws=None,
+    random_seed=0,
+):
+    material_by_region = assign_materials_to_regions(
+        region_labels,
+        mat_df,
+        sampling_kws=sampling_kws,
+        random_seed=random_seed,
+    )
+
+    material_labels = material_by_region[region_labels]
+    labels = np.unique(material_labels[material_labels > 0])
+    if len(labels) <= 1:
+        raise RuntimeError(f'Single material label: {labels}')
+
+    return material_labels

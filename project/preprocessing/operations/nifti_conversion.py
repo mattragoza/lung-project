@@ -5,7 +5,7 @@ from typing import Tuple
 import nibabel as nib
 import numpy as np
 
-from ..common import utils, transforms
+from ...common import utils, transforms
 
 
 def convert_array_to_nifti(
@@ -53,11 +53,13 @@ def interpret_axcodes(axcodes: str) -> Tuple[int, int, int]:
     )
 
 
-def convert_binvox_to_nifti(binvox, points, filter_kws):
+def convert_binvox_to_nifti(binvox, points, **preprocess_kws):
     from . import mask_processing
+
     affine = infer_binvox_affine(binvox, points)
-    mask = mask_processing.filter_binary_mask(binvox.numpy(), **filter_kws)
-    #mask, affine = center_and_pad_array_and_affine(mask, affine)
+    mask, affine = mask_processing.preprocess_binary_mask(
+        binvox.numpy(), affine, **preprocess_kws,
+    )
     return nib.nifti1.Nifti1Image(mask.astype(np.uint8), affine)
 
 

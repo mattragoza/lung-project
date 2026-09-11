@@ -1,8 +1,8 @@
 # preprocessing/pipelines/shapenet.py
 
 from ...common import utils
-from ..runner import run_stage
 from .. import stages
+from ..runner import run_stage
 
 
 def preprocess(ex, config):
@@ -10,7 +10,7 @@ def preprocess(ex, config):
         config,
         {'binary_mask', 'surface_mesh', 'region_map', 'volume_mesh'} |
         {'material_map', 'material_mesh', 'displacement_simulation'} |
-        {'image_generation', 'image_interpolation', 'random_seed'},
+        {'image_generation', 'image_interpolation', 'random_seed'}
         where='preprocessing[shapenet]'
     )
 
@@ -24,14 +24,8 @@ def preprocess(ex, config):
         output_path=ex.paths['binary_mask'],
         config=config.get('binary_mask', {})
     )
-    run_stage( # TODO integrate this
-        stages.preprocess_binary_mask,
-        input_path=ex.paths['TODO'],
-        output_path=ex.paths['TODO'],
-        config=config.get('TODO')
-    )
     run_stage(
-        stages.repair_surface_mesh,
+        stages.repair_triangular_mesh,
         input_path=ex.paths['source_mesh'],
         output_path=ex.paths['surface_mesh'],
         config=config.get('surface_mesh', {})
@@ -75,19 +69,18 @@ def preprocess(ex, config):
         config=config.get('image_generation', {}),
         random_seed=subj_seed
     )
-    run_stage( # interp mesh
+    run_stage(
         stages.interpolate_image,
         image_path=ex.paths['input_image'],
         mesh_path=ex.paths['material_mesh'],
         output_path=ex.paths['interp_mesh'],
-        config=config.get('image_interpolation', {})
+        config=config.get('image_interpolation', {}
     )
-    run_stage( # simulate mesh
+    run_stage(
         stages.simulate_displacement_field,
         mesh_path=ex.paths['interp_mesh'],
         output_path=ex.paths['simulate_mesh'],
         unit_m=ex.metadata['unit'],
-        config=config.get('displacement_simulation', {}),
-        random_seed=subj_seed
+        config=config.get('displacement_simulation', {})
     )
 

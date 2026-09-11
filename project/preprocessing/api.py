@@ -13,7 +13,7 @@ def get_pipeline(name: str):
         return pipelines.copdgene
 
     elif key in {'emory4dct', 'emory-4dct'}:
-        return piplines.emory4dct
+        return pipelines.emory4dct
 
     elif key in {'bmc4dct', 'bmc-4dct'}:
         return pipelines.bmc4dct

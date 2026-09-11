@@ -2,3 +2,5 @@
 
 from . import api, pipelines, stages
 
+from .api import preprocess_example
+

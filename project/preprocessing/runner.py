@@ -4,7 +4,7 @@ from typing import List, Dict, Tuple, Optional, Any
 
 from pathlib import Path
 
-from ..common import utils
+from ..common import utils, fileio
 
 
 def run_stage(func, *args, **kwargs) -> Tuple[bool, Any]:
@@ -20,11 +20,12 @@ def run_stage(func, *args, **kwargs) -> Tuple[bool, Any]:
         Any: Return value from function call.
     '''
     output_path = kwargs.get('output_path', None)
+
     if output_path is None:
         raise ValueError(f'{func.__name__} requires output_path')
 
     output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fileio.make_dir_exist(output_path.parent)
 
     if not output_path.exists():
         utils.log(f'INFO: {output_path} missing; Running stage {func.__name__}')

@@ -5,7 +5,7 @@ from typing import Dict, Tuple, Any
 import numpy as np
 import trimesh
 
-from ..core import utils, transforms
+from ...common import utils, transforms
 
 
 def _as_meshio(mesh: trimesh.Trimesh):
@@ -13,7 +13,7 @@ def _as_meshio(mesh: trimesh.Trimesh):
     return meshio.Mesh(points=mesh.vertices, cells=[('triangle', mesh.faces)])
 
 
-def repair_surface_mesh(
+def repair_triangular_mesh(
     mesh: trimesh.Trimesh,
     use_pymeshfix: bool = False,
     ret_meshio: bool = False

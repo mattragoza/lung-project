@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import scipy
 
-from ..core import utils, fileio, transforms
+from ...common import utils, fileio, transforms
 
 
 @dataclass(frozen=True)

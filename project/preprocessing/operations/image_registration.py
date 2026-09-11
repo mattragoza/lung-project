@@ -1,14 +1,15 @@
-# preprocessing/image_registration.py
+# preprocessing/operations/image_registration.py
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ..common import utils, fileio
+from ...common import utils, fileio
 
 
 WEIGHTS_ROOT = Path(os.environ.get('LP_ROOT', '.')) / 'network_weights'
@@ -53,26 +54,25 @@ def run_image_registration(
     key = method.lower()
 
     if key == 'corrfield':
-        run_corrfield_registration(
+        return run_corrfield_registration(
             fixed_image=fixed_image,
-            moving_image=moving_image,
             fixed_mask=fixed_mask,
+            moving_image=moving_image,
             output_path=output_path,
             **kwargs
         )
 
     elif key == 'unigradicon':
-        run_unigradicon_registration(
+        return run_unigradicon_registration(
             fixed_image=fixed_image,
-            moving_image=moving_image,
             fixed_mask=fixed_mask,
+            moving_image=moving_image,
             moving_mask=moving_mask,
             output_path=output_path,
             **kwargs
         )
 
-    else:
-        raise ValueError(f'Invalid registration method: {method!r}')
+    raise ValueError(f'Invalid registration method: {method!r}')
 
 
 # ----- unigradicon backend -----
@@ -80,26 +80,27 @@ def run_image_registration(
 
 def run_unigradicon_registration(
     fixed_image: Path,
-    moving_image: Path,
     fixed_mask: Path,
+    moving_image: Path,
     moving_mask: Path,
     output_path: Path,
     weights_root: Path = WEIGHTS_ROOT,
+    sym_link: str = 'network_weights',
     **kwargs
 ):
     import tempfile
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir = Path(temp_dir)
+        sym_link = Path(sym_link)
 
-        transform_path = tmpdir / 'transform.hdf5'
-        raw_disp_path = tmpdir / 'raw_disp.nii.gz'
+        transform_path = temp_dir / 'transform.hdf5'
+        raw_disp_path = temp_dir / 'raw_disp.nii.gz'
 
-        weights_link = Path('network_weights')
+        if not sym_link.exists():
+            sym_link.symlink_to(weights_root, target_is_directory=True)
 
-        if not weights_link.exists():
-            weights_link.symlink_to(weights_root, target_is_directory=True)
-
+        utils.log('Running uniGradICON registration')
         run_unigradicon_main(
             fixed_image=fixed_image,
             fixed_mask=fixed_mask,
@@ -109,16 +110,11 @@ def run_unigradicon_registration(
             **kwargs
         )
 
-        convert_itk_transform(
-            input_path=transform_path,
-            output_path=raw_disp_path,
-            ref_path=fixed_image
-        )
+        utils.log('Converting ITK transform to displacement')
+        convert_itk_transform(transform_path, raw_disp_path, fixed_image)
 
-        canonicalize_itk_disp(
-            input_path=raw_disp_path,
-            output_path=output_path
-        )
+        utils.log('Canonicalizing ITK displacement field')
+        canonicalize_itk_disp(raw_disp_path, output_path)
 
 
 def run_unigradicon_main(
@@ -199,12 +195,14 @@ def run_unigradicon_main(
 
 
 def convert_itk_transform(
-    input_path: Path, output_path: Path, ref_path: Path
+    input_path: Path,
+    output_path: Path,
+    reference_path: Path
 ):
     import itk
 
     transform = itk.transformread(str(input_path))[0]
-    ref_image = itk.imread(str(ref_path))
+    ref_image = itk.imread(str(reference_path))
 
     disp_image = itk.transform_to_displacement_field_filter(
         transform,
@@ -241,8 +239,8 @@ def canonicalize_itk_disp(input_path: Path, output_path: Path):
 
 def run_corrfield_registration(
     fixed_image: Path,
-    moving_image: Path,
     fixed_mask: Path,
+    moving_image: Path,
     output_path: Path,
     device: str = 'cuda'
 ):
@@ -254,6 +252,7 @@ def run_corrfield_registration(
     moving_array = moving_nifti.get_fdata()
     mask_array   = mask_nifti.get_fdata() > 0 # ensure binary
 
+    utils.log('Running CorrField registration')
     disp_voxel, warped_array = register_corrfield(
         fixed_image=fixed_array,
         moving_image=moving_array,
@@ -261,6 +260,7 @@ def run_corrfield_registration(
         device=device
     )
 
+    utils.log('Mapping displacement to world coordinates')
     affine = fixed_nifti.affine # apply linear transform only
     disp_world = np.einsum('wv,ijkv->ijkw', affine[:3,:3], disp_voxel)
 

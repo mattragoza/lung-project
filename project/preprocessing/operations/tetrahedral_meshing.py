@@ -1,11 +1,12 @@
 # preprocessing/tetrahedral_meshing.py
 
 from typing import Dict, Set, Any
+
 import collections
 import numpy as np
 import meshio
 
-from ..core import utils, transforms
+from ...common import utils, transforms
 
 
 def _get_pygalmesh_spacing(affine: np.ndarray, use_affine: bool):
@@ -40,6 +41,7 @@ def generate_mesh_from_mask(
     spacing = _get_pygalmesh_spacing(affine, use_affine)
 
     utils.log('Running pygalmesh generation')
+
     raw_mesh = run_pygalmesh_generation(
         mask=mask,
         spacing=spacing,
@@ -47,25 +49,17 @@ def generate_mesh_from_mask(
         **(pygalmesh_kws or {})
     )
 
-    utils.log('Extracting tetrahedral cells')
+    utils.log('Post-processing generated mesh')
+
     mesh = extract_cell_type(raw_mesh, cell_type='tetra')
-
-    utils.log('Inferring cell label map')
     label_map = infer_label_map(mesh, mask, spacing, raw_label_key)
-
-    utils.log('Reindexing cell labels')
     mesh = reindex_cell_labels(mesh, label_map, raw_label_key, new_label_key)
-
-    utils.log('Removing background cells')
     mesh = remove_labeled_cells(mesh, 'tetra', new_label_key, label_val=0)
-
-    utils.log('Removing unreferenced points')
     mesh = remove_unreferenced_points(mesh)
-
-    utils.log('Mapping to world coordinates')
     mesh = convert_to_world_coords(mesh, spacing, affine)
 
     utils.log(mesh)
+
     n_components = count_connected_components(mesh, cell_type='tetra')
     if n_components != 1:
         utils.warn(f'WARNING: mesh has {n_components} components')
@@ -78,7 +72,7 @@ def run_pygalmesh_generation(
     spacing: np.ndarray,
     random_seed: int = 0,
     verbose: bool = False,
-    **pygalmesh_kws
+    **kwargs
 ) -> meshio.Mesh:
 
     import os, tempfile, pygalmesh
@@ -97,7 +91,7 @@ def run_pygalmesh_generation(
             inr_path,
             seed=random_seed,
             verbose=verbose,
-            **pygalmesh_kws
+            **kwargs
         )
         utils.log(mesh)
 
@@ -105,7 +99,7 @@ def run_pygalmesh_generation(
         os.remove(inr_path)
 
     if len(mesh.points) == 0:
-        raise RuntimeError('mesh has zero vertices')
+        raise RuntimeError('mesh has no vertices')
 
     if count_cell_type(mesh, cell_type='tetra') == 0:
         raise RuntimeError('mesh has no tetra cells')
