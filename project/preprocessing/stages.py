@@ -1,7 +1,7 @@
 # preprocessing/stages.py
 
+from typing import Dict, Optional, Any
 from pathlib import Path
-from typing import Tuple, Dict, Optional, Any
 
 import numpy as np
 

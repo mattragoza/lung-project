@@ -25,7 +25,6 @@ def run_stage(func, *args, **kwargs) -> Tuple[bool, Any]:
         raise ValueError(f'{func.__name__} requires output_path')
 
     output_path = Path(output_path)
-    fileio.make_dir_exist(output_path.parent)
 
     if not output_path.exists():
         utils.log(f'INFO: {output_path} missing; Running stage {func.__name__}')

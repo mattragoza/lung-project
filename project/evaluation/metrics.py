@@ -4,7 +4,7 @@ from typing import List, Dict, Callable, Optional
 import numpy as np
 import scipy.stats
 
-from . import utils
+from ..common import utils
 
 EPS = 1e-12
 

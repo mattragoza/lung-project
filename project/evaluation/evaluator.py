@@ -5,7 +5,8 @@ from typing import List, Dict, Iterable, Any, Optional
 import numpy as np
 import torch
 
-from .common import utils, metrics
+from ..common import utils
+from . import metrics
 
 
 def _to_numpy(x) -> np.ndarray:
