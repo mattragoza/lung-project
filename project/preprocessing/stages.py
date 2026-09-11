@@ -1,7 +1,7 @@
 # preprocessing/stages.py
 
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Tuple, Dict, Optional, Any
 
 import numpy as np
 
@@ -14,16 +14,23 @@ from ..common import fileio, utils
 def convert_image_to_nifti(
     input_path: Path,
     output_path: Path,
-    shape: Tuple[int, int, int],
-    dtype: str,
     config: Dict[str, Any]
 ):
+    utils.check_keys(
+        config,
+        valid={'shape', 'dtype', 'spacing', 'axcodes', 'slope', 'intercept'},
+        where='nifti_conversion'
+    )
     from .operations import nifti_conversion
+
+    kwargs = config.copy()
+    shape = kwargs.pop('shape')
+    dtype = kwargs.pop('dtype')
 
     array = fileio.load_binary_image(input_path, shape, dtype)
 
     utils.log('Converting binary image to NIFTI')
-    nifti = nifti_conversion.convert_array_to_nifti(array, **config)
+    nifti = nifti_conversion.convert_array_to_nifti(array, **kwargs)
 
     fileio.save_nibabel(output_path, nifti)
 

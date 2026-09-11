@@ -13,21 +13,12 @@ def preprocess(ex, config):
         where='preprocessing[emory4dct]'
     )
 
-    image_params = ex.metadata['image_params']
-
-    conversion_config = {
-        key: value for key, value in image_params.items()
-            if key not in {'shape', 'dtype'}
-    }
-
     for state in ['ref_state', 'init_state', 'curr_state']:
         run_stage(
             stages.convert_image_to_nifti,
             input_path=ex.paths[state]['source_image'],
             output_path=ex.paths[state]['converted_image'],
-            shape=image_params['shape'],
-            dtype=image_params['dtype'],
-            config=conversion_config
+            config=ex.metadata['image_params']
         )
 
     for state in ['init_state', 'curr_state']:
