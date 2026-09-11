@@ -8,7 +8,7 @@ import numpy as np
 from ..common import fileio, utils
 
 
-# ----- conversion / mask preprocessing -----
+# ----- conversion to NIFTI -----
 
 
 def convert_image_to_nifti(
@@ -54,23 +54,6 @@ def convert_binvox_to_nifti(
     fileio.save_nibabel(output_path, nifti)
 
 
-def preprocess_binary_mask(
-    input_path: Path,
-    output_path: Path,
-    config: Dict[str, Any]
-):
-    from .operations import mask_processing
-
-    nifti = fileio.load_nibabel(input_path)
-
-    utils.log('Preprocessing binary mask')
-    mask, affine = mask_processing.preprocess_binary_mask(
-        nifti.get_fdata(), nifti.affine, **config
-    )
-
-    fileio.save_nibabel(output_path, mask, affine)
-
-
 # ----- image resampling -----
 
 
@@ -80,6 +63,11 @@ def resample_image_spacing(
     reference_path: Path,
     config: Dict[str, Any]
 ):
+    utils.check_keys(
+        config,
+        valid={'spacing', 'interpolator', 'default_value'},
+        where='image_resampling'
+    )
     from .operations import image_resampling
 
     src_image = fileio.load_simpleitk(input_path)
@@ -105,10 +93,11 @@ def create_segmentation_masks(
     '''
     Run segmentation tasks and write individual + combined domain masks.
     '''
-    utils.check_keys(config, valid={'tasks'}, where='image_segmentation')
+    utils.check_keys(
+        config, valid={'tasks'}, where='image_segmentation'
+    )
     from .operations import image_segmentation
 
-    utils.log('Starting image segmentation')
     fileio.make_dir_exist(segment_dir)
 
     for task_config in config.get('tasks', []):
@@ -138,11 +127,11 @@ def estimate_displacement_field(
     config: Dict[str, Any]
 ):
     utils.check_keys(
-        config, valid={'method', 'kwargs'}, where='image_registration'
+        config,
+        valid={'method', 'kwargs'},
+        where='image_registration'
     )
     from .operations import image_registration
-
-    utils.log('Starting image registration')
 
     image_registration.run_image_registration(
         fixed_image=fixed_image,
@@ -167,11 +156,10 @@ def label_anatomical_regions(
         valid={'roi_order', 'filter_kws'},
         where='anatomical_regions'
     )
+    from .operations import region_labeling
 
     roi_order = config['roi_order']
     filter_kws = config.get('filter_kws', {})
-
-    from .operations import region_labeling
 
     if not input_dir.is_dir():
         raise RuntimeError(f'{input_dir} is not a valid directory')
@@ -233,7 +221,9 @@ def assign_material_properties(
         inputs[name] = mask & domain
 
     utils.log('Assigning material property fields')
-    fields = material_properties.compute_property_fields(inputs, nifti.affine, config)
+    fields = material_properties.compute_property_fields(
+        inputs, nifti.affine, config
+    )
 
     fileio.make_dir_exist(fields_dir)
     for name, array in fields.items():
@@ -293,9 +283,14 @@ def assign_materials_to_regions( # deprecate
 def generate_tetrahedral_mesh(
     mask_path: Path,
     output_path: Path,
-    random_seed: int = 0,
-    config: Dict[str, Any]
+    config: Dict[str, Any],
+    random_seed: int = 0
 ):
+    utils.check_keys(
+        config,
+        valid={'use_affine', 'pygalmesh_kws'},
+        where='mesh_generation'
+    )
     from .operations import tetrahedral_meshing
 
     nifti = fileio.load_nibabel(mask_path)
@@ -319,7 +314,7 @@ def repair_triangular_mesh(
     utils.check_keys(
         config,
         valid={'run_pymeshfix'},
-        where='surface_mesh',
+        where='surface_mesh'
     )
     from .operations import triangular_meshing
 
@@ -327,9 +322,7 @@ def repair_triangular_mesh(
 
     utils.log('Repairing triangular mesh')
     mesh = triangular_meshing.repair_triangular_mesh(
-        mesh,
-        use_pymeshfix=config.get('run_pymeshfix', False),
-        ret_meshio=True,
+        mesh, ret_meshio=True, **config
     )
 
     fileio.save_meshio(output_path, mesh)
@@ -469,8 +462,8 @@ def simulate_displacement_field(
 def generate_synthetic_image(
     mask_path: Path,
     output_path: Path,
-    random_seed: int = 0,
-    config: Dict[str, Any]
+    config: Dict[str, Any],
+    random_seed: int = 0
 ):
     utils.check_keys(
         config,

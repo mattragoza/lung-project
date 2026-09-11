@@ -24,9 +24,9 @@ def preprocess(ex, config):
     for state in ['init_state', 'curr_state']:
         run_stage(
             stages.resample_image_spacing,
-            ref_path=ex.paths['ref_state']['converted_image'],
             input_path=ex.paths[state]['converted_image'],
             output_path=ex.paths[state]['resampled_image'],
+            reference_path=ex.paths['ref_state']['converted_image'],
             config=config.get('image_resampling', {})
         )
 

@@ -10,7 +10,7 @@ def preprocess(ex, config):
         config,
         {'binary_mask', 'surface_mesh', 'region_map', 'volume_mesh'} |
         {'material_map', 'material_mesh', 'displacement_simulation'} |
-        {'image_generation', 'image_interpolation', 'random_seed'}
+        {'image_generation', 'image_interpolation', 'random_seed'},
         where='preprocessing[shapenet]'
     )
 
@@ -74,7 +74,7 @@ def preprocess(ex, config):
         image_path=ex.paths['input_image'],
         mesh_path=ex.paths['material_mesh'],
         output_path=ex.paths['interp_mesh'],
-        config=config.get('image_interpolation', {}
+        config=config.get('image_interpolation', {})
     )
     run_stage(
         stages.simulate_displacement_field,

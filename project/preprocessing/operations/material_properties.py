@@ -1,6 +1,6 @@
 # preprocessing/operations/material_properties.py
 
-from typing import Dict, Set, Any
+from typing import List, Dict, Tuple, Set, Optional, Any
 
 import numpy as np
 import pandas as pd
@@ -31,8 +31,8 @@ def compute_property_fields(
 def compute_property_field(
     inputs: Dict[str, np.ndarray],
     affine: np.ndarray,
-    base_value: float = 0.0,
-    terms: List[Dict[str, float]],
+    base_value: float,
+    terms: Optional[Dict[str, float]] = None,
     sigma: Optional[float] = None,
     range: Tuple[float, float] | None = None
 ) -> np.ndarray:
@@ -40,7 +40,8 @@ def compute_property_field(
     domain = np.asarray(inputs['domain'], dtype=bool)
     output = np.full(domain.shape, base_value, dtype=float)
 
-    for name, weight in term:
+    terms = terms or {}
+    for name, weight in terms.items():
         output += float(weight) * inputs[name]
 
     if sigma is not None and sigma > 0:

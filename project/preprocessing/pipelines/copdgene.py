@@ -10,19 +10,18 @@ def preprocess(ex, config):
         config,
         {'image_resampling', 'image_segmentation', 'image_registration'} |
         {'anatomical_regions', 'material_properties', 'mesh_generation'} |
-        {'field_interpolation', 'displacement_simulation'}
+        {'field_interpolation', 'displacement_simulation'},
         where='preprocessing[copdgene]'
     )
 
     for state in ['init_state', 'curr_state']:
         run_stage(
             stages.resample_image_spacing,
-            ref_path=ex.paths['ref_state']['source_image'],
             input_path=ex.paths[state]['source_image'],
             output_path=ex.paths[state]['resampled_image'],
+            reference_path=ex.paths['ref_state']['source_image'],
             config=config.get('image_resampling', {})
         )
-
         run_stage(
             stages.create_segmentation_masks,
             image_path=ex.paths[state]['resampled_image'],
@@ -40,14 +39,12 @@ def preprocess(ex, config):
         output_path=ex.paths['disp_field'],
         config=config.get('image_registration', {})
     )
-
     run_stage(
         stages.label_anatomical_regions,
         input_dir=ex.paths['init_state']['segment_dir'],
         output_path=ex.paths['anatomical_map'],
         config=config.get('anatomical_regions', {})
     )
-
     run_stage(
         stages.assign_material_properties,
         image_path=ex.paths['init_state']['resampled_image'],
@@ -57,14 +54,12 @@ def preprocess(ex, config):
         fields_dir=ex.paths['material_dir'],
         config=config.get('material_properties', {})
     )
-
     run_stage(
         stages.generate_tetrahedral_mesh,
         mask_path=ex.paths['anatomical_map'],
         output_path=ex.paths['anatomical_mesh'],
         config=config.get('mesh_generation', {})
     )
-
     run_stage(
         stages.interpolate_mesh_fields,
         mesh_path=ex.paths['anatomical_mesh'],
@@ -74,7 +69,6 @@ def preprocess(ex, config):
         output_path=ex.paths['interp_mesh'],
         config=config.get('field_interpolation', {})
     )
-
     run_stage(
         stages.simulate_displacement_field,
         mesh_path=ex.paths['interp_mesh'],
