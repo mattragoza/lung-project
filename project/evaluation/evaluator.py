@@ -58,7 +58,9 @@ def _index_maybe(values: List[Any] | None, index: int) -> Any:
 
 
 def _cell_values(field):
-    return _to_numpy(field.cell_values) if field.cell_values else None
+    if field.cell_values is not None:
+        return _to_numpy(field.cell_values)
+    return None
 
 
 def _evaluate(
@@ -161,14 +163,14 @@ class Evaluator:
             pred_vox = _flatten_voxels(pred_vox)
 
             true_vox = None
-            if name in sample:
+            if name in true_vols:
                 true_vox = _flatten_voxels(true_vols[name])
 
             values |= _evaluate(
                 name=f'{name}_vox',
                 pred=_index_maybe(pred_vox, selected),
                 true=_index_maybe(true_vox, selected),
-                profile=self.task.metric_profile(name)
+                profile='scalar'
             )
 
         return values
@@ -209,7 +211,7 @@ class Evaluator:
                 pred=_index_maybe(pred_cells, selected),
                 true=_index_maybe(true_cells, selected),
                 weight=cell_volume,
-                profile=self.task.metric_profile(name)
+                profile='scalar'
             )
 
         values |= _evaluate(

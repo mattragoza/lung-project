@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import meshio
 
-from .common import utils, fileio
+from .common import fileio, utils
 
 from . import datasets, physics, param_spec
 
@@ -24,7 +24,7 @@ class OptimizerSpec:
     kws: Dict[str, Any]
     global_steps: int = 10
     local_steps: int = 100
-    tol: float = 1e-3
+    tol: float = 1e-4
 
 
 # ----- public entry point -----
@@ -49,6 +49,7 @@ def simulate_example(ex, config):
         param_specs=param_specs,
         init_spec=init_spec
     )
+
     with torch.no_grad():
         params = decode_params(param_specs, param_dofs)
         output = adapter.simulate_displacement(mesh, unit_m, bc_spec, params)
@@ -71,8 +72,6 @@ def optimize_example(ex, config, outputs, do_raster=True):
         },
         where='optimization'
     )
-    output_path = outputs.mesh_path(ex, name='optimized')
-    raster_dir = outputs.raster_dir(ex)
 
     unit_m = float(ex.metadata['unit'])
     sample = datasets.load_example(ex)
@@ -84,6 +83,10 @@ def optimize_example(ex, config, outputs, do_raster=True):
 
     adapter = physics.get_adapter(config)
     bc_spec = physics.get_bc_spec(config)
+
+    output_path = outputs.mesh_path(ex, name='opt')
+    raster_dir = outputs.raster_dir(ex)
+    csv_path = outputs.csv_path(name='metrics')
 
     utils.log('Start optimization')
 
@@ -108,48 +111,45 @@ def optimize_example(ex, config, outputs, do_raster=True):
     utils.log(f'Final loss: {loss.item()}')
     utils.pprint(sim_output)
 
+    save_output_mesh(mesh, sim_output, output_path)
+
     if do_raster:
         utils.log('Rasterizing parameters')
-        shape = sample['mask'].shape[1:]
-        affine = sample['affine']
 
         rasters = rasterize_params(
             adapter=adapter,
             mesh=mesh,
             unit_m=unit_m,
             params=params,
-            shape=shape,
-            affine=affine
+            shape=sample['mask'].shape[1:],
+            affine=sample['affine']
         )
+        save_output_rasters(rasters, sample['affine'], raster_dir)
     else:
         rasters = None
 
     utils.log(f'Evaluating outputs')
 
     evaluator = build_evaluator(config)
-    result = evaluator.evaluate_sample(
+    metrics = evaluator.evaluate_sample(
         sample, rasters, sim_output, groupby=None
     )
-    df = pd.DataFrame(result)
-    print(df)
-    df.to_csv(csv_path)
-
-    save_output_mesh(mesh, sim_output, output_path)
-
-    if do_raster:
-        save_output_rasters(rasters, affine, raster_dir)
+    fileio.save_csv(csv_path, metrics)
 
 
-# ----- context configuration -----
+# ----- configuration setup -----
 
 
 def build_parameter_specs(config) -> Dict[str, param_spec.ParameterSpec]:
+
     target_list = config.get('targets', ['E'])
-    utils.log(f'Targets: {target_list}')
+    utils.log(f'Targets: {target_list!r}')
+
     param_specs_cfg = config.get('parameters', {})
     param_specs = {}
     for name in target_list:
         param_specs[name] = param_spec.ParameterSpec(**param_specs_cfg[name])
+
     return param_specs
 
 
@@ -168,6 +168,12 @@ def build_optimizer_spec(config) -> OptimizerSpec:
         local_steps=optimizer_kws.pop('local_steps', 100),
         tol=optimizer_kws.pop('tol', 1e-3)
     )
+
+
+def build_evaluator(config):
+    from .evaluation import evaluator
+    evaluator_kws = config.get('evaluator', {})
+    return evaluator.Evaluator(**evaluator_kws)
 
 
 # ----- optimization loops -----
@@ -373,12 +379,6 @@ def rasterize_params(
             utils.warn('WARNING: Rasterized field is all zero')
         rasters[name] = vox.cpu()
     return rasters
-
-
-def build_evaluator(config):
-    from . import evaluation
-    evaluator_kws = config.get('evaluator', {})
-    return evaluation.Evaluator(**evaluator_kws)
 
 
 def get_output_mesh(mesh, sim_output):
