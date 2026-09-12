@@ -1,56 +1,70 @@
-# common/cli.py
+# cli.py
 
 from typing import List, Dict, Tuple, Any
 
 import argparse
 
 
+def resolve_config(argv: List[str]) -> Dict[str, Any]:
+    from .common import fileio
+    args = parse_args(argv)
+    config = fileio.load_config(args.config)
+    return apply_overrides(config, args.set)
+
+
 def parse_args(argv: List[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser()
-    p.add_argument('config', help='path to config file (JSON/YAML)')
-    p.add_argument(
+    parser = argparse.ArgumentParser()
+    parser.add_argument('config', help='path to config file (JSON/YAML)')
+    parser.add_argument(
         '--set',
         default=[],
         action='append',
         metavar='KEY=VAL',
         help='override specific config value(s)'
     )
-    return p.parse_args(argv)
+    return parser.parse_args(argv)
 
 
-def apply_overrides(config, overrides) -> Dict[str, Any]:
-    cfg = dict(config)
-    for item in overrides:
-        keys, val = parse_override(item)
-        set_config_value(cfg, keys, val)
-    return cfg
+def apply_overrides(config: dict, overrides: List[str]) -> Dict[str, Any]:
+    config = dict(config)
+    for string in overrides:
+        keys, value = parse_override(string)
+        set_config_value(config, keys, value)
+    return config
 
 
-def parse_override(item: str) -> Tuple[List[str], Any]:
+def parse_override(string: str) -> Tuple[List[str], Any]:
     import json, yaml
-    k, v = item.split('=', 1)
-    keys = k.strip().split('.')
+
+    raw_keys, raw_value = string.split('=', 1)
+
+    keys = raw_keys.strip().split('.')
     try:
-        val = json.loads(v)
+        value = json.loads(raw_value)
     except json.JSONDecodeError:
-        val = yaml.safe_load(v)
-    return keys, val
+        value = yaml.safe_load(raw_value)
+
+    return keys, value
 
 
-def set_config_value(config, keys, val):
-    curr = config
-    for k in keys[:-1]:
-        if k not in curr:
-            curr[k] = {}
-        curr = curr[k]
+def set_config_value(config: dict, keys: List[str], value: Any):
+    if len(keys) < 1:
+        raise ValueError('No keys were provided')
+
+    scope = config
+    for key in keys[:-1]:
+        if key not in scope:
+            scope[key] = {}
+        scope = scope[key]
+
     try:
-        curr[keys[-1]] = val
-    except Exception as exc:
-        print(keys, val)
-        raise exc
+        scope[keys[-1]] = value
+    except Exception:
+        print(keys, value)
+        raise
 
 
-# legacy
+# DEPRECATED
 
 
 def as_bool(val):

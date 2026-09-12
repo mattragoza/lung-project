@@ -136,7 +136,7 @@ def load_subject_list(path, key: str = 'subject', **kwargs):
 def load_csv(path, **kwargs):
     import pandas as pd
     utils.log(f'Loading {path}')
-    return pd.read_csv(**kwargs)
+    return pd.read_csv(path, **kwargs)
 
 
 def save_csv(path, df, **kwargs):

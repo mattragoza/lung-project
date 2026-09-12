@@ -27,9 +27,9 @@ def run_stage(func, *args, **kwargs) -> Tuple[bool, Any]:
     output_path = Path(output_path)
 
     if not output_path.exists():
-        utils.log(f'INFO: {output_path} missing; Running stage {func.__name__}')
+        utils.log(f'INFO: Running stage {func.__name__}')
         return True, func(*args, **kwargs)
 
-    utils.log(f'INFO: {output_path} exists; Skipping stage {func.__name__}')
+    utils.log(f'INFO: Skipping stage {func.__name__}')
     return False, None
 

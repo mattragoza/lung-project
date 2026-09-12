@@ -1,6 +1,6 @@
 # preprocessing/__init__.py
 
-from . import api, pipelines, stages
+from . import api, pipelines, stages, operations
 
-from .api import preprocess_example
+from .api import get_pipeline, preprocess_example
 
