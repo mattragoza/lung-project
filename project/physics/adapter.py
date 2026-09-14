@@ -137,22 +137,13 @@ class PhysicsAdapter:
 
         return loss, outputs
 
-    def initialize_param_field(
-        self,
-        mesh: meshio.Mesh,
-        unit_m: float,
-        fill_value: float = 0.0
-    ) -> torch.Tensor:
-
+    def initialize_scalar_field(self, mesh, unit_m):
         ctx = self.get_physics_context(mesh, unit_m)
-
         if self.scalar_degree == 0:
             shape = ctx.cells.shape[:1]
-
         elif self.scalar_degree == 1:
             shape = ctx.verts.shape[:1]
-
-        return torch.full(shape, fill_value, requires_grad=True)
+        return torch.zeros(shape, dtype=torch.float, device=self.device)
 
     def rasterize_scalar_field(
         self,
@@ -243,10 +234,10 @@ class PhysicsAdapter:
         overrides = overrides or {}
 
         if key in overrides:
-            return overrides[key]
+            return overrides[key].to(self.device)
 
         try:
-            return ctx.fields[key][self.scalar_degree]
+            return ctx.fields[key][self.scalar_degree].to(self.device)
         except (KeyError, IndexError):
             pass
 
@@ -255,7 +246,7 @@ class PhysicsAdapter:
                 shape = ctx.cells.shape[:1]
             elif self.scalar_degree == 1:
                 shape = ctx.verts.shape[:1]
-            return torch.full(shape, self.default_rho)
+            return torch.full(shape, self.default_rho, device=self.device)
 
         raise KeyError(f'No value provided for parameter: {key}')
 

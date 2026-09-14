@@ -1,491 +1,247 @@
 # optimization.py
 
-from typing import List, Dict, Tuple, Any
-from dataclasses import dataclass
+from typing import List, Dict, Tuple, Callable, Any
 
 import numpy as np
 import torch
 import meshio
 
-from .common import fileio, utils
+from .common import fileio, utils, outputs
 
-from . import datasets, physics, param_spec
-
-
-@dataclass
-class InitializeSpec:
-    num_trials: int = 1
-    noise_std: float = 0.0
+from . import datasets, physics, evaluation
 
 
-@dataclass
-class OptimizerSpec:
-    cls: type
-    kws: Dict[str, Any]
-    global_steps: int = 10
-    local_steps: int = 100
-    tol: float = 1e-4
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and value > 0
+
+
+def _zero_dofs(template: torch.Tensor) -> torch.nn.Parameter:
+    return torch.nn.Parameter(torch.zeros_like(template))
+
+
+def _clone_state(m: torch.nn.Module) -> dict:
+    return {k: v.detach().clone() for k, v in m.state_dict().items()}
+
+
+class ParameterDict(torch.nn.Module):
+
+    def __init__(self, template: torch.Tensor, **kwargs):
+        from .param_spec import ParameterSpec
+
+        if not kwargs:
+            raise ValueError('No target parameter(s) specified')
+
+        super().__init__()
+        self.specs = {name: ParameterSpec(**spec) for name, spec in kwargs.items()}
+        self._dofs = torch.nn.ParameterDict({n: _zero_dofs(template) for n in kwargs})
+
+    @torch.no_grad()
+    def initialize(self, sigma: float):
+        for name, dofs in self._dofs.items():
+            dofs.normal_(std=sigma)
+
+    def forward(self, global_mean: bool = False) -> dict:
+        params = {n: self.specs[n].decode(dofs) for n, dofs in self._dofs.items()}
+        if global_mean:
+            return {n: vals.mean().expand(vals.shape) for n, vals in params.items()}
+        return params
 
 
 # ----- public entry point -----
 
 
-def simulate_example(ex, config):
-
-    unit_m = float(ex.metadata['unit'])
-    sample = datasets.load_example(ex)
-    mesh = sample['mesh']
-
-    param_specs = build_parameter_specs(config)
-    init_spec = build_initialize_spec(config)
-
-    adapter = physics.get_adapter(config)
-    bc_spec = physics.get_bc_spec(config)
-
-    param_dofs = initialize_param_dofs(
-        adapter=adapter,
-        mesh=mesh,
-        unit_m=unit_m,
-        param_specs=param_specs,
-        init_spec=init_spec
-    )
-
-    with torch.no_grad():
-        params = decode_params(param_specs, param_dofs)
-        output = adapter.simulate_displacement(mesh, unit_m, bc_spec, params)
-
-    utils.pprint(output)
-
-
-def optimize_example(ex, config, outputs, do_raster=True):
+def optimize_example(ex, config):
     utils.check_keys(
         config,
         valid={
-            'targets',
             'parameters',
-            'initialization',
-            'physics_adapter',
             'pde_solver',
-            'optimizer',
-            'evaluator',
-            'boundary_condition'
+            'physics_adapter',
+            'boundary_condition',
+            'optimization_kws'
         },
         where='optimization'
     )
 
-    unit_m = float(ex.metadata['unit'])
     sample = datasets.load_example(ex)
-    mesh = sample['mesh']
+    mesh, unit_m = sample['mesh'], float(ex.metadata['unit'])
 
-    param_specs = build_parameter_specs(config)
-    optim_spec = build_optimizer_spec(config)
-    init_spec = build_initialize_spec(config)
+    solver = physics.get_solver(**config.get('pde_solver', {}))
+    adapter = physics.get_adapter(solver, **config.get('physics_adapter', {}))
+    bc_spec = physics.get_bc_spec(**config.get('boundary_condition', {}))
 
-    adapter = physics.get_adapter(config)
-    bc_spec = physics.get_bc_spec(config)
+    template = adapter.initialize_scalar_field(mesh, unit_m)
+    param_dict = ParameterDict(template, **config.get('parameters', {}))
 
-    output_path = outputs.mesh_path(ex, name='opt')
-    raster_dir = outputs.raster_dir(ex)
-    csv_path = outputs.csv_path(name='metrics')
+    def objective(params: dict):
+        return adapter.mesh_simulation_loss(mesh, unit_m, params, bc_spec)[0]
 
-    utils.log('Start optimization')
+    optim_kws = config.get('optimization_kws', {})
+    params = run_optimization_trials(objective, param_dict, **optim_kws)
 
-    params = optimize_params(
-        adapter=adapter,
-        mesh=mesh,
-        unit_m=unit_m,
-        bc_spec=bc_spec,
-        param_specs=param_specs,
-        optim_spec=optim_spec,
-        init_spec=init_spec
-    )
+    with torch.no_grad(): # get final simulation outputs using optimized params
+        sim = adapter.mesh_simulation_loss(mesh, unit_m, params, bc_spec, True)[1]
 
-    loss, sim_output = evaluate_loss(
-        adapter=adapter,
-        mesh=mesh,
-        unit_m=unit_m,
-        bc_spec=bc_spec,
-        params=params
-    )
-
-    utils.log(f'Final loss: {loss.item()}')
-    utils.pprint(sim_output)
-
-    save_output_mesh(mesh, sim_output, output_path)
-
-    if do_raster:
-        utils.log('Rasterizing parameters')
-
-        rasters = rasterize_params(
-            adapter=adapter,
-            mesh=mesh,
-            unit_m=unit_m,
-            params=params,
-            shape=sample['mask'].shape[1:],
-            affine=sample['affine']
+    rasters = {}
+    for name, param in params.items():
+        utils.log(f'Rasterizing parameter: {name}')
+        rasters[name] = adapter.rasterize_scalar_field(
+            mesh, unit_m, param, sample['mask'].shape[1:], sample['affine']
         )
-        save_output_rasters(rasters, sample['affine'], raster_dir)
-    else:
-        rasters = None
 
-    utils.log(f'Evaluating outputs')
-
-    evaluator = build_evaluator(config)
-    metrics = evaluator.evaluate_sample(
-        sample, rasters, sim_output, groupby=None
-    )
-    fileio.save_csv(csv_path, metrics)
+    save_optimization_results(ex, sample, rasters, sim)
 
 
-# ----- configuration setup -----
+def run_optimization_trials(
+    objective: Callable,
+    param_dict: ParameterDict,
+    num_trials: int = 1,
+    **kwargs
+) -> Dict[str, torch.Tensor]:
 
+    if not _positive_int(num_trials):
+        raise ValueError('num_trials must be a positive int')
 
-def build_parameter_specs(config) -> Dict[str, param_spec.ParameterSpec]:
+    best_state = None
+    best_loss = float('inf')
 
-    target_list = config.get('targets', ['E'])
-    utils.log(f'Targets: {target_list!r}')
+    for trial in range(num_trials):
+        utils.log(f'Start optimization trial {trial + 1} / {num_trials}')
 
-    param_specs_cfg = config.get('parameters', {})
-    param_specs = {}
-    for name in target_list:
-        param_specs[name] = param_spec.ParameterSpec(**param_specs_cfg[name])
+        trial_loss = run_optimization_trial(objective, param_dict, **kwargs)[-1]
 
-    return param_specs
+        if trial_loss < best_loss:
+            best_state = _clone_state(param_dict)
+            best_loss = trial_loss
 
+    utils.log(f'Best loss: {best_loss}')
+    param_dict.load_state_dict(best_state)
 
-def build_initialize_spec(config) -> InitializeSpec:
-    init_kws = config.get('initialization', {})
-    return InitializeSpec(**init_kws)
-
-
-def build_optimizer_spec(config) -> OptimizerSpec:
-    optimizer_kws = config.get('optimizer', {}).copy()
-    optimizer_cls = getattr(torch.optim, optimizer_kws.pop('_class'))
-    return OptimizerSpec(
-        cls=optimizer_cls,
-        kws=optimizer_kws,
-        global_steps=optimizer_kws.pop('global_steps', 10),
-        local_steps=optimizer_kws.pop('local_steps', 100),
-        tol=optimizer_kws.pop('tol', 1e-3)
-    )
-
-
-def build_evaluator(config):
-    from .evaluation import evaluator
-    evaluator_kws = config.get('evaluator', {})
-    return evaluator.Evaluator(**evaluator_kws)
-
-
-# ----- optimization loops -----
-
-
-def optimize_params(
-    adapter: physics.adapter.PhysicsAdapter,
-    mesh: meshio.Mesh,
-    unit_m: float,
-    bc_spec: Any,
-    param_specs: Dict[str, param_spec.ParameterSpec],
-    optim_spec: OptimizerSpec,
-    init_spec: InitializeSpec,
-):
-    best_loss = None
-    best_params = None
-
-    for trial in range(init_spec.num_trials):
-        utils.log(f'Trial {trial + 1}/{init_spec.num_trials}')
-
-        param_dofs = initialize_param_dofs(
-            adapter=adapter,
-            mesh=mesh,
-            unit_m=unit_m,
-            param_specs=param_specs,
-            init_spec=init_spec
-        )
-        params, history = run_optimization_trial(
-            adapter=adapter,
-            mesh=mesh,
-            unit_m=unit_m,
-            bc_spec=bc_spec,
-            param_specs=param_specs,
-            param_dofs=param_dofs,
-            optim_spec=optim_spec
-        )
-        loss, _ = evaluate_loss(
-            adapter, mesh, unit_m, bc_spec, params
-        )
-        if best_loss is None or loss.item() < best_loss:
-            best_loss = loss.item()
-            best_params = params
-
-    return best_params
-
-
-def initialize_param_dofs(
-    adapter: physics.adapter.PhysicsAdapter,
-    mesh: meshio.Mesh,
-    unit_m: float,
-    param_specs: Dict[str, param_spec.ParameterSpec],
-    init_spec: InitializeSpec
-) -> Dict[str, torch.nn.Parameter]:
-
-    dofs = {}
-    for name in param_specs:
-        z0 = adapter.initialize_param_field(mesh, unit_m, fill_value=0.0)
-
-        if not np.isclose(init_spec.noise_std, 0):
-            noise = torch.randn(z0.shape, dtype=z0.dtype, device=z0.device)
-            z0 = z0 + init_spec.noise_std * noise
-
-        dofs[name] = torch.nn.Parameter(z0)
-
-    return dofs
-
-
-def decode_params(specs, dofs, global_mean=False):
-    params = {k: v.decode(dofs[k]) for k, v in specs.items()}
-    if global_mean:
-        return {k: v.mean().expand(v.shape) for k, v in params.items()}
-    return params
-
-
-def clone_params(params: Dict[str, torch.Tensor]):
-    return {k: v.detach().clone() for k, v in params.items()}
+    with torch.no_grad():
+        return param_dict(global_mean=False)
 
 
 def run_optimization_trial(
-    adapter: physics.adapter.PhysicsAdapter,
-    mesh: meshio.Mesh,
-    unit_m: float,
-    bc_spec: Any,
-    param_specs: Dict[str, param_spec.ParameterSpec],
-    param_dofs: Dict[str, torch.nn.Parameter],
-    optim_spec: OptimizerSpec
-) -> Tuple[dict, dict]:
+    objective: Callable,
+    param_dict: ParameterDict,
+    init_sigma: float = 0,
+    global_steps: int = 0,
+    local_steps: int = 100,
+    **kwargs
+) -> List[float]:
 
-    def objective(params: Dict[str, torch.Tensor]) -> torch.Tensor:
-        return adapter.mesh_simulation_loss(
-            mesh=mesh,
-            unit_m=unit_m,
-            params=params,
-            bc_spec=bc_spec,
-            ret_outputs=False
-        )[0]
+    if not _positive_int(global_steps) and not _positive_int(local_steps):
+        raise ValueError('global_steps or local_steps must be a positive int')
 
-    history: Dict[str, OptimizationHistory] = {}
+    utils.log('Initializing parameters')
+    param_dict.initialize(init_sigma)
 
-    if optim_spec.global_steps > 0:
-        utils.log('Global optimization')
-        optimizer_g = optim_spec.cls(list(param_dofs.values()), **optim_spec.kws)
+    loss_history = []
 
-        def closure_g() -> torch.Tensor:
-            optimizer_g.zero_grad(set_to_none=True)
-            params = decode_params(param_specs, param_dofs, global_mean=True)
-            loss = objective(params)
-            if not torch.isfinite(loss):
-                raise RuntimeError(f'Invalid loss: {loss.item()}')
-            loss.backward()
-            return loss
-
-        history['global'] = optimize_closure(
-            optimizer_g, closure_g, optim_spec.global_steps, optim_spec.tol
+    if global_steps > 0:
+        utils.log('Optimizing global mean(s)')
+        loss_history += run_optimization_steps(
+            objective, param_dict, True, global_steps, **kwargs
         )
 
-    if optim_spec.local_steps > 0:
-        utils.log('Local optimization')
-        optimizer_l = optim_spec.cls(list(param_dofs.values()), **optim_spec.kws)
-
-        def closure_l() -> torch.Tensor:
-            optimizer_l.zero_grad(set_to_none=True)
-            params = decode_params(param_specs, param_dofs, global_mean=False)
-            loss = objective(params)
-            if not torch.isfinite(loss):
-                raise RuntimeError(f'Invalid loss: {loss.item()}')
-            loss.backward()
-            return loss
-
-        history['local'] = optimize_closure(
-            optimizer_l, closure_l, optim_spec.local_steps, optim_spec.tol
+    if local_steps > 0:
+        utils.log('Optimizing local values')
+        loss_history += run_optimization_steps(
+            objective, param_dict, False, local_steps, **kwargs
         )
 
-    with torch.no_grad():
-        params = decode_params(param_specs, param_dofs, global_mean=False)
-        params = clone_params(params)
-
-    return params, history
+    return loss_history
 
 
-def optimize_closure(optimizer, closure, max_steps: int = 100, tol: float = 1e-3):
-    history = OptimizationHistory()
+def run_optimization_steps(
+    objective: Callable,
+    param_dict: ParameterDict,
+    global_mean: bool = False,
+    max_steps: int = 100,
+    rtol: float = 1e-5,
+    **kwargs
+):
+    if not _positive_int(max_steps):
+        raise ValueError('max_steps must be a positive int')
 
-    params = []
-    for group in optimizer.param_groups:
-        params.extend(group['params'])
+    optimizer = _get_optimizer(param_dict, **kwargs)
 
-    loss = None
-    for step in range(max_steps):
-        optimizer.step(closure)
+    def closure() -> torch.Tensor:
+        optimizer.zero_grad(set_to_none=True)
+        loss = objective(param_dict(global_mean))
+        loss.backward()
+        return loss
 
-        with torch.enable_grad():
-            loss = closure()
+    loss_history = []
 
-        history.update(loss.detach(), params)
+    for step in range(max_steps + 1):
 
-        if history.converged(step, tol=tol):
-            utils.log('Optimization converged')
+        with torch.no_grad():
+            loss = objective(param_dict(global_mean)).item()
+
+        loss_history.append(loss)
+        loss_delta = _compute_loss_delta(loss_history, relative=True)
+
+        utils.log(f'[step {step}] loss = {loss:.4e} (delta = {loss_delta:.4e})')
+
+        if not np.isfinite(loss):
+            raise RuntimeError(f'Non-finite optimization loss: {loss}')
+
+        if step > 0 and loss_delta < rtol:
+            utils.log(f'Optimization converged in {step} step(s)')
             break
 
-    return history
+        if step == max_steps:
+            utils.log(f'Optimization reached max steps ({step})')
+            break
+
+        optimizer.step(closure)
+
+    return loss_history
 
 
-# ----- evaluation / output -----
+def _get_optimizer(m: torch.nn.Module, type: str, **kwargs):
+    optimizer_cls = getattr(torch.optim, type)
+    return optimizer_cls(m.parameters(), **kwargs)
 
 
-def evaluate_loss(
-    adapter: physics.adapter.PhysicsAdapter,
-    mesh: meshio.Mesh,
-    unit_m: float,
-    bc_spec: Any,
-    params: Dict[str, torch.Tensor]
-):
-    with torch.no_grad():
-        loss, sim_output = adapter.mesh_simulation_loss(
-            mesh=mesh,
-            unit_m=unit_m,
-            params=params,
-            bc_spec=bc_spec,
-            ret_outputs=True
-        )
-    return loss.detach(), sim_output
+def _compute_loss_delta(loss_history: List[float], relative: bool) -> float:
+    if len(loss_history) < 2:
+        return np.nan
+    prev_loss, curr_loss = loss_history[-2:]
+    abs_delta = abs(curr_loss - prev_loss)
+    if relative:
+        return abs_delta / abs(prev_loss)
+    return abs_delta
 
 
-def rasterize_params(
-    adapter: physics.adapter.PhysicsAdapter,
-    mesh: meshio.Mesh,
-    unit_m: float,
-    params: Dict[str, torch.Tensor],
-    shape: Tuple[int, int, int],
-    affine: np.ndarray
-):
-    rasters = {}
-    for name, field in params.items():
-        vox = adapter.rasterize_scalar_field(
-            mesh=mesh,
-            unit_m=unit_m,
-            dofs=params[name],
-            shape=shape,
-            affine=affine
-        )
-        if torch.all(vox == 0):
-            utils.warn('WARNING: Rasterized field is all zero')
-        rasters[name] = vox.cpu()
-    return rasters
+def _compute_grad_norm(params: List[torch.nn.Parameter]) -> float:
+    total = 0.0
+    for param in params:
+        if param.grad is not None:
+            total += float(param.grad.pow(2).sum().cpu().item())
+    return np.sqrt(total)
 
 
-def get_output_mesh(mesh, sim_output):
-    output_mesh = mesh.copy()
+def save_optimization_results(ex, sample, rasters, sim_outputs):
+    out = outputs.Outputs(stage='optimize')
 
-    def _assign_field(m, name):
-        field = sim_output.get(name)
-        if field is not None:
-            m.point_data[name] = field.node_values.numpy()
-            m.cell_data[name] = [field.cell_values.numpy()]
+    mesh = sample['mesh'].copy()
+    for name, param in sim_outputs['params'].items():
+        mesh.point_data[name] = param.node_values.detach().cpu().numpy()
+        mesh.cell_data[name] = [param.cell_values.detach().cpu().numpy()]
 
-    _assign_field(output_mesh, 'E_true')
-    _assign_field(output_mesh, 'E_pred')
-    _assign_field(output_mesh, 'mu_true')
-    _assign_field(output_mesh, 'mu_pred')
-    _assign_field(output_mesh, 'lam_true')
-    _assign_field(output_mesh, 'lam_pred')
-    _assign_field(output_mesh, 'rho_true')
-    _assign_field(output_mesh, 'rho_pred')
-    _assign_field(output_mesh, 'u_true')
-    _assign_field(output_mesh, 'u_pred')
-    _assign_field(output_mesh, 'residual')
+    mesh_path = out.mesh_path(ex, name='output')
+    fileio.save_meshio(mesh_path, mesh)
 
-    return output_mesh
+    raster_dir = out.raster_dir(ex)
+    for name, raster in rasters.items():
+        raster = raster.detach().cpu().numpy()[0]
+        fileio.save_nibabel(raster_dir / f'{name}_pred.nii.gz', raster, sample['affine'])
 
+    evaluator = evaluation.Evaluator()
+    metrics = evaluator.evaluate_sample(sample, rasters, sim_outputs, groupby=None)
 
-def save_output_mesh(mesh, sim_output, output_path):
-
-    output_mesh = get_output_mesh(mesh, sim_output)
-    utils.log(output_mesh)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fileio.save_meshio(output_path, output_mesh)
-
-
-def save_output_rasters(rasters, affine, output_dir):
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    for name, pred_vox in rasters.items():
-        output_path = output_dir / f'{name}_pred.nii.gz'
-        output_array = pred_vox.detach().cpu().numpy()[0]
-        fileio.save_nibabel(output_path, output_array, affine)
-
-
-# ----- optimization history -----
-
-
-def compute_grad_norm(params: List[torch.nn.Parameter]) -> float:
-    ssq = 0.0
-    for p in params:
-        if p.grad is not None:
-            ssq += float(p.grad.pow(2).sum().cpu().item())
-    return np.sqrt(ssq)
-
-
-def flatten_params(params: List[torch.nn.Parameter]) -> float:
-    arrays = [p.detach().cpu().numpy().ravel() for p in params]
-    return np.concatenate(arrays)
-
-
-class OptimizationHistory:
-
-    def __init__(self):
-        self.loss_history: List[float] = []
-        self.grad_history: List[float] = []
-        self.param_history: List[np.array] = []
-
-    def update(self, loss: torch.Tensor, params: List[torch.nn.Parameter]):
-        curr_loss = float(loss.detach().item())
-        curr_grad = compute_grad_norm(params)
-        curr_params = flatten_params(params)
-
-        self.loss_history.append(curr_loss)
-        self.grad_history.append(curr_grad)
-        self.param_history.append(curr_params)
-
-    def converged(self, it: int, tol: float=1e-3, eps: float=1e-8) -> bool:
-        from numpy.linalg import norm
-
-        loss_delta = np.nan
-        grad_delta = np.nan
-        param_delta = np.nan
-
-        curr_loss = self.loss_history[-1]
-        curr_grad = self.grad_history[-1]
-        curr_param = self.param_history[-1]
-        curr_norm  = norm(curr_param)
-
-        if len(self.loss_history) > 1:
-            prev_loss = self.loss_history[-2]
-            loss_delta = abs(prev_loss - curr_loss) / max(abs(prev_loss), eps)
-
-        if len(self.grad_history) > 0:
-            grad_delta = curr_grad / max(self.grad_history[0], eps)
-
-        if len(self.param_history) > 1:
-            prev_param = self.param_history[-2]
-            param_delta = norm(curr_param - prev_param) / max(norm(prev_param), eps)
-
-        utils.log(
-            f'Iteration {it+1} loss={curr_loss:.4e} ({loss_delta:.4e})'
-            f' grad={curr_grad:.4e} ({grad_delta:.4e})'
-            f' norm={curr_norm:.4e} ({param_delta:.4e})'
-        )
-
-        if np.isnan(curr_loss) or np.isnan(curr_grad) or np.isnan(curr_norm):
-            raise RuntimeError('Optimization encountered NaN value(s)')
-
-        return loss_delta < tol
+    csv_path = out.csv_path(name='metrics')
+    fileio.save_csv(csv_path, metrics)
 

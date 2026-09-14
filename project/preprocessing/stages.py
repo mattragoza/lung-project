@@ -442,9 +442,11 @@ def simulate_displacement_field(
     if cell_blocks != ['tetra']:
         raise ValueError(f'Expected one tetra cell block: {cell_blocks!r}')
 
-    adapter = physics.api.get_adapter(config)
-    bc_spec = physics.api.get_bc_spec(config)
-    u_sim = adapter.simulate_displacement(mesh, unit_m, bc_spec)  # meters
+    solver = physics.get_solver(**config.get('pde_solver', {}))
+    adapter = physics.get_adapter(solver, **config.get('physics_adapter', {}))
+    bc_spec = physics.get_bc_spec(**config.get('boundary_condition', {}))
+
+    u_sim = adapter.simulate_displacement(mesh, unit_m, bc_spec) # meters
 
     def _to_numpy(t):
         return t.detach().cpu().numpy()

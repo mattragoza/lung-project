@@ -1,23 +1,22 @@
 # physics/api.py
 
 
-def get_solver(config):
-    from . import solvers
-    class_name = config.get('_class', 'WarpFEMSolver')
-    solver_cls = solvers.PDESolver.get_subclass(class_name)
-    solver_kws = {k: v for k, v in config.items() if k != '_class'}
-    return solver_cls(**solver_kws)
+def get_subclass(type: str = 'warp'):
+    from .solvers import PDESolver
+    return PDESolver.get_subclass(type)
 
 
-def get_adapter(config):
+def get_solver(type: str = 'warp', **kwargs):
+    solver_cls = get_subclass(type)
+    return solver_cls(**kwargs)
+
+
+def get_adapter(solver, **kwargs):
     from . import adapter
-    pde_solver = get_solver(config.get('pde_solver', {}))
-    adapter_kws = config.get('physics_adapter', {})
-    return adapter.PhysicsAdapter(pde_solver, **adapter_kws)
+    return adapter.PhysicsAdapter(solver, **kwargs)
 
 
-def get_bc_spec(config):
+def get_bc_spec(**kwargs):
     from . import bc_spec
-    boundary_kws = config.get('boundary_condition', {})
-    return bc_spec.BoundaryConditionSpec(**boundary_kws)
+    return bc_spec.BoundaryConditionSpec(**kwargs)
 
