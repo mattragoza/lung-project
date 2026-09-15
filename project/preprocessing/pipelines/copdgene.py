@@ -10,7 +10,7 @@ def preprocess(ex, config):
         config,
         {'image_resampling', 'image_segmentation', 'image_registration'} |
         {'anatomical_regions', 'material_properties', 'mesh_generation'} |
-        {'field_interpolation', 'displacement_simulation'},
+        {'field_interpolation', 'forward_simulation'},
         where='preprocessing[copdgene]'
     )
 
@@ -75,6 +75,6 @@ def preprocess(ex, config):
         mesh_path=ex.paths['interp_mesh'],
         output_path=ex.paths['forward_mesh'],
         unit_m=ex.metadata['unit'],
-        config=config.get('displacement_simulation', {})
+        config=config.get('forward_simulation', {})
     )
 

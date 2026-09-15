@@ -63,11 +63,6 @@ def resample_image_spacing(
     reference_path: Path,
     config: Dict[str, Any]
 ):
-    utils.check_keys(
-        config,
-        valid={'spacing', 'interpolator', 'default_value'},
-        where='image_resampling'
-    )
     from .operations import image_resampling
 
     src_image = fileio.load_simpleitk(input_path)

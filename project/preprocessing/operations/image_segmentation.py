@@ -45,7 +45,7 @@ def run_segmentation_task(
     image_path: Path,
     output_dir: Path,
     method: str = DEFAULT_METHOD,
-    kwargs: Optional[Dict[str, Any]] = None
+    kwargs: Optional[dict] = None
 ):
     key = method.lower()
     kwargs = kwargs or {}
