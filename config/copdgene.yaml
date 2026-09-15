@@ -47,7 +47,7 @@ preprocessing:
             iterations: 50
             loss_function_masking: true
             intensity_conservation: true
-            weights_root: "/restricted/projectnb/batmanlab/mragoza/lung-project/network_weights"
+            weights_root: "/projectnb/batmanlab/mragoza/lung-project/network_weights"
     anatomical_regions:
         roi_order: ["lung_upper_lobe_right", "lung_middle_lobe_right", "lung_lower_lobe_right", "lung_upper_lobe_left", "lung_lower_lobe_left"]
         filter_kws: {"min_voxels": 30, "keep_largest": true}
@@ -94,7 +94,7 @@ optimization:
         material_type: "linear"
         g_vector: [0., -9.81, 0.]
         relative_loss: true
-        tv_reg_weight: 1e-4
+        tv_reg_weight: 1.e-4
     boundary_condition: {"type": "mesh_key", "value": "u_fwd"}
     optimization_kws:
         type: "LBFGS"
@@ -102,7 +102,7 @@ optimization:
         init_scale: 0.1
         global_steps: 0
         local_steps: 100
-        rtol: 1e-5
+        rtol: 1.e-5
         max_iter: 1
         max_eval: 20
         line_search_fn: "strong_wolfe"
@@ -147,6 +147,6 @@ training:
         material_type: "linear"
         g_vector: [0., -9.81, 0.]
         relative_loss: true
-        tv_reg_weight: 1e-5
-    optimizer: {"type": "AdamW", "lr": 1e-3}
+        tv_reg_weight: 1.e-5
+    optimizer: {"type": "AdamW", "lr": 1.e-3}
     trainer: {"num_epochs": 100}
