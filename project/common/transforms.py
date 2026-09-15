@@ -312,6 +312,51 @@ def cell_to_node_values(cell_values, cell_volume, incidence):
     return numer / denom[:,None]
 
 
+def get_surface_indices(cells):
+    '''
+    Get indices of vertices that are part of surface faces,
+    which are faces that are only part of one tetra cell.
+    '''
+    faces = np.concatenate([
+        cells[:, [0, 1, 2]],
+        cells[:, [0, 1, 3]],
+        cells[:, [0, 2, 3]],
+        cells[:, [1, 2, 3]],
+    ])
+    faces = np.sort(faces, axis=1)
+    faces, counts = np.unique(faces, axis=0, return_counts=True)
+    return np.unique(faces[counts == 1])
+
+
+def get_surface_mask(verts, cells):
+    surface_indices = get_surface_indices(cells)
+    on_surface = np.zeros(len(verts), dtype=bool)
+    on_surface[surface_indices] = True
+    return on_surface
+
+
+def get_vertex_adjacency(verts, cells):
+    import scipy.sparse
+
+    edges = np.vstack([
+        cells[:, [0, 1]],
+        cells[:, [0, 2]],
+        cells[:, [0, 3]],
+        cells[:, [1, 2]],
+        cells[:, [1, 3]],
+        cells[:, [2, 3]],
+    ])
+    edges = np.unique(np.sort(edges, axis=1), axis=0)
+
+    shape = (len(verts), len(verts))
+    i = np.r_[edges[:, 0], edges[:, 1]]
+    j = np.r_[edges[:, 1], edges[:, 0]]
+
+    return scipy.sparse.csr_matrix(
+        (np.ones(len(i)), (i, j)), shape=shape
+    )
+
+
 # ----- physical parameters -----
 
 

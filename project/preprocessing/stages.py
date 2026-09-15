@@ -333,6 +333,7 @@ def repair_triangular_mesh(
 
 def interpolate_mesh_fields(
     mesh_path: Path,
+    mask_path: Path,
     image_path: Path,
     disp_path: Path,
     output_path: Path,
@@ -350,6 +351,7 @@ def interpolate_mesh_fields(
     interp_kws = config.get('interpolate_kws', {})
 
     mesh = fileio.load_meshio(mesh_path)
+    mask = fileio.load_nibabel(mask_path).get_fdata()
     nifti = fileio.load_nibabel(image_path)
 
     fields = {
@@ -366,7 +368,7 @@ def interpolate_mesh_fields(
 
     utils.log('Interpolating voxel fields onto mesh')
     mesh = field_interpolation.interpolate_mesh_fields(
-        mesh, fields, nifti.affine, interp_kws,
+        mesh, mask, fields, nifti.affine, interp_kws,
     )
 
     fileio.save_meshio(output_path, mesh)

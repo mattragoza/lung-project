@@ -23,10 +23,10 @@ def run_preprocess(examples: list, config: dict):
 
     N = len(examples)
     for idx, ex in enumerate(examples):
-        utils.log(f'[{idx}/{N}] Preprocessing example: {ex.subject}')
+        utils.log(f'[Example {idx}/{N}] Preprocessing subject: {ex.subject}')
         preprocessing.preprocess_example(ex, config)
 
-    utils.log(f'[{N}/{N}] Done')
+    utils.log(f'[Example {N}/{N}] Done')
 
 
 def run_optimize(examples: list, config: dict):
@@ -34,10 +34,10 @@ def run_optimize(examples: list, config: dict):
 
     N = len(examples)
     for idx, ex in enumerate(examples):
-        utils.log(f'[{idx}/{N}] Optimizing example: {ex.subject}')
+        utils.log(f'[Example {idx}/{N}] Optimizing example: {ex.subject}')
         optimization.optimize_example(ex, config)
 
-    utils.log(f'[{N}/{N}] Done')
+    utils.log(f'[Example {N}/{N}] Done')
 
 
 def run_training(examples: list, config: dict):

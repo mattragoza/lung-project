@@ -64,6 +64,7 @@ def preprocess(ex, config):
         stages.interpolate_mesh_fields,
         mesh_path=ex.paths['anatomical_mesh'],
         image_path=ex.paths['input_image'],
+        mask_path=ex.paths['domain_mask'],
         disp_path=ex.paths['disp_field'],
         fields_dir=ex.paths['material_dir'],
         output_path=ex.paths['interp_mesh'],

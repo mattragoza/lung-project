@@ -4,11 +4,30 @@ from typing import Dict, Any
 
 import numpy as np
 
-from ...common import transforms, interpolation
+from ...common import utils, transforms, interpolation
+
+
+def interpolate_masked(volume, mask, points, **kwargs):
+    from ...common.interpolation import interpolate_array
+
+    mask = np.asarray(mask, dtype=float)
+    if volume.ndim == 4:
+        mask = mask[...,None]
+
+    numer = interpolate_array(volume * mask, points, **kwargs)
+    denom = interpolate_array(mask, points, **kwargs)
+
+    eps = 1e-8
+    n_outside = (denom < eps).sum()
+    if n_outside > 0:
+        utils.warn(f'WARNING: Interpolation points outside domain: {n_outside}')
+
+    return numer / np.maximum(denom, eps)
 
 
 def interpolate_mesh_fields(
     mesh: 'meshio.Mesh',
+    mask: np.ndarray,
     fields: Dict[str, np.ndarray],
     affine: np.ndarray,
     interp_kws: Dict[str, Any]
@@ -18,14 +37,13 @@ def interpolate_mesh_fields(
 
     Args:
         mesh: meshio.Mesh with single tetrahedral cell block
+        mask: (I, J, K) boolean domain mask
         fields: dict of (I, J, K) or (I, J, K, C) voxel fields
         affine: voxel to world affine transformation matrix
         interp_kws: kwargs to interpolation.interpolate_array
     Returns:
         mesh: meshio.Mesh
     '''
-    from ...common.interpolation import interpolate_array
-
     cell_blocks = [block.type for block in mesh.cells]
     if cell_blocks != ['tetra']:
         raise ValueError(f'Expected one tetra cell block: {cell_blocks!r}')
@@ -37,9 +55,8 @@ def interpolate_mesh_fields(
         array = np.asarray(array)
         if array.ndim not in {3, 4}:
             raise ValueError(f'Invalid field shape for {name!r}: {array.shape}')
-
-        mesh.point_data[name] = interpolate_array(array, node_voxels, **interp_kws)
-        mesh.cell_data[name] = [interpolate_array(array, cell_voxels, **interp_kws)]
+        mesh.point_data[name] = interpolate_masked(array, mask, node_voxels, **interp_kws)
+        mesh.cell_data[name] = [interpolate_masked(array, mask, cell_voxels, **interp_kws)]
 
     return mesh
 

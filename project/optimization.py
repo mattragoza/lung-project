@@ -25,25 +25,32 @@ def _clone_state(m: torch.nn.Module) -> dict:
 
 class ParameterDict(torch.nn.Module):
 
-    def __init__(self, template: torch.Tensor, **kwargs):
+    def __init__(self, template, dof_mapper, **kwargs):
         from .param_spec import ParameterSpec
 
         if not kwargs:
             raise ValueError('No target parameter(s) specified')
 
         super().__init__()
+
         self.specs = {name: ParameterSpec(**spec) for name, spec in kwargs.items()}
         self._dofs = torch.nn.ParameterDict({n: _zero_dofs(template) for n in kwargs})
 
-    @torch.no_grad()
-    def initialize(self, sigma: float):
-        for name, dofs in self._dofs.items():
-            dofs.normal_(std=sigma)
+        self.dof_mapper = dof_mapper
 
-    def forward(self, global_mean: bool = False) -> dict:
-        params = {n: self.specs[n].decode(dofs) for n, dofs in self._dofs.items()}
-        if global_mean:
-            return {n: vals.mean().expand(vals.shape) for n, vals in params.items()}
+    @torch.no_grad()
+    def initialize(self, scale: float):
+        for name, dofs in self._dofs.items():
+            dofs.uniform_(-scale, +scale)
+
+    def forward(self, global_mean: bool = False, map_dofs: bool = False) -> dict:
+        params = {}
+        for name, dofs in self._dofs.items():
+            if global_mean:
+                dofs = dofs.mean().expand_as(dofs)
+            elif map_dofs:
+                dofs = torch.sparse.mm(self.dof_mapper, dofs[:, None])[:, 0]
+            params[name] = self.specs[name].decode(dofs)
         return params
 
 
@@ -70,8 +77,11 @@ def optimize_example(ex, config):
     adapter = physics.get_adapter(solver, **config.get('physics_adapter', {}))
     bc_spec = physics.get_bc_spec(**config.get('boundary_condition', {}))
 
+    dof_mapper = make_surface_mapper(mesh.points, mesh.cells_dict['tetra'])
+    dof_mapper = _as_sparse_tensor(dof_mapper, torch.float32, adapter.device)
+
     template = adapter.initialize_scalar_field(mesh, unit_m)
-    param_dict = ParameterDict(template, **config.get('parameters', {}))
+    param_dict = ParameterDict(template, dof_mapper, **config.get('parameters', {}))
 
     def objective(params: dict):
         return adapter.mesh_simulation_loss(mesh, unit_m, params, bc_spec)[0]
@@ -118,13 +128,13 @@ def run_optimization_trials(
     param_dict.load_state_dict(best_state)
 
     with torch.no_grad():
-        return param_dict(global_mean=False)
+        return param_dict(global_mean=False, map_dofs=False)
 
 
 def run_optimization_trial(
     objective: Callable,
     param_dict: ParameterDict,
-    init_sigma: float = 0,
+    init_scale: float = 0,
     global_steps: int = 0,
     local_steps: int = 100,
     **kwargs
@@ -134,7 +144,7 @@ def run_optimization_trial(
         raise ValueError('global_steps or local_steps must be a positive int')
 
     utils.log('Initializing parameters')
-    param_dict.initialize(init_sigma)
+    param_dict.initialize(init_scale)
 
     loss_history = []
 
@@ -244,4 +254,53 @@ def save_optimization_results(ex, sample, rasters, sim_outputs):
 
     csv_path = out.csv_path(name='metrics')
     fileio.save_csv(csv_path, metrics)
+
+
+# ----- surface extrapolation -----
+
+
+def make_surface_mapper(verts, cells):
+    '''
+    Constuct a sparse matrix that maps surface dof values
+    to the average of adjacent interior vertex dof values.
+    '''
+    import scipy.sparse as sp
+    from .common import transforms
+
+    # get masks for surface and interior vertices
+    surface_mask = transforms.get_surface_mask(verts, cells)
+    interior_mask = ~surface_mask
+
+    A = transforms.get_vertex_adjacency(verts, cells)
+
+    # count number of adjacent interior vertices
+    neighbors = A @ sp.diags((interior_mask.astype(float)))
+    n_neighbors = np.asarray(neighbors.sum(axis=1)).ravel()
+
+    # interior vertices map to themselves,
+    #   surface vertices map to the average of interior neighbors
+    extrapolate = surface_mask & (n_neighbors > 0)
+    keep = ~extrapolate
+
+    if not np.any(extrapolate):
+        utils.warn('WARNING: no dofs are extrapolated')
+
+    weights = np.zeros(len(verts))
+    weights[extrapolate] = 1 / n_neighbors[extrapolate]
+
+    M = sp.diags(keep.astype(float)) + sp.diags(weights) @ neighbors
+    return M.tocsr()
+
+
+def _as_sparse_tensor(M, dtype, device):
+    M = M.tocoo()
+
+    indices = torch.as_tensor(
+        np.vstack([M.row, M.col]), dtype=torch.long, device=device
+    )
+    values = torch.as_tensor(M.data, dtype=dtype, device=device)
+
+    return torch.sparse_coo_tensor(
+        indices, values, M.shape
+    ).coalesce()
 
