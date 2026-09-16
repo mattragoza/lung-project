@@ -7,25 +7,6 @@ import numpy as np
 from ...common import utils, transforms, interpolation
 
 
-def interpolate_masked(volume, mask, points, **kwargs):
-    from ...common.interpolation import interpolate_array
-
-    mask = np.asarray(mask, dtype=float)
-
-    if volume.ndim == 4:
-        mask = mask[...,None]
-
-    numer = interpolate_array(volume * mask, points, **kwargs)
-    denom = interpolate_array(mask, points, **kwargs)
-
-    eps = 1e-8
-    n_bad_points = np.sum(denom < eps)
-    if n_bad_points > 0:
-        utils.warn(f'WARNING: Interpolation points outside domain: {n_bad_points}')
-
-    return numer / np.maximum(denom, eps)
-
-
 def interpolate_mesh_fields(
     mesh: 'meshio.Mesh',
     mask: np.ndarray,
@@ -60,6 +41,25 @@ def interpolate_mesh_fields(
         mesh.cell_data[name] = [interpolate_masked(array, mask, cell_voxels, **interp_kws)]
 
     return mesh
+
+
+def interpolate_masked(volume, mask, points, **kwargs):
+    from ...common.interpolation import interpolate_array
+
+    mask = np.asarray(mask, dtype=float)
+
+    if volume.ndim == 4:
+        mask = mask[...,None]
+
+    numer = interpolate_array(volume * mask, points, **kwargs)
+    denom = interpolate_array(mask, points, **kwargs)
+
+    eps = 1e-8
+    n_bad_points = np.sum(denom < eps)
+    if n_bad_points > 0:
+        utils.warn(f'WARNING: Interpolation points outside domain: {n_bad_points}')
+
+    return numer / np.maximum(denom, eps)
 
 
 def assign_mesh_materials(

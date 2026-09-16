@@ -25,7 +25,6 @@ def generate_mesh_from_mask(
     affine: np.ndarray,
     use_affine: bool = True,
     use_search: bool = False,
-    random_seed: int = 0,
     pygalmesh_kws: Optional[Dict[str, Any]] = None
 ) -> meshio.Mesh:
     '''
@@ -39,8 +38,7 @@ def generate_mesh_from_mask(
             be converted to world coordinates either way.
         use_search: If True, search for the best max_cell_circumradius
             value within a defined max_cells or max_verts size budget.
-        random_seed: int random seed passed to pygalmesh
-        pygalmesh_kws: meshing kwargs passed to pyglamesh
+        pygalmesh_kws: kwargs passed to pyglamesh generate call
     Returns:
         meshio.Mesh: Generated mesh in world coordinates
     '''
@@ -50,21 +48,11 @@ def generate_mesh_from_mask(
 
     if use_search:
         utils.log('Start mesh resolution search')
-        mesh = run_mesh_resolution_search(
-            mask=mask,
-            vox_spacing=vox_spacing,
-            random_seed=random_seed,
-            **pygalmesh_kws
-        )
+        mesh = run_mesh_resolution_search(mask, vox_spacing, pygalmesh_kws)
 
     else:
         utils.log('Running pygalmesh generation')
-        mesh = run_pygalmesh_generation(
-            mask=mask,
-            vox_spacing=vox_spacing,
-            random_seed=random_seed,
-            **pygalmesh_kws
-        )
+        mesh = run_pygalmesh_generation(mask, vox_spacing, **pygalmesh_kws)
 
     utils.log('Post-processing generated mesh')
     return postprocess_mesh(mesh, mask, affine, use_affine)
@@ -73,12 +61,11 @@ def generate_mesh_from_mask(
 def run_mesh_resolution_search(
     mask: np.ndarray,
     vox_spacing: np.ndarray,
+    pygalmesh_kws: Dict[str, Any],
     max_verts: int = 100000,
     max_cells: int = 500000,
     max_trials: int = 10,
-    radius_tol: float = 0.1,
-    random_seed: int = 0,
-    **pygalmesh_kws
+    radius_tol: float = 0.1
 ) -> meshio.Mesh:
 
     pygalmesh_kws = pygalmesh_kws.copy()
@@ -87,14 +74,9 @@ def run_mesh_resolution_search(
     utils.log(f'Target max_cell_circumradius: {target_radius:.2f}')
 
     def _generate_mesh(radius: float):
+        pygalmesh_kws['max_cell_circumradius'] = radius
 
-        mesh = run_pygalmesh_generation(
-            mask=mask,
-            vox_spacing=vox_spacing,
-            random_seed=random_seed,
-            max_cell_circumradius=radius,
-            **pygalmesh_kws
-        )
+        mesh = run_pygalmesh_generation(mask, vox_spacing, **pygalmesh_kws)
 
         n_verts = len(mesh.points)
         n_cells = count_cell_type(mesh, 'tetra')
@@ -106,7 +88,6 @@ def run_mesh_resolution_search(
         )
 
         feasible = n_verts < max_verts and n_cells < max_cells
-
         return mesh, feasible
 
     mesh, feasible = _generate_mesh(target_radius)

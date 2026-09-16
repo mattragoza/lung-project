@@ -275,8 +275,7 @@ def assign_materials_to_regions( # deprecate
 def generate_tetrahedral_mesh(
     mask_path: Path,
     output_path: Path,
-    config: Dict[str, Any],
-    random_seed: int = 0
+    config: Dict[str, Any]
 ):
     utils.check_keys(
         config,
@@ -291,7 +290,6 @@ def generate_tetrahedral_mesh(
     mesh = tetrahedral_meshing.generate_mesh_from_mask(
         mask=nifti.get_fdata(),
         affine=nifti.affine,
-        random_seed=random_seed,
         **config
     )
     utils.log(mesh)
