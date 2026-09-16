@@ -71,6 +71,7 @@ preprocessing:
         density:
             base_value: 350.
     mesh_generation:
+        use_search: True
         pygalmesh_kws:
             max_cell_circumradius: 3.75
             max_facet_distance: 1.0

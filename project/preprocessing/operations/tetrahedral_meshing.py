@@ -1,6 +1,6 @@
-# preprocessing/tetrahedral_meshing.py
+# preprocessing/operations/tetrahedral_meshing.py
 
-from typing import Dict, Set, Any
+from typing import Dict, Set, Optional, Any
 
 import collections
 import numpy as np
@@ -9,20 +9,24 @@ import meshio
 from ...common import utils, transforms
 
 
-def _get_pygalmesh_spacing(affine: np.ndarray, use_affine: bool):
+def _get_pygalmesh_spacing(affine, use_affine) -> np.ndarray:
     if use_affine:
         return transforms.get_affine_spacing(affine)
     return np.ones(3, dtype=np.float32)
+
+
+def _estimate_circumradius(r_curr, n_curr, n_next) -> float:
+    '''Estimate r from n, assuming that n ∝ 1 / r^3.'''
+    return r_curr * (n_curr / n_next) ** (1/3)
 
 
 def generate_mesh_from_mask(
     mask: np.ndarray,
     affine: np.ndarray,
     use_affine: bool = True,
+    use_search: bool = False,
     random_seed: int = 0,
-    pygalmesh_kws: Dict[str, Any] = None,
-    raw_label_key: str = 'medit:ref',
-    new_label_key: str = 'label'
+    pygalmesh_kws: Optional[Dict[str, Any]] = None
 ) -> meshio.Mesh:
     '''
     Generate a tetrahedral mesh from a voxel mask using pygalmesh.
@@ -33,43 +37,112 @@ def generate_mesh_from_mask(
         use_affine: If True, use world spacing when generating the mesh,
             otherwise mesh in voxel coordinates. The returned mesh will
             be converted to world coordinates either way.
+        use_search: If True, search for the best max_cell_circumradius
+            value within a defined max_cells or max_verts size budget.
         random_seed: int random seed passed to pygalmesh
-        pygalmesh_kws: mesh parameters passed to pyglamesh
+        pygalmesh_kws: meshing kwargs passed to pyglamesh
     Returns:
         meshio.Mesh: Generated mesh in world coordinates
     '''
-    spacing = _get_pygalmesh_spacing(affine, use_affine)
+    vox_spacing = _get_pygalmesh_spacing(affine, use_affine)
 
-    utils.log('Running pygalmesh generation')
+    pygalmesh_kws = pygalmesh_kws or {}
 
-    raw_mesh = run_pygalmesh_generation(
-        mask=mask,
-        spacing=spacing,
-        random_seed=random_seed,
-        **(pygalmesh_kws or {})
-    )
+    if use_search:
+        utils.log('Running mesh resolution search')
+        mesh = run_mesh_resolution_search(
+            mask=mask,
+            vox_spacing=vox_spacing,
+            random_seed=random_seed,
+            **pygalmesh_kws
+        )
+
+    else:
+        utils.log('Running pygalmesh generation')
+        mesh = run_pygalmesh_generation(
+            mask=mask,
+            vox_spacing=vox_spacing,
+            random_seed=random_seed,
+            **pygalmesh_kws
+        )
 
     utils.log('Post-processing generated mesh')
+    return postprocess_mesh(mesh, mask, affine, use_affine)
 
-    mesh = extract_cell_type(raw_mesh, cell_type='tetra')
-    label_map = infer_label_map(mesh, mask, spacing, raw_label_key)
-    mesh = reindex_cell_labels(mesh, label_map, raw_label_key, new_label_key)
-    mesh = remove_labeled_cells(mesh, 'tetra', new_label_key, label_val=0)
-    mesh = remove_unreferenced_points(mesh)
-    mesh = convert_to_world_coords(mesh, spacing, affine)
 
-    utils.log(mesh)
+def run_mesh_resolution_search(
+    mask: np.ndarray,
+    vox_spacing: np.ndarray,
+    max_verts: int = 100000,
+    max_cells: int = 500000,
+    max_trials: int = 10,
+    radius_tol: float = 0.05,
+    random_seed: int = 0,
+    **pygalmesh_kws
+) -> meshio.Mesh:
 
-    n_components = count_connected_components(mesh, cell_type='tetra')
-    if n_components != 1:
-        utils.warn(f'WARNING: mesh has {n_components} components')
+    target_radius = pygalmesh_kws.get('max_cell_circumradius', 1.0)
+    pygalmesh_kws = pygalmesh_kws.copy()
 
-    return mesh
+    def _generate_mesh(radius: float):
+        pygalmesh_kws['max_cell_circumradius'] = radius
+
+        mesh = run_pygalmesh_generation(
+            mask, vox_spacing, random_seed, **pygalmesh_kws
+        )
+
+        n_verts = len(mesh.points)
+        n_cells = len(mesh.cells_dict['tetra'])
+
+        utils.log(
+            f'radius = {radius:.4f}  '
+            f'n_verts = {n_verts:d}  '
+            f'n_cells = {n_cells:d}'
+        )
+
+        feasible = n_verts < max_verts and n_cells < max_cells
+        return mesh, feasible
+
+    mesh, feasible = _generate_mesh(target_radius)
+
+    if feasible:
+        utils.log('Target resolution within mesh size budget')
+        return mesh
+
+    # identify a feasible upper bracket on radius
+    #   while tracking the infeasible lower bracket
+    r_lo, r_hi = (target_radius, target_radius * 2)
+
+    while True:
+        mesh, feasible = _generate_mesh(r_hi)
+
+        if feasible: # upper bracket found
+            break
+
+        r_lo, r_hi = (r_hi, r_hi * 2)
+
+    # binary search to refine feasibility boundary
+    best_mesh = mesh
+
+    for t in range(max_trials):
+        if r_hi - r_lo < radius_tol:
+            break
+
+        r_mid = (r_lo + r_hi) * 0.5
+        mesh, feasible = _generate_mesh(r_mid)
+
+        if feasible:
+            best_mesh = mesh
+            r_hi = r_mid
+        else:
+            r_lo = r_mid
+
+    return best_mesh
 
 
 def run_pygalmesh_generation(
     mask: np.ndarray,
-    spacing: np.ndarray,
+    vox_spacing: np.ndarray,
     random_seed: int = 0,
     verbose: bool = False,
     **kwargs
@@ -78,6 +151,7 @@ def run_pygalmesh_generation(
     import os, tempfile, pygalmesh
 
     mask_uint16 = mask.astype(np.uint16)
+
     if not np.allclose(mask_uint16, mask):
         raise RuntimeError('mask cannot be cast to uint16')
 
@@ -85,15 +159,11 @@ def run_pygalmesh_generation(
         inr_path = f.name
 
     try:
-        pygalmesh.main.save_inr(mask_uint16, spacing, inr_path)
+        pygalmesh.main.save_inr(mask_uint16, vox_spacing, inr_path)
 
         mesh = pygalmesh.generate_from_inr(
-            inr_path,
-            seed=random_seed,
-            verbose=verbose,
-            **kwargs
+            inr_path, seed=random_seed, verbose=verbose, **kwargs
         )
-        utils.log(mesh)
 
     finally:
         os.remove(inr_path)
@@ -103,6 +173,30 @@ def run_pygalmesh_generation(
 
     if count_cell_type(mesh, cell_type='tetra') == 0:
         raise RuntimeError('mesh has no tetra cells')
+
+    return mesh
+
+
+def postprocess_mesh(
+    mesh: meshio.Mesh,
+    mask: np.ndarray,
+    affine: np.ndarray,
+    use_affine: bool = True,
+    raw_key: str = 'medit:ref',
+    new_key: str = 'label'
+):
+    spacing = _get_pygalmesh_spacing(affine, use_affine)
+
+    mesh = extract_cell_type(mesh, cell_type='tetra')
+    label_map = infer_label_map(mesh, mask, spacing, raw_key)
+    mesh = reindex_cell_labels(mesh, label_map, raw_key, new_key)
+    mesh = remove_labeled_cells(mesh, 'tetra', new_key, label_val=0)
+    mesh = remove_unreferenced_points(mesh)
+    mesh = convert_to_world_coords(mesh, spacing, affine)
+
+    n_components = count_connected_components(mesh, cell_type='tetra')
+    if n_components != 1:
+        utils.warn(f'WARNING: mesh has {n_components} components')
 
     return mesh
 
@@ -183,7 +277,6 @@ def infer_label_map(
         counts = np.bincount(mask_values[raw_labels == label])
         label_map[label] = int(counts.argmax())
 
-    utils.log(label_map)
     if np.any(label_map[np.unique(raw_labels)] < 0):
         raise RuntimeError(f'raw label(s) were dropped from mapping')
 

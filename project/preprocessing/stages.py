@@ -280,7 +280,7 @@ def generate_tetrahedral_mesh(
 ):
     utils.check_keys(
         config,
-        valid={'use_affine', 'pygalmesh_kws'},
+        valid={'use_affine', 'use_search', 'pygalmesh_kws'},
         where='mesh_generation'
     )
     from .operations import tetrahedral_meshing
@@ -294,6 +294,7 @@ def generate_tetrahedral_mesh(
         random_seed=random_seed,
         **config
     )
+    utils.log(mesh)
 
     fileio.save_meshio(output_path, mesh)
 
