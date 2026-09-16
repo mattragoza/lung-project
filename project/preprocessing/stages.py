@@ -344,7 +344,7 @@ def interpolate_mesh_fields(
     interp_kws = config.get('interpolate_kws', {})
 
     mesh = fileio.load_meshio(mesh_path)
-    mask = fileio.load_nibabel(mask_path).get_fdata()
+    mask = fileio.load_nibabel(mask_path).get_fdata() > 0
     nifti = fileio.load_nibabel(image_path)
 
     fields = {

@@ -13,42 +13,57 @@ def label_anatomical_regions(
     roi_order: List[str],
     filter_kws: Optional[Dict[str, Any]] = None
 ) -> np.ndarray:
-    from . import mask_processing
 
-    if not roi_order:
+    if len(roi_order) == 0:
         raise ValueError('roi_order is empty')
+
+    labels = [] # reserve 0 for background
+    for idx, roi_name in enumerate(roi_order, start=1):
+        labels.append(idx * (masks[roi_name] > 0))
+
+    # roi_order determines priority
+    labels = np.max(labels, axis=0)
+
+    return postprocess_regions(labels, roi_order, filter_kws)
+
+
+def postprocess_regions(
+    labels_in: np.ndarray,
+    roi_order: List[str],
+    filter_kws: Optional[Dict[str, Any]] = None
+) -> np.ndarray:
+
+    from .mask_processing import filter_connected_components
 
     filter_kws = filter_kws or {}
 
-    label_masks = [] # reserve 0 for background
-    for label, name in enumerate(roi_order, start=1):
-        label_masks.append((masks[name] > 0) * label)
+    labels_out = -np.ones_like(labels_in, dtype=int)
 
-    # roi_order determines label priority
-    raw_labels = np.max(label_masks, axis=0)
-    out_labels = np.zeros_like(raw_labels, dtype=int)
-
-    for label, name in enumerate(roi_order, start=1):
-        utils.log(f'Filtering region: {name}')
+    for label, roi_name in enumerate(['background', *roi_order]):
+        utils.log(f'Filtering region: {roi_name!r}')
 
         kwargs = filter_kws.copy()
-        if 'max_components' not in kwargs:
-            kwargs['max_components'] = 1 if 'lobe' in name.lower() else None
+        if 'lobe' in roi_name.lower():
+            kwargs.setdefault('max_components', 1)
 
-        filtered = mask_processing.filter_connected_components(
-            (raw_labels == label), **kwargs
-        )
-        out_labels[filtered] = label
+        mask_in = (labels_in == label)
+        mask_out = filter_connected_components(mask_in, **kwargs)
+        labels_out[mask_out] = label
 
-    dropped = (raw_labels != 0) & (out_labels == 0)
+    dropped = labels_out < 0
     if np.any(dropped):
-        _, indices = scipy.ndimage.distance_transform_edt(
-            (out_labels == 0), return_indices=True
-        )
-        nearest_labels = out_labels[tuple(indices)]
-        out_labels[dropped] = nearest_labels[dropped]
+        labels_out = reassign_nearest_labels(labels_out, dropped)
 
-    return out_labels.astype(np.int16)
+    return labels_out.astype(np.int16)
+
+
+def reassign_nearest_labels(labels, mask):
+    labels = labels.copy()
+    _, inds = scipy.ndimage.distance_transform_edt(
+        mask, return_indices=True
+    )
+    labels[mask] = labels[tuple(inds)][mask]
+    return labels
 
 
 def label_regions_from_surface(

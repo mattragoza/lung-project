@@ -163,10 +163,8 @@ def run_pygalmesh_generation(
     os.close(f)
 
     try:
-        utils.log('Saving mask to INR file')
         pygalmesh.main.save_inr(mask, vox_spacing, fname)
 
-        utils.log('Generating mesh from INR file')
         mesh = pygalmesh.main.generate_from_inr(
             fname, seed=random_seed, verbose=verbose, **kwargs
         )

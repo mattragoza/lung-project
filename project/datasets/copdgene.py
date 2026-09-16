@@ -204,8 +204,8 @@ class COPDGeneDataset(Dataset):
                     paths['init_state']['segment_dir'] = self.derived_path(sid, variant, 'mask_dir', f'{sid}_{init_state}_{img_tag}_{seg_tag}')
                     paths['curr_state']['segment_dir'] = self.derived_path(sid, variant, 'mask_dir', f'{sid}_{curr_state}_{img_tag}_{seg_tag}')
 
-                    paths['init_state']['domain_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{init_state}_{img_tag}_{seg_tag}_domain')
-                    paths['curr_state']['domain_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{curr_state}_{img_tag}_{seg_tag}_domain')
+                    paths['init_state']['combined_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{init_state}_{img_tag}_{seg_tag}_domain')
+                    paths['curr_state']['combined_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{curr_state}_{img_tag}_{seg_tag}_domain')
 
                     paths['anatomical_map'] = self.derived_path(sid, variant, 'mask',  f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}')
                     paths['anatomical_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}')
@@ -219,7 +219,7 @@ class COPDGeneDataset(Dataset):
 
                     # required training paths
                     paths['input_image'] = paths['init_state']['resampled_image']
-                    paths['domain_mask'] = paths['init_state']['domain_mask']
+                    paths['domain_mask'] = paths['init_state']['combined_mask']
                     paths['target_mesh'] = paths['forward_mesh']
 
                 yield Example(

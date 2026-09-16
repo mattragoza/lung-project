@@ -26,16 +26,16 @@ def preprocess(ex, config):
             stages.create_segmentation_masks,
             image_path=ex.paths[state]['resampled_image'],
             segment_dir=ex.paths[state]['segment_dir'],
-            output_path=ex.paths[state]['domain_mask'],
+            output_path=ex.paths[state]['combined_mask'],
             config=config.get('image_segmentation', {})
         )
 
     run_stage(
         stages.estimate_displacement_field,
         fixed_image=ex.paths['init_state']['resampled_image'],
-        fixed_mask=ex.paths['init_state']['domain_mask'],
+        fixed_mask=ex.paths['init_state']['combined_mask'],
         moving_image=ex.paths['curr_state']['resampled_image'],
-        moving_mask=ex.paths['curr_state']['domain_mask'],
+        moving_mask=ex.paths['curr_state']['combined_mask'],
         output_path=ex.paths['disp_field'],
         config=config.get('image_registration', {})
     )
@@ -48,7 +48,7 @@ def preprocess(ex, config):
     run_stage(
         stages.assign_material_properties,
         image_path=ex.paths['init_state']['resampled_image'],
-        domain_path=ex.paths['init_state']['domain_mask'],
+        domain_path=ex.paths['init_state']['combined_mask'],
         segment_dir=ex.paths['init_state']['segment_dir'],
         output_path=ex.paths['material_map'],
         fields_dir=ex.paths['material_dir'],

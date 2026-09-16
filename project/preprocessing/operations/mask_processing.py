@@ -66,7 +66,7 @@ def filter_binary_mask(
 
 
 def filter_region_labels(labels: np.ndarray, **kwargs):
-    output = np.zeros_like(labels)
+    output = np.zeros_like(labels, dtype=int)
 
     # filter connected components in each region
     for label in np.unique(labels[labels != 0]):
@@ -89,54 +89,73 @@ def filter_region_labels(labels: np.ndarray, **kwargs):
 def filter_connected_components(
     mask: np.ndarray,
     min_voxels: int = 0,
-    min_percent: int = 0,
+    min_percent: float = 0.0,
     max_components: Optional[int] = None,
     keep_largest: bool = False,
-    connectivity: int = 1
+    connectivity: int = 1,
+    verbose: bool = True
 ):
+    if min_voxels < 0:
+        raise ValueError('min_voxels must be >= 0')
+
+    if not 0 <= min_percent <= 100:
+        raise ValueError('min_percent must be in [0, 100]')
+
+    if max_components is not None and max_components < 0:
+        raise ValueError('max_components must be >= 0')
+
     # label connected regions and measure their size
-    labeled, input_components = skimage.measure.label(
-        (mask != 0), 
+    label_mask, in_components = skimage.measure.label(
+        (mask > 0), 
         background=0,
         connectivity=connectivity,
         return_num=True
     )
-    utils.log(f'Input {connectivity}-connected components: {input_components}')
 
-    labels, counts = np.unique(labeled[labeled > 0], return_counts=True)
+    if verbose:
+        utils.log(f'Input components: {in_components}')
+
+    labels, counts = np.unique(label_mask[label_mask > 0], return_counts=True)
 
     total = counts.sum()
     if total == 0:
-        utils.log(f'Input mask is empty')
+        utils.warn('Input mask is empty')
         return np.zeros_like(mask, dtype=bool)
 
-    percents = counts / total * 100.
     size_order = np.argsort(-counts) # largest to smallest
 
-    utils.log(f'  Voxel counts:   {counts[size_order]} {total}')
+    if verbose:
+        utils.log(f'Voxel counts: {counts[size_order]}')
+        utils.log(f'Total voxels: {total}')
 
-    output_labels = []
-    output_components = 0
+    out_labels = []
+    out_components = 0
     voxels_dropped = 0
 
-    for rank, i in enumerate(size_order):
-        l, c, p = int(labels[i]), int(counts[i]), float(percents[i])
+    max_comps = max_components
 
-        size_ok = (c >= min_voxels) and (p >= min_percent)
-        hit_cap = max_components and (output_components >= max_components)
+    for rank, idx in enumerate(size_order):
+        label = int(labels[idx])
+        count = int(counts[idx])
+        pct = float(count / total * 100)
+
+        # determine whether to keep current component
+        size_ok = (count >= min_voxels) and (pct >= min_percent)
+        hit_cap = max_comps is not None and (out_components >= max_comps)
         keep = (size_ok and not hit_cap) or (keep_largest and rank == 0)
 
         if keep:
-            output_labels.append(l)
-            output_components += 1
+            out_labels.append(label)
+            out_components += 1
         else:
-            voxels_dropped += c
+            voxels_dropped += count
 
-    output = np.isin(labeled, output_labels)
+    output = np.isin(label_mask, out_labels)
 
-    pct_dropped = voxels_dropped / total * 100.
-    utils.log(f'Output {connectivity}-connected components: {output_components}')
-    utils.log(f'  Voxels dropped: {voxels_dropped} ({pct_dropped:.4f}%)')
+    if verbose:
+        pct_dropped = voxels_dropped / total * 100.
+        utils.log(f'Output components: {out_components}')
+        utils.log(f'Voxels dropped: {voxels_dropped} ({pct_dropped:.4f}%)')
 
     return output
 

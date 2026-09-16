@@ -11,6 +11,7 @@ def interpolate_masked(volume, mask, points, **kwargs):
     from ...common.interpolation import interpolate_array
 
     mask = np.asarray(mask, dtype=float)
+
     if volume.ndim == 4:
         mask = mask[...,None]
 
@@ -18,9 +19,9 @@ def interpolate_masked(volume, mask, points, **kwargs):
     denom = interpolate_array(mask, points, **kwargs)
 
     eps = 1e-8
-    n_outside = (denom < eps).sum()
-    if n_outside > 0:
-        utils.warn(f'WARNING: Interpolation points outside domain: {n_outside}')
+    n_bad_points = np.sum(denom < eps)
+    if n_bad_points > 0:
+        utils.warn(f'WARNING: Interpolation points outside domain: {n_bad_points}')
 
     return numer / np.maximum(denom, eps)
 
