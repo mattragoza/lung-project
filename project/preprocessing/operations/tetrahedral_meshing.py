@@ -17,7 +17,7 @@ def _get_pygalmesh_spacing(affine, use_affine) -> np.ndarray:
 
 def _estimate_circumradius(r_curr, n_curr, n_next) -> float:
     '''Estimate r from n, assuming that n ∝ 1 / r^3.'''
-    return r_curr * (n_curr / n_next) ** (1/3)
+    return r_curr * (n_curr / n_next) ** (1 / 3)
 
 
 def generate_mesh_from_mask(
@@ -49,7 +49,7 @@ def generate_mesh_from_mask(
     pygalmesh_kws = pygalmesh_kws or {}
 
     if use_search:
-        utils.log('Running mesh resolution search')
+        utils.log('Start mesh resolution search')
         mesh = run_mesh_resolution_search(
             mask=mask,
             vox_spacing=vox_spacing,
@@ -76,23 +76,28 @@ def run_mesh_resolution_search(
     max_verts: int = 100000,
     max_cells: int = 500000,
     max_trials: int = 10,
-    radius_tol: float = 0.05,
+    radius_tol: float = 0.1,
     random_seed: int = 0,
     **pygalmesh_kws
 ) -> meshio.Mesh:
 
-    target_radius = pygalmesh_kws.get('max_cell_circumradius', 1.0)
     pygalmesh_kws = pygalmesh_kws.copy()
+    target_radius = pygalmesh_kws.pop('max_cell_circumradius', 1.0)
+
+    utils.log(f'Target max_cell_circumradius: {target_radius:.2f}')
 
     def _generate_mesh(radius: float):
-        pygalmesh_kws['max_cell_circumradius'] = radius
 
         mesh = run_pygalmesh_generation(
-            mask, vox_spacing, random_seed, **pygalmesh_kws
+            mask=mask,
+            vox_spacing=vox_spacing,
+            random_seed=random_seed,
+            max_cell_circumradius=radius,
+            **pygalmesh_kws
         )
 
         n_verts = len(mesh.points)
-        n_cells = len(mesh.cells_dict['tetra'])
+        n_cells = count_cell_type(mesh, 'tetra')
 
         utils.log(
             f'radius = {radius:.4f}  '
@@ -101,41 +106,43 @@ def run_mesh_resolution_search(
         )
 
         feasible = n_verts < max_verts and n_cells < max_cells
+
         return mesh, feasible
 
     mesh, feasible = _generate_mesh(target_radius)
 
-    if feasible:
-        utils.log('Target resolution within mesh size budget')
+    if feasible: # target resolution is feasible
         return mesh
 
-    # identify a feasible upper bracket on radius
-    #   while tracking the infeasible lower bracket
-    r_lo, r_hi = (target_radius, target_radius * 2)
+    # identify a feasible upper bound on radius,
+    #   while tracking the infeasible lower bound
+    r_lower = target_radius
+    r_upper = target_radius * 2
 
-    while True:
-        mesh, feasible = _generate_mesh(r_hi)
+    while not feasible:
+        mesh, feasible = _generate_mesh(r_upper)
 
-        if feasible: # upper bracket found
+        if feasible: # found feasible upper bound
             break
 
-        r_lo, r_hi = (r_hi, r_hi * 2)
+        r_lower = r_upper
+        r_upper = r_upper * 2
 
     # binary search to refine feasibility boundary
     best_mesh = mesh
 
     for t in range(max_trials):
-        if r_hi - r_lo < radius_tol:
+        if r_upper - r_lower < radius_tol:
             break
 
-        r_mid = (r_lo + r_hi) * 0.5
-        mesh, feasible = _generate_mesh(r_mid)
+        r_curr = (r_lower + r_upper) / 2
+        mesh, feasible = _generate_mesh(r_curr)
 
         if feasible:
             best_mesh = mesh
-            r_hi = r_mid
+            r_upper = r_curr
         else:
-            r_lo = r_mid
+            r_lower = r_curr
 
     return best_mesh
 
@@ -150,28 +157,27 @@ def run_pygalmesh_generation(
 
     import os, tempfile, pygalmesh
 
-    mask_uint16 = mask.astype(np.uint16)
+    mask = mask.astype(np.uint8, casting='same_value')
 
-    if not np.allclose(mask_uint16, mask):
-        raise RuntimeError('mask cannot be cast to uint16')
-
-    with tempfile.NamedTemporaryFile(suffix='.inr', delete=False) as f:
-        inr_path = f.name
+    f, fname = tempfile.mkstemp(suffix='.inr')
+    os.close(f)
 
     try:
-        pygalmesh.main.save_inr(mask_uint16, vox_spacing, inr_path)
+        utils.log('Saving mask to INR file')
+        pygalmesh.main.save_inr(mask, vox_spacing, fname)
 
-        mesh = pygalmesh.generate_from_inr(
-            inr_path, seed=random_seed, verbose=verbose, **kwargs
+        utils.log('Generating mesh from INR file')
+        mesh = pygalmesh.main.generate_from_inr(
+            fname, seed=random_seed, verbose=verbose, **kwargs
         )
 
     finally:
-        os.remove(inr_path)
+        os.remove(fname)
 
     if len(mesh.points) == 0:
         raise RuntimeError('mesh has no vertices')
 
-    if count_cell_type(mesh, cell_type='tetra') == 0:
+    if count_cell_type(mesh, 'tetra') == 0:
         raise RuntimeError('mesh has no tetra cells')
 
     return mesh
@@ -204,6 +210,10 @@ def postprocess_mesh(
 # ----- cell type filtering -----
 
 
+def count_cell_type(mesh: meshio.Mesh, cell_type: str) -> int:
+    return len(mesh.cells_dict.get(cell_type, []))
+
+
 def extract_cell_type(mesh: meshio.Mesh, cell_type: str) -> meshio.Mesh:
 
     cells = mesh.cells_dict.get(cell_type)
@@ -221,10 +231,6 @@ def extract_cell_type(mesh: meshio.Mesh, cell_type: str) -> meshio.Mesh:
         point_data=mesh.point_data,
         cell_data=new_cell_data
     )
-
-
-def count_cell_type(mesh: meshio.Mesh, cell_type: str) -> int:
-    return len(mesh.cells_dict.get(cell_type, []))
 
 
 # ----- cell label reindexing -----
@@ -310,6 +316,16 @@ def reindex_cell_labels(
 # ----- cell label filtering -----
 
 
+def count_labeled_cells(
+    mesh: meshio.Mesh,
+    cell_type: str,
+    label_key: str,
+    label_val: int
+) -> int:
+    values = mesh.cell_data_dict[label_key][cell_type]
+    return np.sum(values == label_val, dtype=int)
+
+
 def remove_labeled_cells(
     mesh: meshio.Mesh,
     cell_type: str,
@@ -357,16 +373,6 @@ def extract_selected_cells(
         point_data=mesh.point_data,
         cell_data=new_cell_data
     )
-
-
-def count_labeled_cells(
-    mesh: meshio.Mesh,
-    cell_type: str,
-    label_key: str,
-    label_val: int
-) -> int:
-    values = mesh.cell_data_dict[label_key][cell_type]
-    return np.sum(values == label_val, dtype=int)
 
 
 # ----- vertex filtering -----
