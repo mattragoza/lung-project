@@ -12,7 +12,7 @@ def get_config(argv: list) -> dict:
 
 def get_examples(config: dict) -> list:
     from . import datasets
-    utils.log('Gathering examples:', end=' ')
+    utils.log('Gathering examples...')
     examples = datasets.get_examples(**config)
     utils.log(f'{len(examples)} total')
     return examples

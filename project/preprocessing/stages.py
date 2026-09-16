@@ -85,9 +85,6 @@ def create_segmentation_masks(
     output_path: Path,
     config: Dict[str, Any]
 ):
-    '''
-    Run segmentation tasks and write individual + combined domain masks.
-    '''
     utils.check_keys(
         config, valid={'tasks'}, where='image_segmentation'
     )
@@ -272,7 +269,7 @@ def assign_materials_to_regions( # deprecate
     fileio.save_nibabel(output_path, material_labels.astype(np.int16), nifti.affine)
 
 
-# ----- mesh generation / repair -----
+# ----- mesh generation / processing -----
 
 
 def generate_tetrahedral_mesh(

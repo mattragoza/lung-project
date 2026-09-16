@@ -12,9 +12,6 @@ import torch.nn.functional as F
 from ...common import utils, fileio
 
 
-WEIGHTS_ROOT = Path(os.environ.get('LP_ROOT', '.')) / 'network_weights'
-
-
 def _as_tensor(a, device):
     return torch.as_tensor(a, dtype=torch.float, device=device)
 
@@ -40,6 +37,13 @@ def _correlation_r2(a, b, m):
     denom = std_a * std_b
     return (numer / denom * m).mean()**2
 
+
+def _make_symlink_exist(src: Path, tgt: Path):
+    src = Path(src)
+    if src.is_symlink() and src.resolve(strict=False) != tgt:
+        src.unlink()
+    if not src.exists():
+        src.symlink_to(tgt, target_is_directory=True)
 
 
 def run_image_registration(
@@ -84,7 +88,7 @@ def run_unigradicon_registration(
     moving_image: Path,
     moving_mask: Path,
     output_path: Path,
-    weights_root: Path = WEIGHTS_ROOT,
+    weights_root: Path,
     sym_link: str = 'network_weights',
     **kwargs
 ):
@@ -92,13 +96,11 @@ def run_unigradicon_registration(
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_dir = Path(temp_dir)
-        sym_link = Path(sym_link)
 
         transform_path = temp_dir / 'transform.hdf5'
         raw_disp_path = temp_dir / 'raw_disp.nii.gz'
 
-        if not sym_link.exists():
-            sym_link.symlink_to(weights_root, target_is_directory=True)
+        _make_symlink_exist(sym_link, weights_root)
 
         utils.log('Running uniGradICON registration')
         run_unigradicon_main(
