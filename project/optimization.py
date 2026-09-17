@@ -65,7 +65,8 @@ def optimize_example(ex, config):
             'pde_solver',
             'physics_adapter',
             'boundary_condition',
-            'optimization_kws'
+            'optimization_kws',
+            'output_name'
         },
         where='optimization'
     )
@@ -99,7 +100,8 @@ def optimize_example(ex, config):
             mesh, unit_m, param, sample['mask'].shape[1:], sample['affine']
         )
 
-    save_optimization_results(ex, sample, rasters, sim)
+    outname = config.get('output_name', 'optimize')
+    save_optimization_results(ex, sample, rasters, sim, outname)
 
 
 def run_optimization_trials(
@@ -118,7 +120,12 @@ def run_optimization_trials(
     for trial in range(num_trials):
         utils.log(f'Start optimization trial {trial + 1} / {num_trials}')
 
-        trial_loss = run_optimization_trial(objective, param_dict, **kwargs)[-1]
+        try:
+            trial_loss = run_optimization_trial(objective, param_dict, **kwargs)[-1]
+
+        except RuntimeError as e:
+            utils.warn(f'FAILED: {e}')
+            continue
 
         if trial_loss < best_loss:
             best_state = _clone_state(param_dict)
@@ -180,6 +187,10 @@ def run_optimization_steps(
         optimizer.zero_grad(set_to_none=True)
         loss = objective(param_dict(global_mean))
         loss.backward()
+        with torch.no_grad():
+            grad_norm = _compute_grad_norm(param_dict.parameters())
+        if not np.isfinite(grad_norm):
+            raise RuntimeError(f'Non-finite loss gradient: {grad_norm}')
         return loss
 
     loss_history = []
@@ -195,7 +206,7 @@ def run_optimization_steps(
         utils.log(f'[step {step}] loss = {loss:.4e} (delta = {loss_delta:.4e})')
 
         if not np.isfinite(loss):
-            raise RuntimeError(f'Non-finite optimization loss: {loss}')
+            raise RuntimeError(f'Non-finite loss value: {loss}')
 
         if step > 0 and loss_delta < rtol:
             utils.log(f'Optimization converged in {step} step(s)')
@@ -233,8 +244,8 @@ def _compute_grad_norm(params: List[torch.nn.Parameter]) -> float:
     return np.sqrt(total)
 
 
-def save_optimization_results(ex, sample, rasters, sim_outputs):
-    out = outputs.Outputs(stage='optimize')
+def save_optimization_results(ex, sample, rasters, sim_outputs, outname='optimize'):
+    out = outputs.Outputs(stage=outname)
 
     mesh = sample['mesh'].copy()
     for name, param in sim_outputs['params'].items():

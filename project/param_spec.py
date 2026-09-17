@@ -14,7 +14,7 @@ class ParameterSpec:
         max: float = None,
         eps: float = 1e-8
     ):
-        if mode not in {'linear', 'log10', 'logit'}:
+        if mode not in {'linear', 'log10', 'logit', 'logit_log10'}:
             raise ValueError(f'Invalid parameter mode: {mode}')
 
         if std <= 0:
@@ -42,6 +42,12 @@ class ParameterSpec:
             logit = torch.log(s) - torch.log(1 - s)
             return (logit - self.mean) / self.std
 
+        if self.mode == 'logit_log10':
+            log_x = torch.log10(x.clamp_min(self.eps))
+            s = (log_x - self.min) / (self.max - self.min)
+            logit = torch.log(s) - torch.log(1 - s)
+            return (logit - self.mean) / self.std
+
         raise ValueError(f'Invalid parameter mode: {self.mode}')
 
     def decode(self, z):
@@ -52,16 +58,22 @@ class ParameterSpec:
                 x = x.clamp(self.min, self.max)
             return x
 
-        elif self.mode == 'log10':
+        if self.mode == 'log10':
             log_x = self.mean + self.std * z
             if self.min is not None or self.max is not None:
                 log_x = log_x.clamp(self.min, self.max)
             return torch.pow(10, log_x)
 
-        elif self.mode == 'logit':
+        if self.mode == 'logit':
             logit = self.mean + self.std * z
             s = torch.sigmoid(logit)
-            return s * (self.max - self.min) + self.min
+            return self.min + (self.max - self.min) * s
+
+        if self.mode == 'logit_log10':
+            logit = self.mean + self.std * z
+            s = torch.sigmoid(logit)
+            log_x = self.min + (self.max - self.min) * s
+            return torch.pow(10, log_x)
 
         raise ValueError(f'Invalid parameter mode: {self.mode}')
 

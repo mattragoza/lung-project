@@ -340,31 +340,37 @@ def _validate_material_parameters(
     max_ratio: float = 1e2
 ):
     if not torch.all(torch.isfinite(rho)):
-        raise ValueError('Non-finite density values (rho)')
+        bad_vals = rho[~torch.isfinite(rho)]
+        raise ValueError(f'Non-finite density values: {bad_vals}')
 
     if not torch.all(rho > 0):
-        raise ValueError('Non-positive density values (rho)')
+        bad_vals = rho[rho <= 0].detach().cpu().numpy()
+        raise ValueError(f'Non-positive density values: {bad_vals}')
 
     if not torch.all(torch.isfinite(mu)):
-        raise ValueError('Non-finite shear modulus values (mu or G)')
+        bad_vals = mu[~torch.isfinite(mu)].detach().cpu().numpy()
+        raise ValueError(f'Non-finite shear modulus values: {bad_vals}')
 
     if not torch.all(mu > 0):
-        raise ValueError('Non-positive shear modulus values (mu or G)')
+        bad_vals = mu[mu <= 0].detach().cpu().numpy()
+        raise ValueError(f'Non-positive shear modulus values: {bad_vals}')
 
     if not torch.all(torch.isfinite(lam)):
-        raise ValueError('Non-finite Lame parameter values (lambda)')
+        bad_vals = lam[~torch.isfinite(lam)].detach().cpu().numpy()
+        raise ValueError(f'Non-finite Lame parameter values: {bad_vals}')
 
     K = lam + (2/3) * mu
     if not torch.all(torch.isfinite(K)):
-        raise ValueError('Non-finite bulk modulus values (K)')
+        bad_vals = K[~torch.isfinite(K)].detach().cpu().numpy()
+        raise ValueError(f'Non-finite bulk modulus values: {bad_vals}')
 
     if not torch.all(K > 0):
-        raise ValueError('Non-positive bulk modulus values (K; requires nu < 0.5)')
+        bad_vals = K[K <= 0].detach().cpu().numpy()
+        raise ValueError(f'Non-positive bulk modulus values: {bad_vals}')
 
-    ratio = K / mu
-    if torch.any(ratio > max_ratio):
-        utils.warn(f'Material is nearly incompressible (K/G = {ratio.max().item()})')
-
+    if torch.any(K > max_ratio * mu):
+        bad_ratio = (K / mu).max().item()
+        utils.warn(f'Material is nearly incompressible: {bad_ratio}')
 
 
 def _as_mesh_field(
