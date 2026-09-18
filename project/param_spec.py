@@ -28,29 +28,32 @@ class ParameterSpec:
             raise ValueError(f'Parameter scale must be positive')
 
         self.mode  = mode
-        self.scale = scale
+        self.scale = scale # NOTE: this also scales the gradient!
         self.v_loc = v_loc
         self.v_min = v_min
         self.v_max = v_max
         self.beta  = beta
 
-        self.s_min = _invert_transform(v_min, mode).item()
+        if mode == 'log10' and v_min == 0:
+            self.s_min = None
+        else:
+            self.s_min = _invert_transform(v_min, mode).item()
+
         self.s_max = _invert_transform(v_max, mode).item()
         self.s_loc = _invert_transform(v_loc, mode).item()
 
         self.shift = _invert_bounds(
-            self.s_loc,
-            self.s_min,
-            self.s_max,
-            beta
+            self.s_loc, self.s_min, self.s_max, beta
         ).item()
 
     def decode(self, z):
+        '''Decode latent coordinate to physical parameter.'''
         q = _apply_affine(z, self.shift, self.scale)
         s = _apply_bounds(q, self.s_min, self.s_max, self.beta)
         return _apply_transform(s, self.mode)
 
     def encode(self, v):
+        '''Encode physical parameter to latent coordinate.'''
         s = _invert_transform(v, self.mode)
         q = _invert_bounds(s, self.s_min, self.s_max, self.beta)
         return _invert_affine(q, self.shift, self.scale)
@@ -88,7 +91,7 @@ def _apply_bounds(q, s_min, s_max, beta):
     if s_min is None and s_max is None:
         return q
 
-    if beta is None or beta <= 0:
+    if beta is None or beta <= 0: # hard
         return torch.clamp(q, s_min, s_max)
 
     if s_min is None: # soft upper bound
@@ -97,6 +100,7 @@ def _apply_bounds(q, s_min, s_max, beta):
     if s_max is None: # soft lower bound
         return s_min + F.softplus(q - s_min, beta)
 
+    # soft two-sided bounds
     return (
         s_min
         + F.softplus(q - s_min, beta)
@@ -112,7 +116,7 @@ def _invert_bounds(s, s_min, s_max, beta):
 
     _check_bounds(s, s_min, s_max)
 
-    if beta is None or beta <= 0:
+    if beta is None or beta <= 0: # hard
         return s
 
     if s_min is None: # soft upper bound
@@ -121,19 +125,21 @@ def _invert_bounds(s, s_min, s_max, beta):
     if s_max is None: # soft lower bound
         return s_min + _invert_softplus(s - s_min, beta)
 
+    # soft two-sided bounds
     return s + (
         torch.log(-torch.expm1(-beta * (s - s_min)))
         - torch.log(-torch.expm1(-beta * (s_max - s)))
     ) / beta
 
 
+def _invert_softplus(s, beta):
+    return s + torch.log(-torch.expm1(-beta * s)) / beta
+
+
 def _check_bounds(s, s_min, s_max):
+    s = torch.as_tensor(s)
     if s_min is not None and torch.any(s < s_min):
         raise ValueError(f'Out of bounds: {s.min():f} < {s_min}')
     if s_max is not None and torch.any(s > s_max):
         raise ValueError(f'Out of bounds: {s.max():f} > {s_max}')
-
-
-def _invert_softplus(y, beta):
-    return y + torch.log(-torch.expm1(-beta * y)) / beta
 
