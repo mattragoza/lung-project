@@ -9,7 +9,6 @@ import warp.fem
 
 def build_residual_form(stress_func):
 
-    @wp.fem.integrand
     def residual_form(
         x: wp.fem.Sample,
         u: wp.fem.Field,
@@ -26,12 +25,15 @@ def build_residual_form(stress_func):
 
         return external - internal
 
-    return residual_form
+    name = f'{stress_func.func.__name__}_residual_form'
+    residual_form.__name__ = name
+    residual_form.__qualname__ = name
+
+    return wp.fem.integrand(residual_form)
 
 
 def build_jacobian_form(tangent_func):
 
-    @wp.fem.integrand
     def jacobian_form(
         x: wp.fem.Sample,
         u: wp.fem.Field,
@@ -43,7 +45,11 @@ def build_jacobian_form(tangent_func):
         tangent = tangent_func(x, u, du, mu, lam)
         return wp.ddot(tangent, wp.fem.grad(v, x))
 
-    return jacobian_form
+    name = f'{tangent_func.func.__name__}_jacobian_form'
+    jacobian_form.__name__ = name
+    jacobian_form.__qualname__ = name
+
+    return wp.fem.integrand(jacobian_form)
 
 
 # ----- linear elasticity model -----

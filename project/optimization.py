@@ -188,12 +188,16 @@ def run_optimization_steps(
 
     def closure() -> torch.Tensor:
         optimizer.zero_grad(set_to_none=True)
+
         loss = objective(param_dict(global_mean))
         loss.backward()
-        with torch.no_grad():
-            grad_norm = _compute_grad_norm(param_dict.parameters())
+
+        grad_norm = _compute_grad_norm(param_dict.parameters())
+        utils.log(f'  grad_norm = {grad_norm:.8e}')
+
         if not np.isfinite(grad_norm):
             raise RuntimeError(f'Non-finite loss gradient: {grad_norm}')
+
         return loss
 
     loss_history = []

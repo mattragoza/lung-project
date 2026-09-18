@@ -1,6 +1,13 @@
 # param_spec.py
 
+from typing import Optional
+
 import torch
+import torch.nn.functional as F
+
+
+def get_param_spec(**kwargs):
+    return ParameterSpec(**kwargs)
 
 
 class ParameterSpec:
@@ -8,72 +15,125 @@ class ParameterSpec:
     def __init__(
         self,
         mode: str = 'linear',
-        mean: float = 0.0,
-        std: float = 1.0,
-        min: float = None,
-        max: float = None,
-        eps: float = 1e-8
+        scale: float = 1.0,
+        v_loc: float = 0.0,
+        v_min: Optional[float] = None,
+        v_max: Optional[float] = None,
+        beta: Optional[float] = None
     ):
-        if mode not in {'linear', 'log10', 'logit', 'logit_log10'}:
-            raise ValueError(f'Invalid parameter mode: {mode}')
+        if mode not in {'linear', 'log10'}:
+            raise ValueError(f'Invalid parameter mode: {mode!r}')
 
-        if std <= 0:
-            raise ValueError(f'Invalid parameter std: {std}')
+        if scale <= 0:
+            raise ValueError(f'Parameter scale must be positive')
 
-        self.mode = mode
-        self.mean = mean
-        self.std = std
-        self.min = min
-        self.max = max
-        self.eps = eps
+        self.mode  = mode
+        self.scale = scale
+        self.v_loc = v_loc
+        self.v_min = v_min
+        self.v_max = v_max
+        self.beta  = beta
 
-    def encode(self, x):
+        self.s_min = _invert_transform(v_min, mode).item()
+        self.s_max = _invert_transform(v_max, mode).item()
+        self.s_loc = _invert_transform(v_loc, mode).item()
 
-        if self.mode == 'linear':
-            return (x - self.mean) / self.std
-
-        if self.mode == 'log10':
-            log_x = torch.log10(x.clamp_min(self.eps))
-            return (log_x - self.mean) / self.std
-
-        if self.mode == 'logit':
-            s = (x - self.min) / (self.max - self.min)
-            s = s.clamp(self.eps, 1 - self.eps)
-            logit = torch.log(s) - torch.log(1 - s)
-            return (logit - self.mean) / self.std
-
-        if self.mode == 'logit_log10':
-            log_x = torch.log10(x.clamp_min(self.eps))
-            s = (log_x - self.min) / (self.max - self.min)
-            logit = torch.log(s) - torch.log(1 - s)
-            return (logit - self.mean) / self.std
-
-        raise ValueError(f'Invalid parameter mode: {self.mode}')
+        self.shift = _invert_bounds(
+            self.s_loc,
+            self.s_min,
+            self.s_max,
+            beta
+        ).item()
 
     def decode(self, z):
+        q = _apply_affine(z, self.shift, self.scale)
+        s = _apply_bounds(q, self.s_min, self.s_max, self.beta)
+        return _apply_transform(s, self.mode)
 
-        if self.mode == 'linear':
-            x = self.mean + self.std * z
-            if self.min is not None or self.max is not None:
-                x = x.clamp(self.min, self.max)
-            return x
+    def encode(self, v):
+        s = _invert_transform(v, self.mode)
+        q = _invert_bounds(s, self.s_min, self.s_max, self.beta)
+        return _invert_affine(q, self.shift, self.scale)
 
-        if self.mode == 'log10':
-            log_x = self.mean + self.std * z
-            if self.min is not None or self.max is not None:
-                log_x = log_x.clamp(self.min, self.max)
-            return torch.pow(10, log_x)
 
-        if self.mode == 'logit':
-            logit = self.mean + self.std * z
-            s = torch.sigmoid(logit)
-            return self.min + (self.max - self.min) * s
+def _apply_transform(s, mode):
+    if s is None:
+        return None
+    s = torch.as_tensor(s)
+    if mode == 'log10':
+        return torch.pow(10, s)
+    return s
 
-        if self.mode == 'logit_log10':
-            logit = self.mean + self.std * z
-            s = torch.sigmoid(logit)
-            log_x = self.min + (self.max - self.min) * s
-            return torch.pow(10, log_x)
 
-        raise ValueError(f'Invalid parameter mode: {self.mode}')
+def _invert_transform(v, mode):
+    if v is None:
+        return None
+    v = torch.as_tensor(v)
+    if mode == 'log10':
+        return torch.log10(v)
+    return v
+
+
+def _apply_affine(z, shift, scale):
+    return shift + scale * z
+
+
+def _invert_affine(q, shift, scale):
+    return (q - shift) / scale
+
+
+def _apply_bounds(q, s_min, s_max, beta):
+    q = torch.as_tensor(q)
+
+    if s_min is None and s_max is None:
+        return q
+
+    if beta is None or beta <= 0:
+        return torch.clamp(q, s_min, s_max)
+
+    if s_min is None: # soft upper bound
+        return s_max - F.softplus(s_max - q, beta)
+
+    if s_max is None: # soft lower bound
+        return s_min + F.softplus(q - s_min, beta)
+
+    return (
+        s_min
+        + F.softplus(q - s_min, beta)
+        - F.softplus(q - s_max, beta)
+    )
+
+
+def _invert_bounds(s, s_min, s_max, beta):
+    s = torch.as_tensor(s)
+
+    if s_min is None and s_max is None:
+        return s
+
+    _check_bounds(s, s_min, s_max)
+
+    if beta is None or beta <= 0:
+        return s
+
+    if s_min is None: # soft upper bound
+        return s_max - _invert_softplus(s_max - s, beta)
+
+    if s_max is None: # soft lower bound
+        return s_min + _invert_softplus(s - s_min, beta)
+
+    return s + (
+        torch.log(-torch.expm1(-beta * (s - s_min)))
+        - torch.log(-torch.expm1(-beta * (s_max - s)))
+    ) / beta
+
+
+def _check_bounds(s, s_min, s_max):
+    if s_min is not None and torch.any(s < s_min):
+        raise ValueError(f'Out of bounds: {s.min():f} < {s_min}')
+    if s_max is not None and torch.any(s > s_max):
+        raise ValueError(f'Out of bounds: {s.max():f} > {s_max}')
+
+
+def _invert_softplus(y, beta):
+    return y + torch.log(-torch.expm1(-beta * y)) / beta
 
