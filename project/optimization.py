@@ -131,6 +131,9 @@ def run_optimization_trials(
             best_state = _clone_state(param_dict)
             best_loss = trial_loss
 
+    if best_state is None:
+        raise RuntimeError('All optimization trials failed.')
+
     utils.log(f'Best loss: {best_loss}')
     param_dict.load_state_dict(best_state)
 
