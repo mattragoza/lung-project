@@ -1,4 +1,4 @@
-# physics/warp/material
+# physics/warp/materials.py
 
 import warp as wp
 import warp.fem
