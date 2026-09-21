@@ -474,6 +474,24 @@ class WarpFEMSolver(PDESolver):
             output=reg
         )
 
+        wp.fem.integrate(
+            forms.TV_reg_form,
+            fields={'f': lam},
+            values={'eps_div': self.eps_div, 'eps_reg': self.eps_reg},
+            domain=self.interior,
+            output=reg,
+            add=True
+        )
+
+        wp.fem.integrate(
+            forms.TV_reg_form,
+            fields={'f': rho},
+            values={'eps_div': self.eps_div, 'eps_reg': self.eps_reg},
+            domain=self.interior,
+            output=reg,
+            add=True
+        )
+
         loss = num / (den + self.eps_div) + self.tv_reg_weight * reg
         loss.requires_grad = True
 

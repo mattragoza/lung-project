@@ -47,12 +47,16 @@ class ParameterSpec:
         self.v_max = v_max
         self.beta  = beta
 
-        if mode == 'log10' and v_min == 0:
+        if mode == 'log10' and v_min == 0 or v_min is None:
             self.s_min = None
-        else:
+        elif v_min is not None:
             self.s_min = _invert_transform(v_min, mode).item()
 
-        self.s_max = _invert_transform(v_max, mode).item()
+        if v_max is not None:
+            self.s_max = _invert_transform(v_max, mode).item()
+        else:
+            self.s_max = None
+
         self.s_loc = _invert_transform(v_loc, mode).item()
 
         self.shift = _invert_bounds(
