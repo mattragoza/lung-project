@@ -178,7 +178,7 @@ class WarpFEMSolver(PDESolver):
         )
 
     def init_unknown_field(self, u_bc, requires_grad=False):
-        u0 = self.P @ u_bc.dof_values
+        u0 = self.P @ u_bc.dof_values # project BC values
         return self.init_vector_field(u0, requires_grad)
 
     # ----- public solver interface -----
@@ -372,7 +372,7 @@ class WarpFEMSolver(PDESolver):
 
     # ----- internal assembly methods -----
 
-    def assemble_residual(self, mu, lam, rho, u, requires_grad=None):
+    def assemble_residual(self, mu, lam, rho, u, requires_grad=False):
         res = self.init_vector_field(requires_grad=requires_grad)
 
         wp.fem.integrate(
@@ -468,7 +468,7 @@ class WarpFEMSolver(PDESolver):
 
         wp.fem.integrate(
             forms.TV_reg_form,
-            fields={'mu': mu},
+            fields={'f': mu},
             values={'eps_div': self.eps_div, 'eps_reg': self.eps_reg},
             domain=self.interior,
             output=reg

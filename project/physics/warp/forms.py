@@ -328,8 +328,23 @@ def squared_norm_form(
 
 
 @wp.fem.integrand
-def TV_reg_form(x: wp.fem.Sample, mu: wp.fem.Field, eps_reg: float, eps_div: float):
-    '''Smooth TV penalty on log-parameter gradient.'''
-    grad_mu = wp.fem.grad(mu, x) / (mu(x) + eps_div)
-    return wp.sqrt(wp.dot(grad_mu, grad_mu) + eps_reg * eps_reg)
+def volume_form(x: wp.fem.Sample, w: wp.fem.Field):
+    return w(x)
+
+
+@wp.fem.integrand
+def TV_reg_form(
+    x: wp.fem.Sample,
+    f: wp.fem.Field,
+    eps_reg: float,
+    eps_div: float
+):
+    '''
+    Smooth penalty on L2 norm of log-parameter gradient.
+    '''
+    grad_log_f = wp.fem.grad(f, x) / (f(x) + eps_div)
+
+    return wp.sqrt(
+        wp.dot(grad_log_f, grad_log_f) + eps_reg * eps_reg
+    )
 

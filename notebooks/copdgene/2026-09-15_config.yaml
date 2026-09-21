@@ -89,7 +89,13 @@ preprocessing:
 
 optimization:
     parameters:
-        E: {"mode": "log10", "mean": 3.301, "std": 1.0}
+        E: {
+            "mode": "log10",
+            "scale": 1.0,
+            "v_loc": 2.e3,
+            "v_min": 0.0,
+            "v_max": 1.e5
+        }
     pde_solver:
         type: "warp"
         material_type: "linear"
@@ -101,7 +107,7 @@ optimization:
         type: "LBFGS"
         num_trials: 10
         init_scale: 0.1
-        global_steps: 0
+        global_steps: 10
         local_steps: 100
         rtol: 1.e-5
         max_iter: 1
