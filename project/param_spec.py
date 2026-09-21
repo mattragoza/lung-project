@@ -24,8 +24,21 @@ class ParameterSpec:
         if mode not in {'linear', 'log10'}:
             raise ValueError(f'Invalid parameter mode: {mode!r}')
 
+        if mode == 'log10':
+            if v_min is not None and v_min < 0:
+                raise ValueError(f'v_min must be positive for log10 mode')
+
+            if v_max is not None and v_max <= 0:
+                raise ValueError(f'v_max must be positive for log10 mode')
+
+            if v_loc <= 0:
+                raise ValueError(f'v_loc must be positive for log10 mode')
+
         if scale <= 0:
-            raise ValueError(f'Parameter scale must be positive')
+            raise ValueError(f'scale must be positive')
+
+        if beta is not None and beta <= 0:
+            raise ValueError(f'beta must be positive')
 
         self.mode  = mode
         self.scale = scale # NOTE: this also scales the gradient!
@@ -59,23 +72,6 @@ class ParameterSpec:
         return _invert_affine(q, self.shift, self.scale)
 
 
-def _apply_transform(s, mode):
-    if s is None:
-        return None
-    s = torch.as_tensor(s)
-    if mode == 'log10':
-        return torch.pow(10, s)
-    return s
-
-
-def _invert_transform(v, mode):
-    if v is None:
-        return None
-    v = torch.as_tensor(v)
-    if mode == 'log10':
-        return torch.log10(v)
-    return v
-
 
 def _apply_affine(z, shift, scale):
     return shift + scale * z
@@ -91,7 +87,7 @@ def _apply_bounds(q, s_min, s_max, beta):
     if s_min is None and s_max is None:
         return q
 
-    if beta is None or beta <= 0: # hard
+    if beta is None: # hard bounds
         return torch.clamp(q, s_min, s_max)
 
     if s_min is None: # soft upper bound
@@ -116,7 +112,7 @@ def _invert_bounds(s, s_min, s_max, beta):
 
     _check_bounds(s, s_min, s_max)
 
-    if beta is None or beta <= 0: # hard
+    if beta is None: # hard bounds
         return s
 
     if s_min is None: # soft upper bound
@@ -142,4 +138,22 @@ def _check_bounds(s, s_min, s_max):
         raise ValueError(f'Out of bounds: {s.min():f} < {s_min}')
     if s_max is not None and torch.any(s > s_max):
         raise ValueError(f'Out of bounds: {s.max():f} > {s_max}')
+
+
+def _apply_transform(s, mode):
+    if s is None:
+        return None
+    s = torch.as_tensor(s)
+    if mode == 'log10':
+        return torch.pow(10, s)
+    return s
+
+
+def _invert_transform(v, mode):
+    if v is None:
+        return None
+    v = torch.as_tensor(v)
+    if mode == 'log10':
+        return torch.log10(v)
+    return v
 
