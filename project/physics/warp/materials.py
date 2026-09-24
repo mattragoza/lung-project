@@ -12,11 +12,11 @@ def _resolve_material_type(name: str):
     if key in {'linearelastic', 'linear', 'le'}:
         return LinearElasticMaterial
 
-    elif key in {'stvenantkirchoff', 'stvk', 'vk'}:
-        return StVenantKirchoffMaterial
+    elif key in {'stvenantkirchhoff', 'stvk', 'vk'}:
+        return StVenantKirchhoffMaterial
 
     elif key in {'neohookean', 'neoh', 'nh'}:
-        return NeoHookeanMaterial
+        return CiarletNeoHookeanMaterial
 
     elif key in {'yeohhyperelastic', 'yeoh', 'yh'}:
         return YeohHyperElasticMaterial
@@ -36,38 +36,38 @@ class LinearElasticMaterial(WarpMaterial):
     is_linear = True
 
     stress_func = forms.linear_elastic_stress
-    tangent_func = forms.linear_elastic_tangent
-
     residual_form = forms.build_residual_form(stress_func)
-    jacobian_form = forms.build_jacobian_form(tangent_func)
+    jacobian_form = forms.build_jacobian_form(stress_func)
 
 
-class StVenantKirchoffMaterial(WarpMaterial):
+class StVenantKirchhoffMaterial(WarpMaterial):
     is_linear = False
 
-    stress_func = forms.st_venant_kirchoff_stress
-    tangent_func = forms.st_venant_kirchoff_tangent
-
+    stress_func = forms.st_venant_kirchhoff_stress
     residual_form = forms.build_residual_form(stress_func)
-    jacobian_form = forms.build_jacobian_form(tangent_func)
+    jacobian_form = forms.build_jacobian_form(stress_func)
 
 
-class NeoHookeanMaterial(WarpMaterial):
+class CiarletNeoHookeanMaterial(WarpMaterial):
     is_linear = False
 
-    stress_func = forms.neo_hookean_stress
-    tangent_func = forms.neo_hookean_tangent
-
+    stress_func = forms.ciarlet_neohookean_stress
     residual_form = forms.build_residual_form(stress_func)
-    jacobian_form = forms.build_jacobian_form(tangent_func)
+    jacobian_form = forms.build_jacobian_form(stress_func)
+
+
+class DecoupledNeoHookeanMaterial(WarpMaterial):
+    is_linear = False
+
+    stress_func = forms.decoupled_neohookean_stress
+    residual_form = forms.build_residual_form(stress_func)
+    jacobian_form = forms.build_jacobian_form(stress_func)
 
 
 class YeohHyperElasticMaterial(WarpMaterial):
     is_linear = False
 
     stress_func = forms.yeoh_hyperelastic_stress
-    tangent_func = forms.yeoh_hyperelastic_tangent
-
     residual_form = forms.build_residual_form(stress_func)
-    jacobian_form = forms.build_jacobian_form(tangent_func)
+    jacobian_form = forms.build_jacobian_form(stress_func)
 
