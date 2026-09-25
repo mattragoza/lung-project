@@ -260,3 +260,10 @@ def TV_reg_form(
         wp.dot(grad_log_f, grad_log_f) + eps_reg * eps_reg
     )
 
+
+@wp.fem.integrand
+def det_F_form(x: wp.fem.Sample, u: wp.fem.Field):
+    I = wp.identity(3, float)
+    F = I + wp.fem.grad(u, x)
+    return wp.determinant(F)
+

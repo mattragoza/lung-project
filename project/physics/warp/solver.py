@@ -60,11 +60,12 @@ class WarpFEMSolver(PDESolver):
         eps_reg: float = 1e-3,  # avoids non-diffability
         eps_div: float = 1e-6,  # avoids division by zero
         newton_steps: int = 100,
+        newton_atol: float = 1e-5,
+        newton_rtol: float = 1e-5,
         newton_tries: int = 32,    # backtracking attempts
         newton_alpha: float = 1.0, # initial step size
         newton_beta: float = 0.5,  # backtracking factor
-        newton_rtol: float = 1e-5,
-        cg_maxiter: int = 1000,
+        cg_maxiter: int = 0,
         cg_rtol: float = 1e-5,
         scalar_degree: int = 1,
         vector_degree: int = 1,
@@ -85,14 +86,17 @@ class WarpFEMSolver(PDESolver):
 
         # Newton's method settings
         self.newton_steps = int(newton_steps)
+        self.newton_atol = float(newton_atol)
+        self.newton_rtol = float(newton_rtol)
+
+        # adaptive step size / line search
         self.newton_tries = int(newton_tries)
         self.newton_alpha = float(newton_alpha)
         self.newton_beta = float(newton_beta)
-        self.newton_rtol = float(newton_rtol)
 
-        # conjugate gradient settings
-        self.cg_maxiter = int(cg_maxiter)
-        self.cg_rtol = float(cg_rtol)
+        # conjugate gradient / GMRES settings
+        self.krylov_maxiter = int(cg_maxiter)
+        self.krylov_rtol = float(cg_rtol)
 
         # field representation settings
         self.scalar_degree = int(scalar_degree)
@@ -139,6 +143,9 @@ class WarpFEMSolver(PDESolver):
             self.V = wp.fem.make_polynomial_space(
                 self.geometry, self.vector_dtype, degree=self.vector_degree
             )
+            self.Q0 = wp.fem.make_polynomial_space( # for evaluating det F
+                self.geometry, self.scalar_dtype, degree=0
+            )
 
             self.u_interior = wp.fem.make_trial(self.V, domain=self.interior)
             self.u_boundary = wp.fem.make_trial(self.V, domain=self.boundary)
@@ -153,15 +160,15 @@ class WarpFEMSolver(PDESolver):
 
     # ----- physical field initialization -----
 
-    def init_scalar_field(self, values=None, requires_grad=None):
+    def init_scalar_field(self, *args, **kwargs):
         if not self._geometry_initialized:
             raise RuntimeError('Geometry not initialized')
-        return _init_warp_field(self.S, values, requires_grad)
+        return _init_warp_field(self.S, *args, **kwargs)
 
-    def init_vector_field(self, values=None, requires_grad=None):
+    def init_vector_field(self, *args, **kwargs):
         if not self._geometry_initialized:
             raise RuntimeError('Geometry not initialized')
-        return _init_warp_field(self.V, values, requires_grad)
+        return _init_warp_field(self.V, *args, **kwargs)
 
     def init_input_fields(self, mu, lam, rho, u_bc):
         return (
@@ -187,9 +194,8 @@ class WarpFEMSolver(PDESolver):
 
         with wp.ScopedDevice(self.device):
             mu, lam, rho, u_bc = self.init_input_fields(mu, lam, rho, u_bc)
-
-            u_sim = self.init_unknown_field(u_bc)
-            self.solve_forward_system(mu, lam, rho, u_sim)
+            u_sim = self.init_unknown_field(u_bc, requires_grad=False)
+            self.solve_forward_system(mu, lam, rho, u_bc, u_sim)
 
         return wp.to_torch(u_sim.dof_values)
 
@@ -197,9 +203,8 @@ class WarpFEMSolver(PDESolver):
 
         with wp.ScopedDevice(self.device):
             mu, lam, rho, u_bc = self.init_input_fields(mu, lam, rho, u_bc)
-
             u_sim = self.init_unknown_field(u_bc, requires_grad=True)
-            J, M = self.solve_forward_system(mu, lam, rho, u_sim)
+            J, M = self.solve_forward_system(mu, lam, rho, u_bc, u_sim)
 
             tape = wp.Tape()
             with tape:
@@ -247,15 +252,15 @@ class WarpFEMSolver(PDESolver):
 
     # ----- solving systems of equations -----
 
-    def solve_forward_system(self, mu, lam, rho, u):
+    def solve_forward_system(self, mu, lam, rho, u_bc, u_sim):
         if self.material.is_linear:
-            return self.solve_linear_system(mu, lam, rho, u)
-        return self.solve_newton_method(mu, lam, rho, u)
+            return self.solve_linear_system(mu, lam, rho, u_sim)
+        return self.solve_newton_method(mu, lam, rho, u_sim)
 
     def solve_linear_system(self, mu, lam, rho, u):
 
-        r = self.assemble_residual(mu, lam, rho, u)
-        J = self.assemble_jacobian(mu, lam, u)
+        r = self.assemble_residual(mu, lam, rho, u, linear=True)
+        J = self.assemble_jacobian(mu, lam, u, linear=True)
 
         self.project_linear_system(J, r.dof_values)
         M = wp.optim.linear.preconditioner(J, ptype='diag')
@@ -267,8 +272,8 @@ class WarpFEMSolver(PDESolver):
             x=du.dof_values,
             b=r.dof_values,
             M=M,
-            tol=self.cg_rtol,
-            maxiter=self.cg_maxiter
+            tol=self.krylov_rtol,
+            maxiter=self.krylov_maxiter
         )
 
         if not np.isfinite(cg_ares):
@@ -286,8 +291,8 @@ class WarpFEMSolver(PDESolver):
             x=r.dof_values.grad,
             b=u.dof_values.grad,
             M=M,
-            tol=self.cg_rtol,
-            maxiter=self.cg_maxiter
+            tol=self.krylov_rtol,
+            maxiter=self.krylov_maxiter
         )
 
         if not np.isfinite(cg_ares):
@@ -295,88 +300,241 @@ class WarpFEMSolver(PDESolver):
 
     # ----- solving nonlinear systems -----
 
-    def solve_newton_method(self, mu, lam, rho, u):
-        base_ares = None # initial residual norm
+    def solve_incremental(self, mu, lam, rho, u_bc, u_curr):
+
+        # set initial displacement
+        u_curr.dof_values.zero_()
+
+        # BC values to apply incrementally
+        bc_values = self.P @ u_bc.dof_values
+
+        state = 0.0
+        delta = 1.0
+        min_delta = 1e-3
+
+        while state < 1.0:
+            delta = min(state + delta, 1.0) - state
+
+            print(f'Attempting incremental Newton solve: {state} -> {state + delta}')
+
+            # save previously converged displacement
+            u_prev = self.init_vector_field(u_curr.dof_values)
+
+            # apply boundary condition increment
+            u_curr.dof_values += delta * bc_values
+
+            try:
+                J, M = self.solve_newton_method(mu, lam, rho, u_curr)
+
+            except RuntimeError as e:
+                print(f'FAILED: {e}', flush=True)
+
+                # revert to previous displacement
+                _copy_warp_array(u_prev.dof_values, u_curr.dof_values)
+
+                # reduce increment size
+                delta = delta * 0.5
+
+                if delta < min_delta:
+                    break
+
+                continue
+
+            # successful
+            state += delta
+            delta *= 2.0
+
+        if state < 1.0:
+            raise RuntimeError(f'Incremental solve failed at {state * 100:.2f}%')
+
+        return J, M
+
+    def solve_newton_method(self, mu, lam, rho, u, strict=False):
+        init_norm = None # initial residual norm
+
+        def _fail(msg):
+            raise RuntimeError(msg)
 
         for step in range(self.newton_steps):
+            det_F = wp.to_torch(self.interpolate_det_F(u).dof_values).min().item()
+
+            if strict and det_F <= 0: # current state must be admissible
+                _fail(f'Invalid state at Newton step {step + 1} (det_F = {det_F:.4f})')
+
+            # evaluate PDE residual at current state
             r = self.assemble_residual(mu, lam, rho, u)
             J = self.assemble_jacobian(mu, lam, u)
 
             self.project_linear_system(J, r.dof_values)
             M = wp.optim.linear.preconditioner(J, ptype='diag')
 
-            ares = _warp_array_norm(r.dof_values)
-            if base_ares is None:
-                base_ares = ares + self.eps_div
+            # compute absolute PDE residual norm
+            curr_norm = _warp_array_norm(r.dof_values)
 
-            rres = ares / base_ares
-            if rres < self.newton_rtol:
-                if self.verbose:
-                    print(f'Newton solver converged at step {step + 1}.')
-                break
+            if not np.isfinite(curr_norm):
+                _fail(f'Non-finite PDE residual at Newton step {step + 1}')
 
+            if init_norm is None:
+                init_norm = max(curr_norm, 1e-12)
+
+            # compute absolute PDE residual norm
+            relative_norm = curr_norm / init_norm
+
+            if curr_norm < max(self.newton_atol, self.newton_rtol * init_norm):
+                print(f'Newton solver converged (PDE ares = {curr_norm:.4e})')
+                return J, M
+
+            # solve linear system for state update direction
             du = self.init_vector_field()
 
-            cg_iter, cg_ares, cg_atol = wp.optim.linear.gmres(
+            gmres_iter, gmres_ares, gmres_atol = wp.optim.linear.gmres(
                 A=J,
                 x=du.dof_values,
                 b=r.dof_values,
                 M=M,
-                tol=self.cg_rtol,
-                maxiter=self.cg_maxiter
+                tol=self.krylov_rtol,
+                maxiter=self.krylov_maxiter
             )
 
-            if not np.isfinite(cg_ares):
-                raise RuntimeError(f'Non-finite residual at Newton step {step + 1}')
+            if not np.isfinite(gmres_ares):
+                _fail(f'Non-finite GMRES residual at Newton step {step + 1}')
 
-            alpha = self.adaptive_step_size(mu, lam, rho, u, du, ares)
+            alpha = self.adaptive_step_size(mu, lam, rho, u, du, curr_norm, strict)
 
-            if alpha <= 0:
+            if alpha is None:
                 raise RuntimeError(f'Line search failed at Newton step {step + 1}')
 
             if self.verbose:
-                cg_rres = cg_ares / cg_atol * self.cg_rtol
+                gmres_rres = gmres_ares / gmres_atol * self.krylov_rtol
 
                 print(
-                    f'Newton step {step + 1}: '
-                    f'cg_iter = {cg_iter:d} '
-                    f'cg_rres = {cg_rres:.2e} '
-                    f'nm_ares = {ares:.2e} '
-                    f'nm_rres = {rres:.2e} '
-                    f'alpha = {alpha:.2e}'
+                    f'[step {step + 1}] '
+                    f'det_F = {det_F:.4f}  '
+                    f'PDE ares = {curr_norm:.4e}  '
+                    f'PDE rres = {relative_norm:.4e}  '
+                    f'gmres_iter = {gmres_iter:d}  '
+                    f'gmres_atol = {gmres_atol:.4e}  '
+                    f'gmres_rres = {gmres_rres:.4e}  '
+                    f'alpha = {alpha:.4e}'
                 )
 
             u.dof_values += alpha * du.dof_values
 
-        return J, M
+        _fail(f'Newton solver failed to converge in {self.newton_steps} steps')
 
-    def adaptive_step_size(self, mu, lam, rho, u, du, init_norm):
-        alpha = self.newton_alpha # initial step size
+    def adaptive_step_size(self, mu, lam, rho, u, du, init_norm, strict=False):
+        if self.newton_tries < 1:
+            return self.newton_alpha
 
-        u_curr = self.init_vector_field()
+        curr_alpha = self.newton_alpha
+        best_alpha = best_norm = None
+
+        u_trial = self.init_vector_field()
+
         for t in range(self.newton_tries):
 
-            _copy_warp_array(u.dof_values, u_curr.dof_values)
-            u_curr.dof_values += alpha * du.dof_values
+            _copy_warp_array(u.dof_values, u_trial.dof_values)
+            u_trial.dof_values += curr_alpha * du.dof_values
 
-            r = self.assemble_residual(mu, lam, rho, u_curr)
+            r = self.assemble_residual(mu, lam, rho, u_trial)
             r.dof_values -= self.P @ r.dof_values
 
             curr_norm = _warp_array_norm(r.dof_values)
-            if np.isfinite(curr_norm) and curr_norm < init_norm:
-                return alpha
 
-            alpha = alpha * self.newton_beta # backtracking factor
+            if self.verbose:
+                print(f'  [trial {t+1}] alpha = {curr_alpha:.4e}  diff = {curr_norm - init_norm:.4e}')
 
-        return 0.0
+            if strict: # check admissibility
+                det_F = wp.to_torch(
+                    self.interpolate_det_F(u_trial).dof_values
+                ).min().item()
+
+                if det_F > 0 and curr_norm < init_norm:
+                    return curr_alpha
+
+            elif curr_norm < init_norm:
+                return curr_alpha
+
+            if best_norm is None or curr_norm < best_norm:
+                best_norm = curr_norm
+                best_alpha = curr_alpha
+
+            curr_alpha *= self.newton_beta
+
+        return best_alpha if not strict else None
+
+    def interpolate_det_F(self, u):
+        out = self.Q0.make_field()
+        wp.fem.interpolate(forms.det_F_form, fields={'u': u}, dest=out)
+        return out
+
+    def diagnose_min_det_F(self, u):
+        det_F = wp.to_torch(
+            self.interpolate_det_F(u).dof_values
+        ).detach().cpu().flatten()
+
+        cell_idx = int(torch.argmin(det_F))
+        min_J = float(det_F[cell_idx])
+
+        cell = self.cells[cell_idx]
+        boundary = self.boundary_mask[cell]
+
+        X = self.verts[cell]
+
+        u_vals = wp.to_torch(u.dof_values).detach().cpu()
+        U = u_vals[cell]
+
+        x = X + U
+
+        def tet_volume(p):
+            D = torch.stack([
+                p[1] - p[0],
+                p[2] - p[0],
+                p[3] - p[0],
+            ], dim=1)
+            return torch.det(D) / 6.0
+
+        V = tet_volume(X)
+        v = tet_volume(x)
+
+        print()
+        print("----- min det(F) diagnostic -----")
+        print(f"cell       : {cell_idx}")
+        print(f"vertices   : {cell.tolist()}")
+        print(f"min J      : {min_J:.8e}")
+        print(f"V          : {V.item():.8e}")
+        print(f"v          : {v.item():.8e}")
+        print(f"v / V      : {(v / V).item():.8e}")
+
+        print("reference positions:")
+        print(X.numpy())
+
+        print("displacements:")
+        print(U.numpy())
+
+        print("deformed positions:")
+        print(x.numpy())
+
+        print(f'boundary vertices: {boundary.tolist()}')
+        print(f'n boundary verts : {boundary.sum().item()} / 4')
+
+        print("---------------------------------")
+        print()
+
+        return cell_idx, min_J
 
     # ----- internal assembly methods -----
 
-    def assemble_residual(self, mu, lam, rho, u, requires_grad=False):
+    def assemble_residual(self, mu, lam, rho, u, requires_grad=False, linear=False):
         res = self.init_vector_field(requires_grad=requires_grad)
 
+        if linear:
+            residual_form = materials.LE.residual_form
+        else:
+            residual_form = self.material.residual_form
+
         wp.fem.integrate(
-            self.material.residual_form,
+            residual_form,
             fields={
                 'u': u,
                 'v': self.v_interior,
@@ -391,10 +549,15 @@ class WarpFEMSolver(PDESolver):
 
         return res
 
-    def assemble_jacobian(self, mu, lam, u):
+    def assemble_jacobian(self, mu, lam, u, linear=False):
+
+        if linear:
+            jacobian_form = materials.LE.jacobian_form
+        else:
+            jacobian_form = self.material.jacobian_form
 
         J = wp.fem.integrate(
-            self.material.jacobian_form,
+            jacobian_form,
             fields={
                 'u': u,
                 'v': self.v_interior,
@@ -534,4 +697,10 @@ def rasterize_field(src: wp.fem.Field, shape, bounds, background=0.0):
     wp.fem.interpolate(src_nc, dest=dst)
 
     return wp.to_torch(dst.dof_values).reshape(I, J, K, C).permute(3,0,1,2)
+
+
+
+def _get_boundary_mask(verts, cells):
+    from ...common.transforms import get_surface_mask
+    return torch.as_tensor(get_surface_mask(verts.numpy(), cells.numpy()))
 

@@ -71,3 +71,5 @@ class YeohHyperElasticMaterial(WarpMaterial):
     residual_form = forms.build_residual_form(stress_func)
     jacobian_form = forms.build_jacobian_form(stress_func)
 
+
+LE = LinearElasticMaterial
