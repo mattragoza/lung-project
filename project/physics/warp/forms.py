@@ -154,11 +154,11 @@ def decoupled_neohookean_stress(F: wp.mat33, mu: float, lam: float):
     F_inv_T = wp.transpose(wp.inverse(F))
 
     I1 = wp.ddot(F, F)
-    J_neg_23 = wp.pow(J, -2/3)
+    J_neg_23 = wp.pow(J, -2./3.)
 
-    G, K = mu, lam + (2/3) * mu
+    G, K = mu, lam + (2./3.) * mu
 
-    H = F - (I1 / 3) * F_inv_T
+    H = F - (I1 / 3.) * F_inv_T
     P_iso = G * J_neg_23 * H
     P_vol = K * J * (J - 1.) * F_inv_T
 
@@ -173,7 +173,7 @@ def yeoh_hyperelastic_stress(
     F: wp.mat33,
     mu: float,
     lam: float,
-    a2: float = 0.0,
+    a2: float = 8.6, # ref: https://www.frontiersin.org/journals/physiology/articles/10.3389/fphys.2026.1818153/full
     a3: float = 0.0
 ):
     # strain energy density:
@@ -185,21 +185,21 @@ def yeoh_hyperelastic_stress(
     F_inv_T = wp.transpose(wp.inverse(F))
 
     I1 = wp.ddot(F, F)
-    J_neg_23 = wp.pow(J, -2/3)
+    J_neg_23 = wp.pow(J, -2./3.)
     I1_bar = J_neg_23 * I1
 
-    G, K = mu, lam + (2/3) * mu
+    G, K = mu, lam + (2./3.) * mu
 
-    C1 = G / 2.0
+    C1 = G / 2.
     C2 = a2 * C1
     C3 = a3 * C1
-    D1 = K / 2.0
+    D1 = K / 2.
 
     q = (I1_bar - 3.)
-    phi = C1 + 2.0 * C2 * q + 3.0 * C3 * q**2
-    G_term = 2.0 * phi
+    phi = C1 + 2. * C2 * q + 3. * C3 * q*q
+    G_term = 2. * phi
 
-    H = F - (I1 / 3) * F_inv_T
+    H = F - (I1 / 3.) * F_inv_T
     P_iso = G_term * J_neg_23 * H
     P_vol = K * J * (J - 1.) * F_inv_T
 
