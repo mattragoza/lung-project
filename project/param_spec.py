@@ -10,6 +10,11 @@ def get_param_spec(**kwargs):
     return ParameterSpec(**kwargs)
 
 
+def maybe_float(value):
+    if value is not None:
+        return float(value)
+
+
 class ParameterSpec:
 
     def __init__(
@@ -23,6 +28,12 @@ class ParameterSpec:
     ):
         if mode not in {'linear', 'log10'}:
             raise ValueError(f'Invalid parameter mode: {mode!r}')
+
+        scale = maybe_float(scale)
+        v_loc = maybe_float(v_loc)
+        v_min = maybe_float(v_min)
+        v_max = maybe_float(v_max)
+        beta = maybe_float(beta)
 
         if mode == 'log10':
             if v_min is not None and v_min < 0:

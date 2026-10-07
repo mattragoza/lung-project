@@ -12,7 +12,8 @@ def interpolate_mesh_fields(
     mask: np.ndarray,
     fields: Dict[str, np.ndarray],
     affine: np.ndarray,
-    interp_kws: Dict[str, Any]
+    interp_kws: Dict[str, Any],
+    disp_key: str
 ) -> 'meshio.Mesh':
     '''
     Interpolate voxel fields at mesh nodes and cell centers.
@@ -37,8 +38,13 @@ def interpolate_mesh_fields(
         array = np.asarray(array)
         if array.ndim not in {3, 4}:
             raise ValueError(f'Invalid field shape for {name!r}: {array.shape}')
-        mesh.point_data[name] = interpolate_masked(array, mask, node_voxels, **interp_kws)
-        mesh.cell_data[name] = [interpolate_masked(array, mask, cell_voxels, **interp_kws)]
+
+        if name == disp_key:
+            mesh.point_data[name] = interpolate_array(array, node_voxels, **interp_kws)
+            mesh.cell_data[name] = [interpolate_array(array, cell_voxels, **interp_kws)]
+        else:
+            mesh.point_data[name] = interpolate_masked(array, mask, node_voxels, **interp_kws)
+            mesh.cell_data[name] = [interpolate_masked(array, mask, cell_voxels, **interp_kws)]
 
     return mesh
 

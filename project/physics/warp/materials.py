@@ -18,10 +18,18 @@ def _resolve_material_type(name: str):
     elif key in {'neohookean', 'neoh', 'nh'}:
         return CiarletNeoHookeanMaterial
 
+    elif key in {'decoupledneohookean', 'decoup', 'dn'}:
+        return DecoupledNeoHookeanMaterial
+
     elif key in {'yeohhyperelastic', 'yeoh', 'yh'}:
         return YeohHyperElasticMaterial
 
     raise ValueError(f'Invalid material type: {name!r}')
+
+
+def get_material(name, **kwargs):
+    cls = WarpMaterial.get_subclass(name)
+    return cls(**kwargs)
 
 
 class WarpMaterial:

@@ -4,6 +4,23 @@ import numpy as np
 import torch
 
 
+def interpolate_masked(volume, mask, points, **kwargs):
+    mask = np.asarray(mask, dtype=float)
+
+    if volume.ndim == 4:
+        mask = mask[...,None]
+
+    numer = interpolate_array(volume * mask, points, **kwargs)
+    denom = interpolate_array(mask, points, **kwargs)
+
+    eps = 1e-8
+    n_bad_points = np.sum(denom < eps)
+    if n_bad_points > 0:
+        utils.warn(f'WARNING: Interpolation points outside domain: {n_bad_points}')
+
+    return numer / np.maximum(denom, eps)
+
+
 def interpolate_array(
     volume: np.ndarray,
     points: np.ndarray,

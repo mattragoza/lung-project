@@ -359,7 +359,7 @@ def interpolate_mesh_fields(
 
     utils.log('Interpolating voxel fields onto mesh')
     mesh = field_interpolation.interpolate_mesh_fields(
-        mesh, mask, fields, nifti.affine, interp_kws,
+        mesh, mask, fields, nifti.affine, interp_kws, disp_key
     )
 
     fileio.save_meshio(output_path, mesh)

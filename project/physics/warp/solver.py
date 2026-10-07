@@ -59,10 +59,10 @@ class WarpFEMSolver(PDESolver):
         tv_reg_weight: float = 1e-4,
         eps_reg: float = 1e-3,  # avoids non-diffability
         eps_div: float = 1e-6,  # avoids division by zero
-        newton_steps: int = 100,
+        newton_iters: int = 100,
         newton_atol: float = 1e-5,
         newton_rtol: float = 1e-5,
-        newton_tries: int = 32,    # backtracking attempts
+        newton_evals: int = 32,    # backtracking attempts
         newton_alpha: float = 1.0, # initial step size
         newton_beta: float = 0.5,  # backtracking factor
         cg_maxiter: int = 0,
@@ -72,9 +72,10 @@ class WarpFEMSolver(PDESolver):
         scalar_dtype = wp.float32,
         vector_dtype = wp.vec3f,
         device: str = 'cuda',
+        strict: bool = False,
         verbose: bool = False
     ):
-        self.material = materials.WarpMaterial.get_subclass(material_type)
+        self.material = materials.get_material(material_type)
         self.g_vector = g_vector
 
         # objective function
@@ -85,12 +86,12 @@ class WarpFEMSolver(PDESolver):
         self.eps_div = float(eps_div)
 
         # Newton's method settings
-        self.newton_steps = int(newton_steps)
+        self.newton_iters = int(newton_iters)
         self.newton_atol = float(newton_atol)
         self.newton_rtol = float(newton_rtol)
 
         # adaptive step size / line search
-        self.newton_tries = int(newton_tries)
+        self.newton_evals = int(newton_evals)
         self.newton_alpha = float(newton_alpha)
         self.newton_beta = float(newton_beta)
 
@@ -106,6 +107,7 @@ class WarpFEMSolver(PDESolver):
         self.vector_dtype = vector_dtype
 
         self.device = device or wp.get_device(device)
+        self.strict = strict
         self.verbose = verbose
 
         self._geometry_initialized = False
@@ -253,9 +255,10 @@ class WarpFEMSolver(PDESolver):
     # ----- solving systems of equations -----
 
     def solve_forward_system(self, mu, lam, rho, u_bc, u_sim):
-        if self.material.is_linear:
-            return self.solve_linear_system(mu, lam, rho, u_sim)
-        return self.solve_newton_method(mu, lam, rho, u_sim)
+        J, M = self.solve_linear_system(mu, lam, rho, u_sim)
+        if not self.material.is_linear:
+            J, M = self.solve_newton_method(mu, lam, rho, u_sim)
+        return J, M
 
     def solve_linear_system(self, mu, lam, rho, u):
 
@@ -349,17 +352,17 @@ class WarpFEMSolver(PDESolver):
 
         return J, M
 
-    def solve_newton_method(self, mu, lam, rho, u, strict=False):
+    def solve_newton_method(self, mu, lam, rho, u):
         init_norm = None # initial residual norm
 
         def _fail(msg):
             raise RuntimeError(msg)
 
-        for step in range(self.newton_steps):
+        for it in range(self.newton_iters):
             det_F = wp.to_torch(self.interpolate_det_F(u).dof_values).min().item()
 
-            if strict and det_F <= 0: # current state must be admissible
-                _fail(f'Invalid state at Newton step {step + 1} (det_F = {det_F:.4f})')
+            if self.strict and det_F <= 0: # current state must be admissible
+                _fail(f'Invalid state at Newton iteration {it + 1} (det_F = {det_F:.4f})')
 
             # evaluate PDE residual at current state
             r = self.assemble_residual(mu, lam, rho, u)
@@ -372,7 +375,7 @@ class WarpFEMSolver(PDESolver):
             curr_norm = _warp_array_norm(r.dof_values)
 
             if not np.isfinite(curr_norm):
-                _fail(f'Non-finite PDE residual at Newton step {step + 1}')
+                _fail(f'Non-finite PDE residual at Newton iteration {it + 1}')
 
             if init_norm is None:
                 init_norm = max(curr_norm, 1e-12)
@@ -381,7 +384,7 @@ class WarpFEMSolver(PDESolver):
             relative_norm = curr_norm / init_norm
 
             if curr_norm < max(self.newton_atol, self.newton_rtol * init_norm):
-                print(f'Newton solver converged (PDE ares = {curr_norm:.4e})')
+                print(f'Newton solver converged (PDE ares = {curr_norm:.4e}, det_F = {det_F:.4f})')
                 return J, M
 
             # solve linear system for state update direction
@@ -396,63 +399,59 @@ class WarpFEMSolver(PDESolver):
                 maxiter=self.krylov_maxiter
             )
 
-            if not np.isfinite(gmres_ares):
-                _fail(f'Non-finite GMRES residual at Newton step {step + 1}')
-
-            alpha = self.adaptive_step_size(mu, lam, rho, u, du, curr_norm, strict)
-
-            if alpha is None:
-                raise RuntimeError(f'Line search failed at Newton step {step + 1}')
-
             if self.verbose:
                 gmres_rres = gmres_ares / gmres_atol * self.krylov_rtol
-
                 print(
-                    f'[step {step + 1}] '
+                    f'[iter {it + 1}] '
                     f'det_F = {det_F:.4f}  '
                     f'PDE ares = {curr_norm:.4e}  '
                     f'PDE rres = {relative_norm:.4e}  '
                     f'gmres_iter = {gmres_iter:d}  '
                     f'gmres_atol = {gmres_atol:.4e}  '
-                    f'gmres_rres = {gmres_rres:.4e}  '
-                    f'alpha = {alpha:.4e}'
+                    f'gmres_rres = {gmres_rres:.4e}'
                 )
+
+            if not np.isfinite(gmres_ares):
+                _fail(f'Non-finite GMRES residual at Newton iteration {it + 1}')
+
+            if self.newton_evals > 0:
+                alpha = self.adaptive_step_size(mu, lam, rho, u, du, curr_norm)
+            else:
+                alpha = self.newton_alpha
+
+            if alpha is None:
+                raise RuntimeError(f'Line search failed at Newton iteration {it + 1}')
 
             u.dof_values += alpha * du.dof_values
 
-        _fail(f'Newton solver failed to converge in {self.newton_steps} steps')
+        _fail(f'Newton solver failed to converge in {self.newton_iters} iterations')
 
-    def adaptive_step_size(self, mu, lam, rho, u, du, init_norm, strict=False):
-        if self.newton_tries < 1:
-            return self.newton_alpha
-
+    def adaptive_step_size(self, mu, lam, rho, u, du, init_norm):
         curr_alpha = self.newton_alpha
         best_alpha = best_norm = None
 
         u_trial = self.init_vector_field()
 
-        for t in range(self.newton_tries):
+        for t in range(self.newton_evals):
 
             _copy_warp_array(u.dof_values, u_trial.dof_values)
             u_trial.dof_values += curr_alpha * du.dof_values
 
+            if self.verbose or self.strict:
+                det_F = wp.to_torch(self.interpolate_det_F(u_trial).dof_values).min().item()
+
             r = self.assemble_residual(mu, lam, rho, u_trial)
             r.dof_values -= self.P @ r.dof_values
-
             curr_norm = _warp_array_norm(r.dof_values)
 
             if self.verbose:
-                print(f'  [trial {t+1}] alpha = {curr_alpha:.4e}  diff = {curr_norm - init_norm:.4e}')
+                delta = curr_norm - init_norm
+                print(f'  [eval {t+1}] alpha = {curr_alpha:.4f}  delta = {delta:.4e}  det_F = {det_F:.4f}')
 
-            if strict: # check admissibility
-                det_F = wp.to_torch(
-                    self.interpolate_det_F(u_trial).dof_values
-                ).min().item()
+            if self.strict and det_F <= 0: # check admissibility
+                continue
 
-                if det_F > 0 and curr_norm < init_norm:
-                    return curr_alpha
-
-            elif curr_norm < init_norm:
+            if curr_norm < init_norm:
                 return curr_alpha
 
             if best_norm is None or curr_norm < best_norm:
@@ -461,7 +460,7 @@ class WarpFEMSolver(PDESolver):
 
             curr_alpha *= self.newton_beta
 
-        return best_alpha if not strict else None
+        return best_alpha
 
     def interpolate_det_F(self, u):
         out = self.Q0.make_field()

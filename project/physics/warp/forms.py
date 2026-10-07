@@ -173,8 +173,8 @@ def yeoh_hyperelastic_stress(
     F: wp.mat33,
     mu: float,
     lam: float,
-    a2: float,
-    a3: float
+    a2: float = 0.0,
+    a3: float = 0.0
 ):
     # strain energy density:
     # W = W_iso + W_vol
