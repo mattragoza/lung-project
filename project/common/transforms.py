@@ -460,3 +460,48 @@ def gaussian_filter(array, mask, affine, sigma, eps=1e-8):
 
     return array_f / np.maximum(mask_f, eps) * mask
 
+
+# ----- deformation Jacobians -----
+
+
+def voxel_deformation_jacobian(disp, affine):
+
+    if disp.ndim != 4 or disp.shape[-1] != 3:
+        raise ValueError(f'Invalid displacement shape: {disp.shape}')
+
+    grad_v = np.empty(disp.shape[:3] + (3, 3), dtype=np.float64)
+
+    for i in range(3):
+        for j, deriv in enumerate(np.gradient(disp[...,i], edge_order=2)):
+            grad_v[...,i,j] = deriv
+
+    grad_w = grad_v @ np.linalg.inv(affine[:3,:3])
+
+    return np.linalg.det(grad_w + np.eye(3))
+
+
+def mesh_deformation_jacobian(mesh, key):
+    
+    cells = mesh.cells_dict.get('tetra', [])
+    if len(cells) == 0:
+        raise ValueError('Mesh has no tetrahedral cells')
+    
+    x_ref = np.asarray(mesh.points, dtype=np.float64)
+    u = np.asarray(mesh.point_data[key], dtype=np.float64)
+
+    if u.ndim != 2 or u.shape[-1] != 3:
+        raise ValueError(f'Invalid displacement shape: {u.shape}')
+
+    x_def = x_ref + u
+    p_ref = x_ref[cells]
+    p_def = x_def[cells]
+
+    V_ref = np.linalg.det(p_ref[:,1:] - p_ref[:,:1]) / 6
+
+    if not np.isfinite(V_ref).all() or np.any(V_ref == 0):
+        raise ValueError('Invalid reference tetrahedra')
+
+    V_def = np.linalg.det(p_def[:,1:] - p_def[:,:1]) / 6
+
+    return V_def / V_ref
+

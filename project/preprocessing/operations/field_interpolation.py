@@ -36,12 +36,24 @@ def interpolate_mesh_fields(
 
     for name, array in fields.items():
         array = np.asarray(array)
+
         if array.ndim not in {3, 4}:
             raise ValueError(f'Invalid field shape for {name!r}: {array.shape}')
 
         if name == disp_key:
+            det_F = transforms.voxel_deformation_jacobian(array, affine)
+
+            if det_F.any() < 0:
+                raise ValueError(f'Invalid voxel deformation: {det_F.min():.4f}')
+
             mesh.point_data[name] = interpolate_array(array, node_voxels, **interp_kws)
             mesh.cell_data[name] = [interpolate_array(array, cell_voxels, **interp_kws)]
+
+            det_F = transforms.mesh_deformation_jacobian(mesh, key=name)
+
+            if det_F.any() < 0:
+                raise ValueError(f'Invalid mesh deformation: {det_F.min():.4f}')
+
         else:
             mesh.point_data[name] = interpolate_masked(array, mask, node_voxels, **interp_kws)
             mesh.cell_data[name] = [interpolate_masked(array, mask, cell_voxels, **interp_kws)]
