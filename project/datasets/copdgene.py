@@ -162,13 +162,28 @@ class COPDGeneDataset(Dataset):
         state_pairs = list(state_pairs or self.state_pairs())
 
         pipeline_tags = pipeline_tags or {}
+
+        valid_tags = {
+            'image_resampling',
+            'image_segmentation',
+            'image_registration',
+            'anatomical_regions',
+            'material_properties',
+            'mesh_generation',
+            'field_interpolation',
+            'forward_simulation'
+        }
+        invalid_tags = set(pipeline_tags.keys()) - valid_tags
+        if invalid_tags:
+            raise ValueError(f'Invalid pipeline tags: {invalid_tags} vs. {valid_tags}')
+
         img_tag = pipeline_tags.get('image_resampling',    'std')
         seg_tag = pipeline_tags.get('image_segmentation', 'tseg')
         reg_tag = pipeline_tags.get('image_registration', 'corr')
         map_tag = pipeline_tags.get('anatomical_regions', 'anat')
         mat_tag = pipeline_tags.get('material_properties', 'mat')
         gen_tag = pipeline_tags.get('mesh_generation',     'pyg')
-        int_tag = pipeline_tags.get('mesh_interpolation',  'int')
+        int_tag = pipeline_tags.get('field_interpolation', 'int')
         sim_tag = pipeline_tags.get('forward_simulation',  'sim')
 
         for sid in subject_list:
