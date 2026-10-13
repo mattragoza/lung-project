@@ -1,14 +1,14 @@
 # training/api.py
 
-from ..core import utils
+from ..common import utils
 
 from . import splits, tasks, trainer
 
 
-def run_training(examples, config, outputs):
+def run_training(examples, config):
     utils.check_keys(
         config,
-        {'seed', 'split', 'transform', 'loader'} |
+        {'seed', 'split', 'transform', 'loaders'} |
         {'task', 'model', 'optimizer', 'trainer'} |
         {'pde_solver', 'physics_adapter', 'boundary_condition'},
         where='training'
@@ -18,12 +18,14 @@ def run_training(examples, config, outputs):
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
 
-    torch.manual_seed(config.get('seed', 1234))
+    seed = config.get('seed', 0)
+    torch.manual_seed(seed)
 
-    from .. import datasets, models, physics, evaluation, callbacks
+    from .. import datasets, models, optimization
+    from .. import physics, evaluation, callbacks
 
     split_kws = config.get('split', {})
-    train_ex, test_ex, val_ex = splits.split_on_metadata(examples, **split_kws)
+    train_ex, test_ex, val_ex = splits.split_data(examples, seed=seed, **split_kws)
 
     transform_kws = config.get('transform', {})
     train_set = datasets.TorchDataset(train_ex, **transform_kws)
@@ -34,7 +36,7 @@ def run_training(examples, config, outputs):
         if len(dataset) > 0:
             return torch.utils.data.DataLoader(dataset, **kwargs)
 
-    loader_kws = config.get('loader', {}).copy()
+    loader_kws = config.get('loaders', {}).copy()
     loader_kws['collate_fn'] = datasets.collate_fn
 
     train_loader = _create_data_loader(train_set, **loader_kws)
@@ -44,22 +46,21 @@ def run_training(examples, config, outputs):
     task_kws = config.get('task', {})
     task = tasks.TaskSpec(**task_kws)
 
-    model_kws = config.get('model', {})
-    model = models.build_model(task, model_kws)
-    utils.log(models.count_params(model))
+    model_cfg = config.get('model', {})
+    model = models.build_model(task, config=model_cfg)
+    utils.log(f'# params: {models.count_params(model)}')
 
-    optimizer_kws = config.get('optimizer', {}).copy()
-    optimizer_cls = getattr(torch.optim, optimizer_kws.pop('_class'))
-    optimizer = optimizer_cls(model.parameters(), **optimizer_kws)
+    optimizer_kws = config.get('optimizer', {})
+    optimizer = optimization.get_optimizer(model, **optimizer_kws)
 
-    solver  = physics.get_solver(config.get('pde_solver', {}))
-    adapter = physics.get_adapter(solver, config.get('physics_adapter', {}))
-    bc_spec = physics.get_bc_spec(config.get('boundary_condition', {}))
+    solver  = physics.get_solver(**config.get('pde_solver', {}))
+    adapter = physics.get_adapter(solver, **config.get('physics_adapter', {}))
+    bc_spec = physics.get_bc_spec(**config.get('boundary_condition', {}))
 
     evaluator_obj = evaluation.Evaluator()
     callback_list = [
-        callbacks.LoggerCallback(),
-        callbacks.EvaluatorCallback(evaluator_obj),
+        callbacks.LoggingCallback(),
+        callbacks.MetricsCallback(evaluator_obj),
     ]
 
     trainer_kws = config.get('trainer', {})
@@ -69,8 +70,7 @@ def run_training(examples, config, outputs):
         test_loader=test_loader,
         val_loader=val_loader,
         callbacks=callback_list,
-        bc_spec=bc_spec,
-        output_dir=outputs.base_dir / 'checkpoints'
+        bc_spec=bc_spec
     )
 
     try:

@@ -21,13 +21,14 @@ DEFAULT_UPSAMPLE = 'nearest'
 def build_model(task, config):
     utils.check_keys(config, {'backbone', 'heads'})
 
-    backbone_kws = config.get('backbone', {}).copy()
-    backbone_cls = globals()[backbone_kws.pop('_class')]
-    backbone = backbone_cls(task.in_channels, **backbone_kws)
+    utils.log('Building model architecture')
 
-    heads_cfg = config.get('heads', {})
+    backbone_kws = config.get('backbone', {})
+    backbone = build_backbone(task, **backbone_kws)
 
-    unused = set(heads_cfg) - set(task.targets)
+    heads_config = config.get('heads', {})
+
+    unused = set(heads_config) - set(task.targets)
     if unused:
         raise ValueError(f'Unused head config(s): {unused}')
 
@@ -36,10 +37,14 @@ def build_model(task, config):
         heads[target] = OutputHead(
             in_channels=backbone.out_channels,
             out_channels=task.out_channels(target),
-            **heads_cfg.get(target, {})
+            **heads_config.get(target, {})
         )
 
     return MultiTaskModel(backbone, heads)
+
+
+def build_backbone(task, type, **kwargs):
+    return globals()[type](task.in_channels, **kwargs)
 
 
 class MultiTaskModel(nn.Module):
@@ -69,7 +74,12 @@ class OutputHead(nn.Module):
 
         from . import param_spec
 
-        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size=1, bias=use_bias)
+        self.conv = nn.Conv3d(
+            in_channels,
+            out_channels,
+            kernel_size=1,
+            bias=use_bias
+        )
         self.spec = param_spec.ParameterSpec(**spec_kws)
 
     def forward(self, x):
@@ -92,6 +102,7 @@ class ConvUnit3D(torch.nn.Module):
         num_groups: int = DEFAULT_NUM_GROUPS
     ):
         super().__init__()
+
         self.conv = torch.nn.Conv3d(
             in_channels,
             out_channels,
@@ -100,17 +111,22 @@ class ConvUnit3D(torch.nn.Module):
             padding_mode='replicate',
             bias=False
         )
+
         if norm_type == 'batch':
             self.norm = torch.nn.BatchNorm3d(out_channels, affine=True)
+
         elif norm_type == 'layer':
             self.norm = torch.nn.GroupNorm(1, out_channels, affine=True)
-        elif norm_type == 'group':
-            if out_channels >= num_groups:
-                self.norm = torch.nn.GroupNorm(num_groups, out_channels, affine=True)
-            else:
-                self.norm = torch.nn.Identity()
+
+        elif norm_type == 'group' and out_channels >= num_groups:
+            self.norm = torch.nn.GroupNorm(num_groups, out_channels, affine=True)
+
+        elif norm_type == 'group': # no-op
+            self.norm = torch.nn.Identity()
+
         elif norm_type == 'instance':
             self.norm = torch.nn.InstanceNorm3d(out_channels, affine=True)
+
         else:
             raise ValueError(f'Invalid norm type: {norm_type}')
 
@@ -149,6 +165,7 @@ class ConvBlock3D(torch.nn.Sequential):
 
         if hid_channels is None:
             hid_channels = max(in_channels, out_channels)
+
         elif n_conv_units < 2:
             raise ValueError('hid_channels argument requires n_conv_units >= 2')
 
@@ -174,8 +191,10 @@ class UNet3Dv2(torch.nn.Module):
         upsample_mode: str = DEFAULT_UPSAMPLE,
         **kwargs
     ):
-        assert n_sub_levels >= 0
         super().__init__()
+
+        if not isinstance(n_sub_levels, int) or n_sub_levels < 0:
+            raise ValueError('n_sub_levels must be a non-negative int')
 
         self.enc = ConvBlock3D(
             in_channels=in_channels,
@@ -186,8 +205,10 @@ class UNet3Dv2(torch.nn.Module):
         curr_channels = conv_channels
 
         if n_sub_levels > 0:
-            downsample = {'max': nn.MaxPool3d, 'avg': nn.AvgPool3d}[pooling_type]
-            self.down = downsample(kernel_size=2)
+            downsample_cls = {
+                'max': nn.MaxPool3d, 'avg': nn.AvgPool3d
+            }[pooling_type]
+            self.down = downsample_cls(kernel_size=2)
             self.sub = type(self)(
                 in_channels=conv_channels,
                 out_channels=conv_channels,

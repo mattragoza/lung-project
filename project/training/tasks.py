@@ -2,7 +2,7 @@
 
 from typing import List, Dict
 
-from ..core import utils
+from ..common import utils
 
 
 VALID_INPUTS  = {'image', 'material', 'mask'}
@@ -25,13 +25,14 @@ class TaskSpec:
         self.losses  = dict(losses)
         self.weights = dict(weights or {})
 
-        utils.log(f'Inputs:  {self.inputs}')
-        utils.log(f'Targets: {self.targets}')
-        utils.log(f'Losses:  {self.losses}')
-
         self._validate()
 
     def _validate(self):
+
+        utils.log('Validating training task')
+        utils.log(f'Inputs:  {self.inputs}')
+        utils.log(f'Targets: {self.targets}')
+        utils.log(f'Losses:  {self.losses}')
 
         if len(self.inputs) < 1:
             raise ValueError('Task has no inputs')

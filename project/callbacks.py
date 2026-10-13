@@ -80,12 +80,12 @@ class TimerCallback(Callback):
         self.timer.tick() # batch forward/backward
 
 
-class EvaluatorCallback(Callback):
+class MetricsCallback(Callback):
 
     def __init__(
         self,
         evaluator,
-        output_dir: Path,
+        output_dir: Path = '.',
         group_by: Optional[str] = None,
         on_train: bool = False
     ):

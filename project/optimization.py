@@ -184,7 +184,7 @@ def run_optimization_steps(
     if not _positive_int(max_steps):
         raise ValueError('max_steps must be a positive int')
 
-    optimizer = _get_optimizer(param_dict, **kwargs)
+    optimizer = get_optimizer(param_dict, **kwargs)
 
     def closure() -> torch.Tensor:
         optimizer.zero_grad(set_to_none=True)
@@ -228,7 +228,7 @@ def run_optimization_steps(
     return loss_history
 
 
-def _get_optimizer(m: torch.nn.Module, type: str, **kwargs):
+def get_optimizer(m: torch.nn.Module, type: str, **kwargs):
     optimizer_cls = getattr(torch.optim, type)
     return optimizer_cls(m.parameters(), **kwargs)
 
