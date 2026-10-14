@@ -3,6 +3,8 @@
 import numpy as np
 import torch
 
+from . import utils
+
 
 def interpolate_masked(volume, mask, points, **kwargs):
     mask = np.asarray(mask, dtype=float)
