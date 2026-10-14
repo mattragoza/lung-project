@@ -11,16 +11,16 @@ class Timer:
         torch.cuda.reset_peak_memory_stats()
         self.t_prev = time.perf_counter()
 
-    def tick(self, sync: bool = False, unit_b: int = 2**30):
+    def tick(self, sync: bool = True, unit_b: int = 2**30):
         import torch
 
         if sync:
             torch.cuda.synchronize()
 
         curr_alloc = torch.cuda.memory_allocated() / unit_b
-        curr_rsvd  = torch.cuda.memory_reserved() / unit_b
+        curr_resvd  = torch.cuda.memory_reserved() / unit_b
         peak_alloc = torch.cuda.max_memory_allocated() / unit_b
-        peak_rsvd  = torch.cuda.max_memory_reserved() / unit_b
+        peak_resvd  = torch.cuda.max_memory_reserved() / unit_b
 
         torch.cuda.reset_peak_memory_stats()
 
@@ -32,8 +32,8 @@ class Timer:
         return {
             't_delta': round(t_delta, 4),
             'curr_alloc': round(curr_alloc, 4),
-            'curr_rsvd':  round(curr_rsvd, 4),
+            'curr_resvd': round(curr_resvd, 4),
             'peak_alloc': round(peak_alloc, 4),
-            'peak_rsvd':  round(peak_rsvd, 4)
+            'peak_resvd': round(peak_resvd, 4)
         }
 

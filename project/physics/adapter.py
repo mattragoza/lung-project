@@ -82,7 +82,7 @@ class PhysicsAdapter:
         params: Dict[str, torch.Tensor],
         **kwargs
     ):
-        from ..core.interpolation import interpolate_tensor
+        from ..common.interpolation import interpolate_tensor
 
         ctx = self.get_physics_context(mesh, unit_m)
 

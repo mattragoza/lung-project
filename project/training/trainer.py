@@ -173,7 +173,6 @@ class Trainer:
         mask = batch['mask'].to(self.device)
 
         total_loss = torch.zeros((), device=self.device, dtype=torch.float)
-        sim_added
 
         for target in self.task.loss_targets:
             y_pred = preds[target].to(self.device)

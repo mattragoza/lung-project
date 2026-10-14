@@ -32,22 +32,23 @@ def run_training(examples, config):
     test_set  = datasets.TorchDataset(test_ex, **transform_kws)
     val_set   = datasets.TorchDataset(val_ex, **transform_kws)
 
-    def _create_data_loader(dataset, **kwargs):
+    def _get_data_loader(dataset, **kwargs):
         if len(dataset) > 0:
             return torch.utils.data.DataLoader(dataset, **kwargs)
 
     loader_kws = config.get('loaders', {}).copy()
     loader_kws['collate_fn'] = datasets.collate_fn
 
-    train_loader = _create_data_loader(train_set, **loader_kws)
-    test_loader  = _create_data_loader(test_set, **loader_kws)
-    val_loader   = _create_data_loader(val_set, **loader_kws)
+    train_loader = _get_data_loader(train_set, **loader_kws)
+    test_loader  = _get_data_loader(test_set, **loader_kws)
+    val_loader   = _get_data_loader(val_set, **loader_kws)
 
     task_kws = config.get('task', {})
     task = tasks.TaskSpec(**task_kws)
 
     model_cfg = config.get('model', {})
     model = models.build_model(task, config=model_cfg)
+    utils.log(model)
     utils.log(f'# params: {models.count_params(model)}')
 
     optimizer_kws = config.get('optimizer', {})

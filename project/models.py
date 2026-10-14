@@ -10,12 +10,11 @@ from .common import utils
 
 
 DEFAULT_KERNEL_SIZE = 3
-DEFAULT_RELU_LEAK = 0.01
+DEFAULT_RELU_LEAK = 0.1
 DEFAULT_NORM_TYPE = 'group'
-DEFAULT_NUM_GROUPS = 8
-DEFAULT_POOL_TYPE = 'max'
-DEFAULT_POOL_SIZE = 2
-DEFAULT_UPSAMPLE = 'nearest'
+DEFAULT_NUM_GROUPS = 4
+DEFAULT_DOWNSAMPLE_FN = 'max'
+DEFAULT_UPSAMPLE_MODE = 'trilinear'
 
 
 def build_model(task, config):
@@ -24,13 +23,12 @@ def build_model(task, config):
     utils.log('Building model architecture')
 
     backbone_kws = config.get('backbone', {})
-    backbone = build_backbone(task, **backbone_kws)
+    backbone = build_backbone(task.in_channels, **backbone_kws)
 
     heads_config = config.get('heads', {})
-
-    unused = set(heads_config) - set(task.targets)
-    if unused:
-        raise ValueError(f'Unused head config(s): {unused}')
+    unused_heads = set(heads_config) - set(task.targets)
+    if unused_heads:
+        raise ValueError(f'Unused head config(s): {unused_heads}')
 
     heads = {}
     for target in task.targets:
@@ -43,8 +41,8 @@ def build_model(task, config):
     return MultiTaskModel(backbone, heads)
 
 
-def build_backbone(task, type, **kwargs):
-    return globals()[type](task.in_channels, **kwargs)
+def build_backbone(in_channels, type, **kwargs):
+    return globals()[type](in_channels, **kwargs)
 
 
 class MultiTaskModel(nn.Module):
@@ -56,9 +54,7 @@ class MultiTaskModel(nn.Module):
 
     def forward(self, x):
         feats = self.backbone(x)
-        return {
-            name: head(feats) for name, head in self.heads.items()
-        }
+        return {name: head(feats) for name, head in self.heads.items()}
 
 
 class OutputHead(nn.Module):
@@ -83,11 +79,76 @@ class OutputHead(nn.Module):
         self.spec = param_spec.ParameterSpec(**spec_kws)
 
     def forward(self, x):
-        z = self.conv(x)
-        return self.spec.decode(z)
+        return self.spec.decode(self.conv(x))
 
 
-# ----- architecture components -----
+# ----- backbone architecture -----
+
+
+class UNet3Dv2(torch.nn.Module):
+
+    def __init__(
+        self,
+        in_channels: int,
+        conv_channels: int,
+        n_sub_levels: int,
+        downsample_fn: str = DEFAULT_DOWNSAMPLE_FN,
+        upsample_mode: str = DEFAULT_UPSAMPLE_MODE,
+        **kwargs
+    ):
+        super().__init__()
+
+        if n_sub_levels < 0:
+            raise ValueError('n_sub_levels must be non-negative')
+
+        self.enc = ConvBlock3D(in_channels, conv_channels, **kwargs)
+        curr_channels = conv_channels
+
+        if n_sub_levels > 0:
+            self.net = UNet3Dv2(
+                in_channels=curr_channels,
+                conv_channels=conv_channels * 2,
+                n_sub_levels=n_sub_levels - 1,
+                downsample_fn=downsample_fn,
+                upsample_mode=upsample_mode,
+                **kwargs
+            )
+            curr_channels += self.net.out_channels
+
+        self.dec = ConvBlock3D(curr_channels, conv_channels, **kwargs)
+        self.out_channels = conv_channels
+
+        self.downsample_fn = {'max': F.max_pool3d, 'avg': F.avg_pool3d}[downsample_fn]
+        self.upsample_mode = upsample_mode
+
+    def forward(self, x):
+        z = self.enc(x)
+        if hasattr(self, 'net'):
+            y = self.downsample_fn(z, kernel_size=2)
+            y = self.net(y)
+            y = F.interpolate(y, z.shape[2:], mode=self.upsample_mode)
+            z = torch.cat([z, y], dim=1)
+        return self.dec(z)
+
+
+class ConvBlock3D(torch.nn.Sequential):
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        n_conv_units: int,
+        **kwargs
+    ):
+        super().__init__()
+
+        if n_conv_units < 1:
+            raise ValueError('n_conv_units must be positive')
+
+        for i in range(n_conv_units):
+            unit = ConvUnit3D(in_channels, out_channels, **kwargs)
+            self.add_module(f'unit{i}', unit)
+            in_channels = out_channels
 
 
 class ConvUnit3D(torch.nn.Module):
@@ -109,7 +170,7 @@ class ConvUnit3D(torch.nn.Module):
             kernel_size,
             padding='same',
             padding_mode='replicate',
-            bias=False
+            bias=norm_type is None
         )
 
         if norm_type == 'batch':
@@ -118,14 +179,15 @@ class ConvUnit3D(torch.nn.Module):
         elif norm_type == 'layer':
             self.norm = torch.nn.GroupNorm(1, out_channels, affine=True)
 
-        elif norm_type == 'group' and out_channels >= num_groups:
+        elif norm_type == 'group':
+            assert out_channels % num_groups == 0, out_channels
             self.norm = torch.nn.GroupNorm(num_groups, out_channels, affine=True)
-
-        elif norm_type == 'group': # no-op
-            self.norm = torch.nn.Identity()
 
         elif norm_type == 'instance':
             self.norm = torch.nn.InstanceNorm3d(out_channels, affine=True)
+
+        elif norm_type is None: # no-op
+            self.norm = torch.nn.Identity()
 
         else:
             raise ValueError(f'Invalid norm type: {norm_type}')
@@ -151,241 +213,6 @@ class ConvUnit3D(torch.nn.Module):
         return x
 
 
-class ConvBlock3D(torch.nn.Sequential):
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        n_conv_units: int,
-        hid_channels: int = None,
-        **conv_unit_kws
-    ):
-        super().__init__()
-
-        if hid_channels is None:
-            hid_channels = max(in_channels, out_channels)
-
-        elif n_conv_units < 2:
-            raise ValueError('hid_channels argument requires n_conv_units >= 2')
-
-        for i in range(n_conv_units):
-            layer = ConvUnit3D(
-                in_channels=(hid_channels if i > 0 else in_channels),
-                out_channels=(hid_channels if i < n_conv_units - 1 else out_channels),
-                **conv_unit_kws
-            )
-            self.add_module(f'unit{i}', layer)
-
-
-class UNet3Dv2(torch.nn.Module):
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        conv_channels: int,
-        n_conv_units: int,
-        n_sub_levels: int,
-        pooling_type: str = DEFAULT_POOL_TYPE,
-        upsample_mode: str = DEFAULT_UPSAMPLE,
-        **kwargs
-    ):
-        super().__init__()
-
-        if not isinstance(n_sub_levels, int) or n_sub_levels < 0:
-            raise ValueError('n_sub_levels must be a non-negative int')
-
-        self.enc = ConvBlock3D(
-            in_channels=in_channels,
-            out_channels=conv_channels,
-            n_conv_units=n_conv_units,
-            **kwargs
-        )
-        curr_channels = conv_channels
-
-        if n_sub_levels > 0:
-            downsample_cls = {
-                'max': nn.MaxPool3d, 'avg': nn.AvgPool3d
-            }[pooling_type]
-            self.down = downsample_cls(kernel_size=2)
-            self.sub = type(self)(
-                in_channels=conv_channels,
-                out_channels=conv_channels,
-                conv_channels=conv_channels * 2,
-                n_conv_units=n_conv_units,
-                n_sub_levels=n_sub_levels - 1,
-                pooling_type=pooling_type,
-                upsample_mode=upsample_mode,
-                **kwargs
-            )
-            self.up = nn.Upsample(scale_factor=2, mode=upsample_mode)
-            curr_channels += conv_channels
-
-        self.dec = ConvBlock3D(
-            in_channels=curr_channels,
-            hid_channels=conv_channels if n_conv_units > 1 else None,
-            out_channels=out_channels,
-            n_conv_units=n_conv_units,
-            **kwargs
-        )
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-
-    def forward(self, x):
-        z = self.enc(x)
-        if hasattr(self, 'sub'):
-            y = self.down(z)
-            y = self.sub(y)
-            y = self.up(y)
-            z = torch.cat([z, y], dim=1)
-        return self.dec(z)
-
-
-# ----- UNetv1 components -----
-            
-
-class EncoderBlock(torch.nn.Module):
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        apply_pooling: bool = True,
-        pooling_type: str = DEFAULT_POOL_TYPE,
-        pooling_size: int = DEFAULT_POOL_SIZE,
-        **conv_block_kws
-    ):
-        super().__init__()
-
-        if not apply_pooling:
-            self.pooling = None
-        elif pooling_type == 'max':
-            self.pooling = torch.nn.MaxPool3d(kernel_size=pooling_size)
-        elif pooling_type == 'avg':
-            self.pooling = torch.nn.AvgPool3d(kernel_size=pooling_size)
-        else:
-            raise ValueError(f'Invalid pooling_type: {pooling_type}')
-        
-        self.conv_block = ConvBlock3D(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            **conv_block_kws
-        )
-        
-    def forward(self, x):
-        if self.pooling:
-            x = self.pooling(x)
-        x = self.conv_block(x)
-        return x
-
-
-class DecoderBlock(torch.nn.Module):
-    
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        upsample_mode: str = DEFAULT_UPSAMPLE,
-        scale_factor: int = DEFAULT_POOL_SIZE,
-        **conv_block_kws
-    ):
-        super().__init__()
-
-        self.upsample = nn.Upsample(scale_factor=scale_factor, mode=upsample_mode)
-
-        self.conv_block = ConvBlock3D(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            **conv_block_kws
-        )
-
-    def forward(self, x, encoder_feats):
-        x = self.upsample(x)
-        x = torch.cat([x, encoder_feats], dim=1)
-        x = self.conv_block(x)
-        return x
-
-
-class UNet3D(torch.nn.Module):
-    
-    def __init__(
-        self,
-        in_channels: int,
-        conv_channels: int,
-        n_enc_blocks: int,
-        n_conv_units: int,
-        n_init_units: int = None,
-        kernel_size: int = DEFAULT_KERNEL_SIZE,
-        relu_leak: float = DEFAULT_RELU_LEAK,
-        norm_type: str = DEFAULT_NORM_TYPE,
-        num_groups: int = DEFAULT_NUM_GROUPS,
-        pooling_type: str = DEFAULT_POOL_TYPE,
-        upsample_mode: str = DEFAULT_UPSAMPLE
-    ):
-        super().__init__()
-        assert n_enc_blocks > 0
-        
-        self.encoder = torch.nn.Sequential()
-        curr_channels = in_channels
-        next_channels = conv_channels
-
-        for i in range(n_enc_blocks):
-            enc_block = EncoderBlock(
-                in_channels=curr_channels,
-                out_channels=next_channels,
-                n_conv_units=(n_init_units if i == 0 and n_init_units else n_conv_units),
-                kernel_size=kernel_size,
-                relu_leak=relu_leak,
-                norm_type=norm_type,
-                num_groups=num_groups,
-                apply_pooling=(i > 0),
-                pooling_type=pooling_type
-            )
-            self.encoder.add_module(f'level{i}', enc_block)
-            curr_channels = next_channels
-            next_channels = curr_channels * 2
-        
-        self.decoder = torch.nn.Sequential()
-        next_channels = curr_channels // 2
-        
-        for i in reversed(range(n_enc_blocks - 1)):
-            dec_block = DecoderBlock(
-                in_channels=curr_channels + next_channels,
-                out_channels=next_channels,
-                n_conv_units=n_conv_units,
-                kernel_size=kernel_size,
-                relu_leak=relu_leak,
-                norm_type=norm_type,
-                num_groups=num_groups,
-                upsample_mode=upsample_mode
-            )
-            self.decoder.add_module(f'level{i}', dec_block)
-            curr_channels = next_channels
-            next_channels = curr_channels // 2
-        
-        self.in_channels = in_channels
-        self.out_channels = curr_channels
-
-    def forward(self, x):
-
-        features = []
-        for i, enc_block in enumerate(self.encoder):
-            x = enc_block(x)
-            features.append(x)
-        
-        # reverse order to align with decoder
-        features = features[::-1]
-        for i, dec_block in enumerate(self.decoder):
-            x = dec_block(x, features[i+1])
-
-        return x
-
-
-def soft_clamp(x, lo, hi, beta=10.0):
-    return lo + F.softplus(x - lo, beta=beta) - F.softplus(x - hi, beta=beta)
-
-
 def identity(x):
     return x
 
@@ -405,8 +232,7 @@ def get_output_fn(name):
         return torch.exp
     elif name == 'pow10':
         return pow10
-    else:
-        raise ValueError(f'invalid name: {name}')
+    raise ValueError(f'Unknown function name: {name}')
 
 
 def count_params(model):

@@ -39,45 +39,31 @@ class Callback:
 
 class LoggingCallback(Callback):
 
-    def on_train_start(self):
-        utils.log('Start training')
-
-    def on_train_end(self):
-        utils.log('End training')
-
-    def on_epoch_start(self, epoch: int):
-        utils.log(f'Start epoch {epoch}')
-
-    def on_epoch_end(self, epoch: int):
-        utils.log(f'End epoch {epoch}')
-
-    def on_phase_start(self, epoch: int, phase: str):
-        utils.log(f'Start epoch {epoch} {phase} phase')
-
-    def on_phase_end(self, epoch: int, phase: str):
-        utils.log(f'End epoch {epoch} {phase} phase')
-
-    def on_batch_start(self, epoch: int, phase: str, batch_idx: int):
-        utils.log(f'[Epoch {epoch} {phase} batch {batch_idx}] start')
-
-    def on_batch_end(self, epoch: int, phase: str, batch_idx: int, outputs: dict):
-        loss = float(outputs['loss'].item())
-        utils.log(f'[Epoch {epoch} {phase} batch {batch_idx}] loss = {loss:.4f}')
-
-
-class TimerCallback(Callback):
-
     def __init__(self):
         self.timer = utils.Timer()
 
-    def on_phase_start(self, epoch: int):
+    def on_train_start(self):
+        utils.log('Training start')
+
+    def on_train_end(self):
+        utils.log('Training complete')
+
+    def on_phase_start(self, epoch: int, phase: str):
         self.timer.tick()
 
     def on_batch_start(self, epoch: int, phase: str, batch_idx: int):
-        self.timer.tick() # load data into batch
+        self.timer.tick() # load and transform data
 
     def on_batch_end(self, epoch: int, phase: str, batch_idx: int, outputs: dict):
-        self.timer.tick() # batch forward/backward
+        res = self.timer.tick() # forward/backward/step
+
+        loss = float(outputs['loss'].item())
+        utils.log(
+            f'[Epoch {epoch} | {phase.capitalize()} batch {batch_idx}]'
+            f' loss = {loss:.6g}'
+            f'  peak alloc = {res["peak_alloc"]:.2f} GiB'
+            f'  peak resvd = {res["peak_resvd"]:.2f} GiB'
+        )
 
 
 class MetricsCallback(Callback):
@@ -107,9 +93,9 @@ class MetricsCallback(Callback):
             return # skip train eval
 
         for values in self.evaluator.evaluate_batch(
-            outputs['data_batch'],
-            outputs['model_preds'],
-            outputs['sim_outputs'],
+            batch=outputs['batch'],
+            preds=outputs['preds'],
+            sims=outputs['sims'],
             groupby=None
         ):
             self.rows.append({
