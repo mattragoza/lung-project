@@ -3,7 +3,7 @@
 from typing import List, Dict, Optional
 from pathlib import Path
 
-from .common import utils
+from .common import utils, fileio
 
 
 class Callback:
@@ -71,24 +71,19 @@ class MetricsCallback(Callback):
     def __init__(
         self,
         evaluator,
-        output_dir: Path = '.',
+        csv_path,
         group_by: Optional[str] = None,
         on_train: bool = False
     ):
         self.evaluator = evaluator
+        self.csv_path = csv_path
         self.group_by = group_by
         self.on_train = on_train
 
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
-        self.csv_path = _get_new_path(self.output_dir / 'metrics.csv')
-
         self.rows = []
 
-    def on_batch_end(
-        self, epoch: int, phase: str, batch_idx: int, outputs: dict
-    ):
+    def on_batch_end(self, epoch, phase, batch_idx, outputs):
+
         if phase == 'train' and not self.on_train:
             return # skip train eval
 
@@ -105,7 +100,8 @@ class MetricsCallback(Callback):
                 **values
             })
 
-    def on_phase_end(self, epoch: int, phase: str):
+    def on_phase_end(self, epoch, phase):
+
         if not self.rows:
             return
         import pandas as pd
@@ -113,19 +109,11 @@ class MetricsCallback(Callback):
         df = pd.DataFrame(self.rows)
 
         tmp_path = self.csv_path.with_suffix('.tmp')
-
         try:
-            df.to_csv(tmp_path, index=False)
+            fileio.save_csv(tmp_path, df, index=False)
             tmp_path.replace(self.csv_path)
-
         finally:
             tmp_path.unlink(missing_ok=True)
-
-
-def _get_new_path(path: Path) -> Path:
-    while path.is_file():
-        path = Path(str(path) + '.new')
-    return path
 
 
 ## DEPRECATING
@@ -145,11 +133,11 @@ class PlotterCallback(Callback):
         self.output_dir.mkdir(exist_ok=True, parents=True)
         self._init_plot()
 
-    def on_batch_end(self, epoch, phase, batch, step, outputs):
+    def on_batch_end(self, epoch, phase, batch_idx, outputs):
         phase = str(phase).lower()
+
         for key in self.history:
-            if key == 'mat_pred':
-                outputs = ensure_material_preds(outputs)
+
             if key in outputs:
                 val = float(outputs[key].float().norm().item())
                 self.history[key][phase][step].append(val)

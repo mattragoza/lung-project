@@ -2,5 +2,5 @@
 
 from . import api, losses, splits, tasks, trainer
 
-from .api import run_training
+from .api import get_trainer, run_training
 

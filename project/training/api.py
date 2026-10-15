@@ -1,11 +1,16 @@
 # training/api.py
 
-from ..common import utils
+from ..common import utils, outputs
 
 from . import splits, tasks, trainer
 
 
-def run_training(examples, config):
+def run_training(examples, config, out_name='training'):
+    trainer = get_trainer(examples, config, out_name)
+    trainer.train(**trainer_kws)
+
+
+def get_trainer(examples, config, out_name='training'):
     utils.check_keys(
         config,
         {'seed', 'split', 'transform', 'loaders'} |
@@ -58,11 +63,7 @@ def run_training(examples, config):
     adapter = physics.get_adapter(solver, **config.get('physics_adapter', {}))
     bc_spec = physics.get_bc_spec(**config.get('boundary_condition', {}))
 
-    evaluator_obj = evaluation.Evaluator()
-    callback_list = [
-        callbacks.LoggingCallback(),
-        callbacks.MetricsCallback(evaluator_obj),
-    ]
+    out = outputs.Outputs(stage='training')
 
     trainer_kws = config.get('trainer', {})
     trainer_obj = trainer.Trainer(
@@ -70,14 +71,18 @@ def run_training(examples, config):
         train_loader=train_loader,
         test_loader=test_loader,
         val_loader=val_loader,
-        callbacks=callback_list,
+        evaluator=evaluation.Evaluator(),
+        csv_path=out.csv_path(name='metrics'),
+        callbacks=[callbacks.LoggingCallback()],
         bc_spec=bc_spec
     )
 
     try:
         trainer_obj.load_checkpoint(by_mtime=True)
+        trainer_obj.load_metrics()
+
     except FileNotFoundError as e:
         utils.warn(f'WARNING: {e}')
 
-    trainer_obj.train(**trainer_kws)
+    return trainer_obj
 

@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from .common import utils
 
 
+DEFAULT_N_CONV_UNITS = 2
 DEFAULT_KERNEL_SIZE = 3
 DEFAULT_RELU_LEAK = 0.1
 DEFAULT_NORM_TYPE = 'group'
@@ -85,50 +86,50 @@ class OutputHead(nn.Module):
 # ----- backbone architecture -----
 
 
-class UNet3Dv2(torch.nn.Module):
+class UNet3D(torch.nn.Module):
 
     def __init__(
         self,
         in_channels: int,
         conv_channels: int,
-        n_sub_levels: int,
+        n_unet_levels: int,
         downsample_fn: str = DEFAULT_DOWNSAMPLE_FN,
         upsample_mode: str = DEFAULT_UPSAMPLE_MODE,
         **kwargs
     ):
         super().__init__()
 
-        if n_sub_levels < 0:
-            raise ValueError('n_sub_levels must be non-negative')
+        if n_unet_levels < 0:
+            raise ValueError('n_unet_levels must be non-negative')
 
-        self.enc = ConvBlock3D(in_channels, conv_channels, **kwargs)
+        self.encoder = ConvBlock3D(in_channels, conv_channels, **kwargs)
         curr_channels = conv_channels
 
-        if n_sub_levels > 0:
-            self.net = UNet3Dv2(
+        if n_unet_levels > 0:
+            self.unet = UNet3D(
                 in_channels=curr_channels,
                 conv_channels=conv_channels * 2,
-                n_sub_levels=n_sub_levels - 1,
+                n_unet_levels=n_unet_levels - 1,
                 downsample_fn=downsample_fn,
                 upsample_mode=upsample_mode,
                 **kwargs
             )
-            curr_channels += self.net.out_channels
+            curr_channels += self.unet.out_channels
 
-        self.dec = ConvBlock3D(curr_channels, conv_channels, **kwargs)
+        self.decoder = ConvBlock3D(curr_channels, conv_channels, **kwargs)
         self.out_channels = conv_channels
 
         self.downsample_fn = {'max': F.max_pool3d, 'avg': F.avg_pool3d}[downsample_fn]
         self.upsample_mode = upsample_mode
 
     def forward(self, x):
-        z = self.enc(x)
-        if hasattr(self, 'net'):
-            y = self.downsample_fn(z, kernel_size=2)
-            y = self.net(y)
-            y = F.interpolate(y, z.shape[2:], mode=self.upsample_mode)
+        z = self.encoder(x)
+        if hasattr(self, 'unet'):
+            z_s = self.downsample_fn(z, kernel_size=2)
+            y_s = self.unet(z_s)
+            y = F.interpolate(y_s, z.shape[2:], mode=self.upsample_mode)
             z = torch.cat([z, y], dim=1)
-        return self.dec(z)
+        return self.decoder(z)
 
 
 class ConvBlock3D(torch.nn.Sequential):
@@ -137,7 +138,7 @@ class ConvBlock3D(torch.nn.Sequential):
         self,
         in_channels: int,
         out_channels: int,
-        n_conv_units: int,
+        n_conv_units: int = DEFAULT_N_CONV_UNITS,
         **kwargs
     ):
         super().__init__()
@@ -186,7 +187,7 @@ class ConvUnit3D(torch.nn.Module):
         elif norm_type == 'instance':
             self.norm = torch.nn.InstanceNorm3d(out_channels, affine=True)
 
-        elif norm_type is None: # no-op
+        elif norm_type is None:
             self.norm = torch.nn.Identity()
 
         else:

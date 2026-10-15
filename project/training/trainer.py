@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ..common import utils
+from ..common import utils, fileio
 from .. import physics, evaluation
 from . import tasks, losses
 
@@ -20,9 +20,11 @@ class Trainer:
         optimizer: torch.optim.Optimizer,
         adapter: physics.adapter.PhysicsAdapter,
         train_loader: torch.utils.data.DataLoader,
-        test_loader: torch.utils.data.DataLoader = None,
-        val_loader: torch.utils.data.DataLoader = None,
-        callbacks: torch.utils.data.DataLoader = None,
+        test_loader: torch.utils.data.DataLoader,
+        val_loader: torch.utils.data.DataLoader,
+        evaluator: evaluation.Evaluator,
+        csv_path: Path,
+        callbacks: Optional[List['Callback']] = None,
         output_dir: str = 'checkpoints',
         device: str = 'cuda',
         bc_spec: Any = None
@@ -31,6 +33,7 @@ class Trainer:
 
         self.model = model.to(device)
         self.optimizer = optimizer
+        self.evaluator = evaluator
 
         self.adapter = adapter
         self.bc_spec = bc_spec
@@ -44,10 +47,14 @@ class Trainer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
+        self.csv_path = Path(csv_path)
+        self.csv_path.parent.mkdir(exist_ok=True, parents=True)
+
         self.device = device
 
-        self.epoch = 0  # number of complete epochs
-        self.step = 0   # number of optimizer steps
+        self.metrics = []  # accumulated eval metrics
+        self.epoch = 0     # number of complete epochs
+        self.step = 0      # number of optimizer steps
 
     # ----- training loop / epochs / phases -----
 
@@ -73,11 +80,16 @@ class Trainer:
                 self.run_val_phase()
 
             self.run_train_phase()
+
+            if self._check_epoch(save_interval):
+                self.save_metrics()
+
             self._end_epoch()
 
         self.save_checkpoint()
         self.run_test_phase()
         self.run_val_phase()
+        self.save_metrics()
 
         self._end_train()
 
@@ -101,10 +113,13 @@ class Trainer:
     def run_phase(self, data_loader, phase: str, train_mode: bool = False):
         self._start_phase(phase, train_mode)
 
+        eval_on_train = not (self.test_loader or self.val_loader)
+        eval_mode = not train_mode or eval_on_train
+
         for idx, batch in enumerate(data_loader):
             self._start_batch(phase, idx)
 
-            loss, outputs = self.run_batch(batch, eval_mode=not train_mode)
+            loss, outputs = self.run_batch(batch, eval_mode)
 
             if train_mode: # backward pass and update
                 self.optimizer.zero_grad(set_to_none=True)
@@ -123,11 +138,25 @@ class Trainer:
                 self.optimizer.step()
                 self.step += 1
 
+            if eval_mode and self.evaluator: # store eval metrics
+                for row in outputs['metrics']:
+                    self.metrics.append({
+                        'epoch': self.epoch,
+                        'phase': phase,
+                        'batch': idx,
+                        'loss': loss.item(),
+                        'grad_norm': grad_norm.item(),
+                        **row
+                    })
+
             self._end_batch(phase, idx, outputs)
 
         self._end_phase(phase)
 
     # ----- batch forward pipeline -----
+
+    def run_example(self, ex):
+        raise NotImlementedError
 
     def run_batch(self, batch, eval_mode: bool = False):
 
@@ -141,6 +170,9 @@ class Trainer:
             'sims': sims,
             'loss': loss.detach().cpu()
         }
+
+        if eval_mode and self.evaluator is not None:
+            outputs['metrics'] = self.evaluator.evaluate_batch(batch, preds, sims)
 
         return loss, outputs
 
@@ -220,7 +252,23 @@ class Trainer:
         param_vals = [preds[key][idx] for key in param_keys]
         return dict(zip(param_keys, param_vals))
 
-    # ----- saving / loading checkpoints -----
+    # ----- saving / loading state -----
+
+    def save_metrics(self):
+        import pandas as pd
+        csv_path = self.csv_path
+        df = pd.DataFrame(self.metrics)
+        tmp_path = csv_path.with_suffix('.tmp')
+        try:
+            fileio.save_csv(tmp_path, df, index=False)
+            tmp_path.replace(csv_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def load_metrics(self):
+        import pandas as pd
+        df = pd.read_csv(self.csv_path)
+        self.metrics = df.to_dict('records')
 
     def save_checkpoint(self, path: Optional[Path] = None):
         if path is not None:
@@ -306,7 +354,7 @@ class Trainer:
             cb.on_epoch_end(self.epoch)
         self.epoch += 1
 
-    def _start_phase(self, phase: str, train_mode: str):
+    def _start_phase(self, phase: str, train_mode: bool):
         self.model.train() if train_mode else self.model.eval()
         for cb in self.callbacks:
             cb.on_phase_start(self.epoch, phase)
