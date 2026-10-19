@@ -58,6 +58,7 @@ def preprocess(ex, config):
         stages.generate_tetrahedral_mesh,
         mask_path=ex.paths['anatomical_map'],
         output_path=ex.paths['anatomical_mesh'],
+        validate_fn=fileio.load_meshio,
         config=config.get('mesh_generation', {})
     )
     run_stage(
@@ -68,12 +69,14 @@ def preprocess(ex, config):
         disp_path=ex.paths['disp_field'],
         fields_dir=ex.paths['material_dir'],
         output_path=ex.paths['interp_mesh'],
+        validate_fn=fileio.load_meshio,
         config=config.get('field_interpolation', {})
     )
     run_stage(
         stages.simulate_displacement_field,
         mesh_path=ex.paths['interp_mesh'],
         output_path=ex.paths['forward_mesh'],
+        validate_fn=fileio.load_meshio,
         unit_m=ex.metadata['unit'],
         config=config.get('forward_simulation', {})
     )
