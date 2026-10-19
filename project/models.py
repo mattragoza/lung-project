@@ -9,7 +9,6 @@ import torch.nn.functional as F
 from .common import utils
 
 
-DEFAULT_N_CONV_UNITS = 2
 DEFAULT_KERNEL_SIZE = 3
 DEFAULT_RELU_LEAK = 0.1
 DEFAULT_NORM_TYPE = 'group'
@@ -91,7 +90,9 @@ class UNet3D(torch.nn.Module):
     def __init__(
         self,
         in_channels: int,
-        conv_channels: int,
+        out_channels: int,
+        n_init_units: int,
+        n_conv_units: int,
         n_unet_levels: int,
         downsample_fn: str = DEFAULT_DOWNSAMPLE_FN,
         upsample_mode: str = DEFAULT_UPSAMPLE_MODE,
@@ -102,22 +103,24 @@ class UNet3D(torch.nn.Module):
         if n_unet_levels < 0:
             raise ValueError('n_unet_levels must be non-negative')
 
-        self.encoder = ConvBlock3D(in_channels, conv_channels, **kwargs)
-        curr_channels = conv_channels
+        self.encoder = ConvBlock3D(in_channels, out_channels, n_init_units, **kwargs)
+        curr_channels = out_channels
 
         if n_unet_levels > 0:
             self.unet = UNet3D(
                 in_channels=curr_channels,
-                conv_channels=conv_channels * 2,
+                out_channels=out_channels * 2,
                 n_unet_levels=n_unet_levels - 1,
+                n_init_units=n_conv_units,
+                n_conv_units=n_conv_units,
                 downsample_fn=downsample_fn,
                 upsample_mode=upsample_mode,
                 **kwargs
             )
             curr_channels += self.unet.out_channels
 
-        self.decoder = ConvBlock3D(curr_channels, conv_channels, **kwargs)
-        self.out_channels = conv_channels
+        self.decoder = ConvBlock3D(curr_channels, out_channels, n_init_units, **kwargs)
+        self.out_channels = out_channels
 
         self.downsample_fn = {'max': F.max_pool3d, 'avg': F.avg_pool3d}[downsample_fn]
         self.upsample_mode = upsample_mode
@@ -138,7 +141,7 @@ class ConvBlock3D(torch.nn.Sequential):
         self,
         in_channels: int,
         out_channels: int,
-        n_conv_units: int = DEFAULT_N_CONV_UNITS,
+        n_conv_units: int,
         **kwargs
     ):
         super().__init__()

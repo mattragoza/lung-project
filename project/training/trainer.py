@@ -145,9 +145,10 @@ class Trainer:
                         'phase': phase,
                         'batch': idx,
                         'loss': loss.item(),
-                        'grad_norm': grad_norm.item(),
                         **row
                     })
+                    if train_mode:
+                        self.metrics[-1]['grad_norm'] = grad_norm.item()
 
             self._end_batch(phase, idx, outputs)
 

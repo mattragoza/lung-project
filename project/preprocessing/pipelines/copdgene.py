@@ -1,6 +1,6 @@
 # preprocessing/pipelines/copdgene.py
 
-from ...common import utils
+from ...common import utils, fileio
 from .. import stages
 from ..runner import run_stage
 

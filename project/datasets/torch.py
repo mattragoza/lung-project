@@ -31,7 +31,7 @@ class TorchDataset(torch.utils.data.Dataset):
         do_augment: bool = False,
         rand_rotate:  bool = False,
         rand_reflect: bool = False,
-        rand_translate: float = 0.0,
+        rand_translate: float = 0.,
         use_cache: bool = False
     ):
         self.examples = examples
@@ -69,7 +69,7 @@ class TorchDataset(torch.utils.data.Dataset):
                 sample,
                 do_rotate=self.rand_rotate,
                 do_reflect=self.rand_reflect,
-                sigma_translate=self.rand_translate,
+                sigma_trans=self.rand_translate,
                 rng=0
             )
 
@@ -126,20 +126,8 @@ class TorchDataset(torch.utils.data.Dataset):
 
         # ----- load optional assets -----
 
-        if 'elastic_field' in ex.paths:
-            sample['E'] = _load_tensor(ex.paths['elastic_field'])
-
-        if 'poisson_field' in ex.paths:
-            sample['nu'] = _load_tensor(ex.paths['poisson_field'])
-
-        if 'density_field' in ex.paths:
-            sample['rho'] = _load_tensor(ex.paths['density_field'])
-
-        if 'material_map' in ex.paths:
-            sample['material'] = _load_tensor(ex.paths['material_map'], torch.long)
-
-        if 'anatomical_map' in ex.paths:
-            sample['anatomy'] = _load_tensor(ex.paths['anatomical_map'], torch.long)
+        if 'material_dir' in ex.paths:
+            sample['E'] = _load_tensor(ex.paths['material_dir'] / 'youngs_modulus.nii.gz')
 
         return sample
 
@@ -164,7 +152,7 @@ def apply_data_augmentation(
     device: str = 'cuda',
     rng: Optional[int] = None
 ):
-    from ..core import transforms, interpolation
+    from ..common import transforms, interpolation
 
     sample = sample.copy()
     if not (do_rotate or do_reflect) and np.isclose(sigma_trans, 0):
@@ -199,7 +187,7 @@ def apply_data_augmentation(
 
     # resample volumes on transformed grid
     def resample_volume(t, mode):
-        return interpolation.interpolate_image(
+        return interpolation.interpolate_tensor(
             t.to(device, dtype=torch.float),
             points=grid_ijk_T,
             mode=mode,

@@ -7,7 +7,7 @@ from . import splits, tasks, trainer
 
 def run_training(examples, config, out_name='training'):
     trainer = get_trainer(examples, config, out_name)
-    trainer.train(**trainer_kws)
+    return trainer.train(**config.get('trainer', {}))
 
 
 def get_trainer(examples, config, out_name='training'):
@@ -65,7 +65,6 @@ def get_trainer(examples, config, out_name='training'):
 
     out = outputs.Outputs(stage='training')
 
-    trainer_kws = config.get('trainer', {})
     trainer_obj = trainer.Trainer(
         task, model, optimizer, adapter,
         train_loader=train_loader,
