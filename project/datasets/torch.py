@@ -69,8 +69,7 @@ class TorchDataset(torch.utils.data.Dataset):
                 sample,
                 do_rotate=self.rand_rotate,
                 do_reflect=self.rand_reflect,
-                sigma_trans=self.rand_translate,
-                rng=0
+                sigma_trans=self.rand_translate
             )
 
         return sample

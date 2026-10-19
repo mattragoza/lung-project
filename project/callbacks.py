@@ -30,7 +30,7 @@ class Callback:
     def on_phase_end(self, epoch: int, phase: str):
         return
 
-    def on_batch_start(self, epoch: int, phase: str, batch_idx: int):
+    def on_batch_start(self, epoch: int, phase: str, batch_idx: int, batch: dict):
         return
 
     def on_batch_end(self, epoch: int, phase: str, batch_idx: int, outputs: dict):
@@ -51,69 +51,33 @@ class LoggingCallback(Callback):
     def on_phase_start(self, epoch: int, phase: str):
         self.timer.tick()
 
-    def on_batch_start(self, epoch: int, phase: str, batch_idx: int):
-        self.timer.tick() # load and transform data
+    def on_batch_start(self, epoch: int, phase: str, batch_idx: int, batch: dict):
 
-    def on_batch_end(self, epoch: int, phase: str, batch_idx: int, outputs: dict):
-        res = self.timer.tick() # forward/backward/step
+        stats = self.timer.tick()
+        t_delta = stats['t_delta']
+        mem_used = stats['mem_used']
 
-        loss = float(outputs['loss'].item())
+        sid = batch['example'][0].subject
+        img_size = tuple(batch['image'][0,0].shape)
+        n_verts = len(batch['mesh'][0].points)
+
         utils.log(
-            f'[Epoch {epoch} | {phase.capitalize()} batch {batch_idx}]'
-            f' loss = {loss:.6g}'
-            f'  peak alloc = {res["peak_alloc"]:.2f} GiB'
-            f'  peak resvd = {res["peak_resvd"]:.2f} GiB'
+            f'[Epoch {epoch} | {phase} batch {batch_idx} | load data]  '
+            f't_delta = {t_delta:.2g}s  mem_used = {mem_used:.2g} GiB  '
+            f'sid = {sid}  img_size = {img_size}  n_verts = {n_verts}'
         )
 
+    def on_batch_end(self, epoch: int, phase: str, batch_idx: int, outputs: dict):
 
-class MetricsCallback(Callback):
+        stats = self.timer.tick()
+        t_delta = stats['t_delta']
+        mem_used = stats['mem_used']
 
-    def __init__(
-        self,
-        evaluator,
-        csv_path,
-        group_by: Optional[str] = None,
-        on_train: bool = False
-    ):
-        self.evaluator = evaluator
-        self.csv_path = csv_path
-        self.group_by = group_by
-        self.on_train = on_train
-
-        self.rows = []
-
-    def on_batch_end(self, epoch, phase, batch_idx, outputs):
-
-        if phase == 'train' and not self.on_train:
-            return # skip train eval
-
-        for values in self.evaluator.evaluate_batch(
-            batch=outputs['batch'],
-            preds=outputs['preds'],
-            sims=outputs['sims'],
-            groupby=None
-        ):
-            self.rows.append({
-                'epoch': int(epoch),
-                'phase': str(phase),
-                'batch': int(batch_idx),
-                **values
-            })
-
-    def on_phase_end(self, epoch, phase):
-
-        if not self.rows:
-            return
-        import pandas as pd
-
-        df = pd.DataFrame(self.rows)
-
-        tmp_path = self.csv_path.with_suffix('.tmp')
-        try:
-            fileio.save_csv(tmp_path, df, index=False)
-            tmp_path.replace(self.csv_path)
-        finally:
-            tmp_path.unlink(missing_ok=True)
+        utils.log(
+            f'[Epoch {epoch} | {phase} batch {batch_idx} | run batch]  '
+            f't_delta = {t_delta:.2g}s  mem_used = {mem_used:.2g} GiB  '
+            f'loss = {outputs["loss"].item():.4g}'
+        )
 
 
 ## DEPRECATING

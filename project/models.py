@@ -91,11 +91,10 @@ class UNet3D(torch.nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        n_init_units: int,
-        n_conv_units: int,
         n_unet_levels: int,
         downsample_fn: str = DEFAULT_DOWNSAMPLE_FN,
         upsample_mode: str = DEFAULT_UPSAMPLE_MODE,
+        do_downsample: bool = False,
         **kwargs
     ):
         super().__init__()
@@ -103,36 +102,45 @@ class UNet3D(torch.nn.Module):
         if n_unet_levels < 0:
             raise ValueError('n_unet_levels must be non-negative')
 
-        self.encoder = ConvBlock3D(in_channels, out_channels, n_init_units, **kwargs)
+        self.encoder = ConvBlock3D(in_channels, out_channels, **kwargs)
         curr_channels = out_channels
 
         if n_unet_levels > 0:
-            self.unet = UNet3D(
+            self.sublevel = UNet3D(
                 in_channels=curr_channels,
                 out_channels=out_channels * 2,
                 n_unet_levels=n_unet_levels - 1,
-                n_init_units=n_conv_units,
-                n_conv_units=n_conv_units,
                 downsample_fn=downsample_fn,
                 upsample_mode=upsample_mode,
+                do_downsample=True,
                 **kwargs
             )
-            curr_channels += self.unet.out_channels
+            curr_channels += self.sublevel.out_channels
 
-        self.decoder = ConvBlock3D(curr_channels, out_channels, n_init_units, **kwargs)
+        self.decoder = ConvBlock3D(curr_channels, out_channels, **kwargs)
         self.out_channels = out_channels
 
         self.downsample_fn = {'max': F.max_pool3d, 'avg': F.avg_pool3d}[downsample_fn]
         self.upsample_mode = upsample_mode
+        self.do_downsample = do_downsample
 
     def forward(self, x):
+        in_shape = x.shape[2:]
+
+        if self.do_downsample:
+            x = self.downsample_fn(x, kernel_size=2)
+
         z = self.encoder(x)
-        if hasattr(self, 'unet'):
-            z_s = self.downsample_fn(z, kernel_size=2)
-            y_s = self.unet(z_s)
-            y = F.interpolate(y_s, z.shape[2:], mode=self.upsample_mode)
-            z = torch.cat([z, y], dim=1)
-        return self.decoder(z)
+
+        if hasattr(self, 'sublevel'):
+            z = torch.cat([z, self.sublevel(z)], dim=1)
+
+        y = self.decoder(z)
+
+        if self.do_downsample:
+            return F.interpolate(y, in_shape, mode=self.upsample_mode)
+
+        return y
 
 
 class ConvBlock3D(torch.nn.Sequential):
@@ -250,44 +258,80 @@ def count_params(model):
 
 
 def count_activations(model, input_, ret_output=False):
+    import weakref
+
     hooks, recorded = [], []
-    seen = set()
+    seen = {}
+    modes = [(m, m.training) for m in model.modules()]
 
-    def describe(t):
-        return tuple(t.shape), t.dtype, t.mean().item(), t.std().item()
+    def record(name, value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                record(f'{name}.{key}', item)
 
-    def record_output_description(name):
+        elif isinstance(value, (tuple, list)):
+            for idx, item in enumerate(value):
+                record(f'{name}[{idx}]', item)
+
+        elif isinstance(value, torch.Tensor):
+            key = id(value)
+            previous = seen.get(key)
+
+            if previous is not None and previous() is value:
+                return
+
+            seen[key] = weakref.ref(value)
+            recorded.append((
+                name,
+                tuple(value.shape),
+                value.dtype,
+                value.numel(),
+                value.numel() * value.element_size(),
+            ))
+
+    def make_hook(name):
         def hook(mod, inp, out):
-            if isinstance(out, dict):
-                for k, v in out.items():
-                    key = id(v)
-                    if key not in seen:
-                        recorded.append((name + '.' + k, describe(v)))
-                        seen.add(key)
-            else:
-                key = id(out)
-                if key not in seen:
-                    recorded.append((name, describe(out)))
-                    seen.add(key)
+            record(name, out)
         return hook
 
-    for name, m in model.named_modules():
-        hook = m.register_forward_hook(record_output_description(name))
-        hooks.append(hook)
+    try:
+        for name, module in model.named_modules():
+            hooks.append(
+                module.register_forward_hook(make_hook(name or 'model'))
+            )
 
-    model.eval()
-    with torch.no_grad():
-        recorded.append(('input', describe(input_)))
-        output = model.forward(input_)
+        model.eval()
+        with torch.no_grad():
+            record('input', input_)
+            output = model(input_)
 
-    for h in hooks:
-        h.remove()
+    finally:
+        for hook in hooks:
+            hook.remove()
 
-    total = 0
-    for name, (shape, dtype, mean, std) in recorded:
-        prod = int(np.prod(shape))
-        utils.log(f'{name:40s} {prod}\t{shape}\t{dtype}\t{mean:.4f}\t{std:.4f}')
-        total += prod
+        for module, training in modes:
+            module.training = training
+
+    mib = 1024 ** 2
+    total = sum(row[3] for row in recorded)
+    total_bytes = sum(row[4] for row in recorded)
+
+    for name, shape, dtype, numel, nbytes in recorded:
+        utils.log(
+            f'{name:55s} {nbytes / mib:9.2f} MiB  '
+            f'{str(shape):28s} {dtype}'
+        )
+
+    utils.log('\nLargest outputs:')
+    for name, shape, dtype, numel, nbytes in sorted(
+        recorded, key=lambda row: row[4], reverse=True
+    )[:15]:
+        utils.log(f'{name:55s} {nbytes / mib:9.2f} MiB')
+
+    utils.log(
+        f'\nTotal recorded elements: {total:,}\n'
+        f'Total logical output size: {total_bytes / mib:,.2f} MiB'
+    )
 
     return (total, output) if ret_output else total
 

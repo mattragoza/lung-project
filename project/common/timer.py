@@ -5,35 +5,34 @@ import time
 
 class Timer:
 
-    def __init__(self):
-        import torch
-        torch.cuda.synchronize()
-        torch.cuda.reset_peak_memory_stats()
-        self.t_prev = time.perf_counter()
-
-    def tick(self, sync: bool = True, unit_b: int = 2**30):
+    def tick(self, sync: bool = True, unit_b: int = 1024**3):
         import torch
 
         if sync:
             torch.cuda.synchronize()
 
-        curr_alloc = torch.cuda.memory_allocated() / unit_b
-        curr_resvd  = torch.cuda.memory_reserved() / unit_b
-        peak_alloc = torch.cuda.max_memory_allocated() / unit_b
-        peak_resvd  = torch.cuda.max_memory_reserved() / unit_b
+        curr_alloc = torch.cuda.memory_allocated()
+        curr_resvd = torch.cuda.memory_reserved()
+        peak_alloc = torch.cuda.max_memory_allocated()
+        peak_resvd = torch.cuda.max_memory_reserved()
+
+        mem_free, mem_total = torch.cuda.mem_get_info()
+        mem_used = mem_total - mem_free
+
+        t_curr = time.perf_counter()
+        t_prev = getattr(self, 't_prev', t_curr)
+        self.t_prev = t_curr
 
         torch.cuda.reset_peak_memory_stats()
 
-        t_curr = time.perf_counter()
-        t_delta = t_curr - self.t_prev
-
-        self.t_prev = t_curr
-
         return {
-            't_delta': round(t_delta, 4),
-            'curr_alloc': round(curr_alloc, 4),
-            'curr_resvd': round(curr_resvd, 4),
-            'peak_alloc': round(peak_alloc, 4),
-            'peak_resvd': round(peak_resvd, 4)
+            't_delta': t_curr - t_prev,
+            'curr_alloc': curr_alloc / unit_b,
+            'curr_resvd': curr_resvd / unit_b,
+            'peak_alloc': peak_alloc / unit_b,
+            'peak_resvd': peak_resvd / unit_b,
+            'mem_used': mem_used / unit_b,
+            'mem_free': mem_free / unit_b,
+            'mem_total': mem_total / unit_b
         }
 

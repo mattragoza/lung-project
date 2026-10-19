@@ -145,5 +145,10 @@ def save_csv(path, df, **kwargs):
     if not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(df)
     make_dir_exist(path.parent)
-    df.to_csv(path, **kwargs)
+    tmp_path = path.with_suffix('.tmp')
+    try:
+        df.to_csv(tmp_path, **kwargs)
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 

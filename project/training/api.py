@@ -21,7 +21,7 @@ def get_trainer(examples, config, out_name='training'):
     import torch
 
     torch.backends.cudnn.enabled = True
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = False
 
     seed = config.get('seed', 0)
     torch.manual_seed(seed)
@@ -32,8 +32,10 @@ def get_trainer(examples, config, out_name='training'):
     split_kws = config.get('split', {})
     train_ex, test_ex, val_ex = splits.split_data(examples, seed=seed, **split_kws)
 
-    transform_kws = config.get('transform', {})
+    transform_kws = config.get('transform', {}).copy()
     train_set = datasets.TorchDataset(train_ex, **transform_kws)
+
+    transform_kws['do_augment'] = False
     test_set  = datasets.TorchDataset(test_ex, **transform_kws)
     val_set   = datasets.TorchDataset(val_ex, **transform_kws)
 
@@ -71,8 +73,8 @@ def get_trainer(examples, config, out_name='training'):
         test_loader=test_loader,
         val_loader=val_loader,
         evaluator=evaluation.Evaluator(),
-        csv_path=out.csv_path(name='metrics'),
         callbacks=[callbacks.LoggingCallback()],
+        csv_path=out.csv_path(name='metrics'),
         bc_spec=bc_spec
     )
 

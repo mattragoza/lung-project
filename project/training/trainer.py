@@ -65,35 +65,35 @@ class Trainer:
         test_interval: int = 5,
         save_interval: int = 5,
     ):
-        self._start_train()
+        self.start_train()
 
         while self.epoch < num_epochs:
-            self._start_epoch()
+            self.start_epoch()
 
-            if self._check_epoch(save_interval):
+            if self.check_epoch(save_interval):
                 self.save_checkpoint()
 
-            if self._check_epoch(test_interval):
+            if self.check_epoch(test_interval):
                 self.run_test_phase()
 
-            if self._check_epoch(val_interval):
+            if self.check_epoch(val_interval):
                 self.run_val_phase()
 
             self.run_train_phase()
 
-            if self._check_epoch(save_interval):
+            if self.check_epoch(save_interval):
                 self.save_metrics()
 
-            self._end_epoch()
+            self.end_epoch()
 
         self.save_checkpoint()
         self.run_test_phase()
         self.run_val_phase()
         self.save_metrics()
 
-        self._end_train()
+        self.end_train()
 
-    def _check_epoch(self, interval: int) -> bool:
+    def check_epoch(self, interval: int) -> bool:
         return interval > 0 and self.epoch % interval == 0
 
     def run_train_phase(self):
@@ -111,19 +111,22 @@ class Trainer:
             return self.run_phase(self.val_loader, phase='val')
 
     def run_phase(self, data_loader, phase: str, train_mode: bool = False):
-        self._start_phase(phase, train_mode)
+        self.start_phase(phase)
 
         eval_on_train = not (self.test_loader or self.val_loader)
-        eval_mode = not train_mode or eval_on_train
+        eval_mode = eval_on_train or not train_mode
+
+        self.model.train(train_mode)
 
         for idx, batch in enumerate(data_loader):
-            self._start_batch(phase, idx)
+            self.start_batch(phase, idx, batch)
+
+            if train_mode:
+                self.optimizer.zero_grad(set_to_none=True)
 
             loss, outputs = self.run_batch(batch, eval_mode)
 
-            if train_mode: # backward pass and update
-                self.optimizer.zero_grad(set_to_none=True)
-
+            if train_mode:
                 if not torch.isfinite(loss):
                     raise RuntimeError(f'Invalid training loss: {loss.item()}')
 
@@ -138,21 +141,26 @@ class Trainer:
                 self.optimizer.step()
                 self.step += 1
 
-            if eval_mode and self.evaluator: # store eval metrics
-                for row in outputs['metrics']:
-                    self.metrics.append({
-                        'epoch': self.epoch,
-                        'phase': phase,
-                        'batch': idx,
-                        'loss': loss.item(),
-                        **row
-                    })
-                    if train_mode:
-                        self.metrics[-1]['grad_norm'] = grad_norm.item()
+            base = {
+                'epoch': self.epoch,
+                'phase': phase,
+                'batch': idx,
+                'loss': loss.item()
+            }
+            if train_mode:
+                base['grad_norm'] = grad_norm.item()
 
-            self._end_batch(phase, idx, outputs)
+            if eval_mode:
+                for vals in outputs['metrics']:
+                    self.metrics.append({**base, **vals})
+            else:
+                self.metrics.append(base)
 
-        self._end_phase(phase)
+            self.end_batch(phase, idx, outputs)
+
+            del loss, outputs, batch
+
+        self.end_phase(phase)
 
     # ----- batch forward pipeline -----
 
@@ -215,21 +223,16 @@ class Trainer:
 
             if loss_name != 'SIM':
                 y_true = batch[target].to(self.device)
-
             if loss_name == 'CE':
                 loss = losses.masked_cross_entropy(y_pred, y_true, mask)
-
             elif loss_name == 'MSE':
                 loss = losses.mean_squared_error(y_pred, y_true, mask)
-
             elif loss_name == 'MSRE':
                 loss = losses.mean_squared_relative_error(y_pred, y_true, mask)
-
             elif loss_name == 'SIM':
                 if sim_loss is None:
                     raise RuntimeError('Expected sim_loss to be provided')
                 loss = sim_loss.mean()
-
             else:
                 raise ValueError(f'Unknown loss: {loss_name}')
 
@@ -256,34 +259,22 @@ class Trainer:
     # ----- saving / loading state -----
 
     def save_metrics(self):
-        import pandas as pd
-        csv_path = self.csv_path
-        df = pd.DataFrame(self.metrics)
-        tmp_path = csv_path.with_suffix('.tmp')
-        try:
-            fileio.save_csv(tmp_path, df, index=False)
-            tmp_path.replace(csv_path)
-        finally:
-            tmp_path.unlink(missing_ok=True)
+        fileio.save_csv(self.csv_path, self.metrics, index=False)
 
     def load_metrics(self):
-        import pandas as pd
-        df = pd.read_csv(self.csv_path)
-        self.metrics = df.to_dict('records')
+        self.metrics = fileio.load_csv(self.csv_path).to_dict('records')
 
     def save_checkpoint(self, path: Optional[Path] = None):
         if path is not None:
             path = Path(path)
         else:
-            path = self._checkpoint_path(self.epoch)
-
+            path = self.checkpoint_path(self.epoch)
         utils.log(f'Saving {path}')
-
         torch.save({
-            'epoch': self.epoch,
-            'step':  self.step,
             'model': self.model.state_dict(),
-            'optim': self.optimizer.state_dict()
+            'optim': self.optimizer.state_dict(),
+            'epoch': self.epoch,
+            'step':  self.step
         }, path)
 
     def load_checkpoint(
@@ -295,9 +286,9 @@ class Trainer:
         if path is not None:
             path = Path(path)
         elif epoch is not None:
-            path = self._checkpoint_path(epoch)
+            path = self.checkpoint_path(epoch)
         else:
-            path = self._last_checkpoint(by_mtime)
+            path = self.last_checkpoint(by_mtime)
 
         if not path.is_file():
             raise FileNotFoundError(f'Checkpoint not found: {path}')
@@ -305,70 +296,64 @@ class Trainer:
         utils.log(f'Loading {path}')
         state = torch.load(path, map_location=self.device)
 
+        self.model.load_state_dict(state['model'])
+        self.optimizer.load_state_dict(state['optim'])
         self.epoch = int(state.get('epoch', 0))
         self.step = int(state.get('step', 0))
 
-        self.model.load_state_dict(state['model'])
-        self.optimizer.load_state_dict(state['optim'])
-
-    def _checkpoint_path(self, epoch: int) -> Path:
+    def checkpoint_path(self, epoch: int) -> Path:
         return self.output_dir / f'checkpoint{epoch:05d}.pt'
 
-    def _last_checkpoint(self, by_mtime: bool = False) -> Path:
-        found = self._find_checkpoints(by_mtime)
+    def last_checkpoint(self, by_mtime: bool = False) -> Path:
+        found = self.find_checkpoints(by_mtime)
         if len(found) > 0:
             return found[-1]
         raise FileNotFoundError('No checkpoints found')
 
-    def _find_checkpoints(self, by_mtime: bool = False) -> List[Path]:
+    def find_checkpoints(self, by_mtime: bool = False) -> List[Path]:
         import re
-        pat = re.compile(r'^checkpoint(\d{5})\.pt$')
-
-        def _is_ckpt(p):
-            return p.is_file() and pat.match(p.name)
-
-        paths = [p for p in self.output_dir.iterdir() if _is_ckpt(p)]
-
+        name_regex = re.compile(r'^checkpoint(\d{5})\.pt$')
+        def match(path):
+            return path.is_file() and name_regex.match(path.name)
+        found = [p for p in self.output_dir.iterdir() if match(p)]
         if by_mtime:
-            sort_key = lambda p: p.stat().st_mtime
+            sort_key = lambda path: path.stat().st_mtime
         else:
-            sort_key = lambda p: p.name
-
-        return sorted(paths, key=sort_key)
+            sort_key = lambda path: path.name
+        return sorted(found, key=sort_key)
 
     # ----- callback hooks -----
 
-    def _start_train(self):
+    def start_train(self):
         for cb in self.callbacks:
             cb.on_train_start()
 
-    def _end_train(self):
+    def end_train(self):
         for cb in self.callbacks:
             cb.on_train_end()
 
-    def _start_epoch(self):
+    def start_epoch(self):
         for cb in self.callbacks:
             cb.on_epoch_start(self.epoch)
 
-    def _end_epoch(self):
+    def end_epoch(self):
         for cb in self.callbacks:
             cb.on_epoch_end(self.epoch)
         self.epoch += 1
 
-    def _start_phase(self, phase: str, train_mode: bool):
-        self.model.train() if train_mode else self.model.eval()
+    def start_phase(self, phase: str):
         for cb in self.callbacks:
             cb.on_phase_start(self.epoch, phase)
 
-    def _end_phase(self, phase: str):
+    def end_phase(self, phase: str):
         for cb in self.callbacks:
             cb.on_phase_end(self.epoch, phase)
 
-    def _start_batch(self, phase: str, batch_idx: int):
+    def start_batch(self, phase: str, batch_idx: int, batch: dict):
         for cb in self.callbacks:
-            cb.on_batch_start(self.epoch, phase, batch_idx)
+            cb.on_batch_start(self.epoch, phase, batch_idx, batch)
 
-    def _end_batch(self, phase: str, batch_idx: int, outputs: dict):
+    def end_batch(self, phase: str, batch_idx: int, outputs: dict):
         for cb in self.callbacks:
             cb.on_batch_end(self.epoch, phase, batch_idx, outputs)
 

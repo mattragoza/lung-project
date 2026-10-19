@@ -43,7 +43,7 @@ def run_stage(
         return False, None
 
     utils.log(f'INFO: Running stage {func.__name__}')
-    result = func(*args, output_path=output_path, **kwargs)
+    result = func(output_path=output_path, **kwargs)
 
     if validate_fn is not None:
         validate_fn(output_path)
