@@ -87,16 +87,14 @@ class TorchDataset(torch.utils.data.Dataset):
         mask = fileio.load_nibabel(ex.paths['domain_mask'], self.verbose)
         mesh = fileio.load_meshio(ex.paths['target_mesh'], self.verbose)
 
-        # ----- shape validation -----
+        if not np.allclose(image.affine, mask.affine):
+            raise ValueError(f'Affine mismatch: {image.affine} vs. {mask.affine}')
 
         affine = image.affine
         image = image.get_fdata()
         mask = mask.get_fdata()
 
-        if affine.shape != (4, 4):
-            raise ValueError(f'Invalid affine shape: {affine.shape} vs. (4, 4)')
-
-        if image.ndim != 3 or not all(d > 1 for d in image.shape):
+        if image.ndim != 3 or not all(dim > 1 for dim in image.shape):
             raise ValueError(f'Invalid 3D image shape: {image.shape} vs. (I, J, K)')
 
         if mask.shape != image.shape:

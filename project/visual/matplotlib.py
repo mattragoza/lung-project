@@ -54,12 +54,12 @@ class SliceViewer:
         self.j_line_kws = dict(color=colors[1], linewidth=line_width)
         self.k_line_kws = dict(color=colors[2], linewidth=line_width)
     
-        self.init_figure(title)
+        self.create_figure(title)
 
         if array is not None:
             self.update_array(array, index)
 
-    def init_figure(self, title=None):
+    def create_figure(self, title=None):
         fig, axes, cbar_ax = subplot_grid(1, 3, **self.subplot_kws)
 
         self.fig = fig

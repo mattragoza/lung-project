@@ -63,29 +63,29 @@ class Trainer:
     ):
         self.start_train()
 
-        while self.epoch < num_epochs:
+        while self.epoch <= num_epochs:
             self.start_epoch()
+            last_epoch = self.epoch == num_epochs
 
-            if self.check_epoch(save_interval):
+            if last_epoch or self.check_epoch(save_interval):
                 self.save_checkpoint()
 
-            if self.check_epoch(test_interval):
+            if last_epoch or self.check_epoch(test_interval):
                 self.run_test_phase()
 
-            if self.check_epoch(val_interval):
+            if last_epoch or self.check_epoch(val_interval):
                 self.run_val_phase()
+
+            if last_epoch or self.check_epoch(save_interval):
+                self.save_metrics()
+
+            if last_epoch:
+                break
 
             self.run_train_phase()
 
-            if self.check_epoch(save_interval):
-                self.save_metrics()
-
             self.end_epoch()
-
-        self.save_checkpoint()
-        self.run_test_phase()
-        self.run_val_phase()
-        self.save_metrics()
+            self.epoch += 1
 
         self.end_train()
 
@@ -114,8 +114,8 @@ class Trainer:
 
         self.model.train(train_mode)
 
-        for idx, batch in enumerate(data_loader):
-            self.start_batch(phase, idx, batch)
+        for batch_num, batch in enumerate(data_loader, start=1):
+            self.start_batch(phase, batch_num, batch)
 
             outputs = self.run_batch(batch, train_mode, eval_mode)
 
@@ -123,17 +123,17 @@ class Trainer:
                 self.metrics.append({
                     'epoch': self.epoch,
                     'phase': phase,
-                    'batch': idx,
+                    'batch': batch_num,
                     'loss': outputs['loss'],
                     'grad_norm': outputs.get('grad_norm', 0),
                     **metrics
                 })
 
-            self.end_batch(phase, idx, outputs)
+            self.end_batch(phase, batch_num, outputs)
 
         self.end_phase(phase)
 
-    def run_batch(self, batch, train_mode, eval_mode):
+    def run_batch(self, batch, train_mode=False, eval_mode=False):
 
         if train_mode:
             self.optimizer.zero_grad(set_to_none=True)
@@ -158,6 +158,9 @@ class Trainer:
 
             if not torch.isfinite(grad_norm):
                 raise RuntimeError(f'Invalid gradient norm: {grad_norm.item()}')
+
+            if np.isclose(grad_norm.item(), 0):
+                raise RuntimeError(f'Zero gradient norm: {grad_norm.item()}')
 
             outputs['grad_norm'] = grad_norm.item()
 
@@ -245,7 +248,7 @@ class Trainer:
 
     @property
     def csv_path(self):
-        return self.output_dir / 'metrics.csv'
+        return self.output_dir / 'eval_metrics.csv'
 
     def save_metrics(self):
         fileio.save_csv(self.csv_path, self.metrics, index=False)
@@ -293,7 +296,7 @@ class Trainer:
         self.step = int(state.get('step', 0))
 
     def checkpoint_path(self, epoch: int) -> Path:
-        return self.output_dir / f'checkpoint{epoch:05d}.pt'
+        return self.output_dir / f'checkpoint_{epoch:d}.pt'
 
     def last_checkpoint(self, by_mtime: bool = False) -> Path:
         found = self.find_checkpoints(by_mtime)
@@ -303,7 +306,7 @@ class Trainer:
 
     def find_checkpoints(self, by_mtime: bool = False) -> List[Path]:
         import re
-        name_regex = re.compile(r'^checkpoint(\d{5})\.pt$')
+        name_regex = re.compile(r'^checkpoint_(\d+)\.pt$')
         def match(path):
             return path.is_file() and name_regex.match(path.name)
         found = [p for p in self.output_dir.iterdir() if match(p)]
@@ -330,7 +333,6 @@ class Trainer:
     def end_epoch(self):
         for cb in self.callbacks:
             cb.on_epoch_end(self.epoch)
-        self.epoch += 1
 
     def start_phase(self, phase: str):
         for cb in self.callbacks:

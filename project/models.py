@@ -63,6 +63,7 @@ class OutputHead(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
+        kernel_size: int = 5,
         use_bias: bool = True,
         **spec_kws
     ):
@@ -73,10 +74,25 @@ class OutputHead(nn.Module):
         self.conv = nn.Conv3d(
             in_channels,
             out_channels,
-            kernel_size=1,
+            kernel_size,
+            padding='same',
+            padding_mode='replicate',
             bias=use_bias
         )
+
         self.spec = param_spec.ParameterSpec(**spec_kws)
+
+        self.init_weights()
+
+    def init_weights(self):
+        nn.init.kaiming_uniform_(
+            self.conv.weight,
+            nonlinearity='linear',
+            mode='fan_in'
+        )
+        with torch.no_grad():
+            self.conv.weight.mul_(0.01)
+        nn.init.zeros_(self.conv.bias)
 
     def forward(self, x):
         return self.spec.decode(self.conv(x))
@@ -118,11 +134,13 @@ class UNet3D(torch.nn.Module):
             curr_channels += self.sublevel.out_channels
 
         self.decoder = ConvBlock3D(curr_channels, out_channels, **kwargs)
-        self.out_channels = out_channels
 
         self.downsample_fn = {'max': F.max_pool3d, 'avg': F.avg_pool3d}[downsample_fn]
         self.upsample_mode = upsample_mode
         self.do_downsample = do_downsample
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
 
     def forward(self, x):
         in_shape = x.shape[2:]
@@ -208,7 +226,7 @@ class ConvUnit3D(torch.nn.Module):
         self.init_weights()
 
     def init_weights(self):
-        nn.init.kaiming_normal_(
+        nn.init.kaiming_uniform_(
             self.conv.weight,
             a=self.act.negative_slope,
             nonlinearity='leaky_relu',

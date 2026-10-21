@@ -30,10 +30,10 @@ class Callback:
     def on_phase_end(self, epoch: int, phase: str):
         return
 
-    def on_batch_start(self, epoch: int, phase: str, batch_idx: int, batch: dict):
+    def on_batch_start(self, epoch: int, phase: str, batch_num: int, batch: dict):
         return
 
-    def on_batch_end(self, epoch: int, phase: str, batch_idx: int, outputs: dict):
+    def on_batch_end(self, epoch: int, phase: str, batch_num: int, outputs: dict):
         return
 
 
@@ -51,11 +51,11 @@ class LoggingCallback(Callback):
     def on_phase_start(self, epoch: int, phase: str):
         self.timer.tick()
 
-    def on_batch_start(self, epoch: int, phase: str, batch_idx: int, batch: dict):
+    def on_batch_start(self, epoch: int, phase: str, batch_num: int, batch: dict):
         stats = self.timer.tick()
 
         utils.log(
-            f'[Epoch {epoch} | {phase} batch {batch_idx} | load data]  '
+            f'[Epoch {epoch} | {phase} batch {batch_num} | load data]  '
             f'dt = {stats["t_delta"]:.2g}s  '
             f'mem_used = {stats["mem_used"]:.2g} GiB  '
             #f'curr_alloc = {stats["curr_alloc"]:.2g} GiB  '
@@ -66,11 +66,11 @@ class LoggingCallback(Callback):
             f'n_verts = {len(batch["mesh"][0].points)}'
         )
 
-    def on_batch_end(self, epoch: int, phase: str, batch_idx: int, outputs: dict):
+    def on_batch_end(self, epoch: int, phase: str, batch_num: int, outputs: dict):
         stats = self.timer.tick()
 
         utils.log(
-            f'[Epoch {epoch} | {phase} batch {batch_idx} | run batch]  '
+            f'[Epoch {epoch} | {phase} batch {batch_num} | run batch]  '
             f'dt = {stats["t_delta"]:.2g}s  '
             f'mem_used = {stats["mem_used"]:.2g} GiB  '
             #f'curr_alloc = {stats["curr_alloc"]:.2g} GiB  '
@@ -81,147 +81,131 @@ class LoggingCallback(Callback):
         )
 
 
-## DEPRECATING
-
-
 class PlotterCallback(Callback):
 
-    def __init__(self, keys, output_dir='plotter', update_interval=1):
-        self.update_interval = update_interval
+    def __init__(self, output_dir, metrics=('loss',), interactive=True):
+        from collections import defaultdict
 
-        # history[key][phase][step] = [values]
-        self.history = {
-            key: {p: defaultdict(list) for p in ['train', 'test', 'val']}
-                for key in keys
-        }
-        self.output_dir = Path(outputs)
-        self.output_dir.mkdir(exist_ok=True, parents=True)
-        self._init_plot()
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def on_batch_end(self, epoch, phase, batch_idx, outputs):
-        phase = str(phase).lower()
+        self.metrics = list(metrics)
+        self.interactive = interactive
 
-        for key in self.history:
+        self.history = defaultdict(list)
+        self.lines = {}
 
-            if key in outputs:
-                val = float(outputs[key].float().norm().item())
-                self.history[key][phase][step].append(val)
-        if batch % self.update_interval == 0:
-            self._update_plot()
+        self.create_plot()
 
-    def on_phase_end(self, epoch, phase):
-        self._save_plot()
+    def on_batch_end(self, epoch, phase, batch_num, outputs):
+        import numpy as np
 
-    def _init_plot(self, n_cols=4):
-        import math
-        n_axes = len(self.history.keys())
-        n_rows = int(math.ceil(n_axes / n_cols))
-        self.fig, self.axes = mpl_viz.subplot_grid(
-            n_rows, n_cols, ax_height=2, ax_width=1.5,
+        def _scalar(x):
+            if hasattr(x, 'detach'):
+                return float(x.detach().item())
+            return float(x)
+
+        for metric in self.metrics:
+            if metric in outputs:
+                value = _scalar(outputs[metric])
+            else:
+                value = np.mean([
+                    _scalar(x[metric]) for x in outputs['metrics']
+                ])
+
+            self.history[phase, metric].append(value)
+
+        self.update_plot()
+
+    def on_phase_end(self, epoch: int, phase: str):
+        self.save_plot()
+
+    def create_plot(self):
+        from .visual.matplotlib import subplot_grid
+
+        self.fig, axes = subplot_grid(
+            1, len(self.metrics),
+            ax_height=3,
+            ax_width=2,
             spacing=(1.0, 1.0),
             padding=(1.0, 0.5, 0.5, 0.5) # lrbt
         )
-        axes_flat = self.axes.flatten()
-        for i, key in enumerate(self.history.keys()):
-            ax = axes_flat[i]
-            ax.set_xlabel('step')
-            ax.set_title(key)
 
-        self.fig.canvas.draw()
+        self.axes = dict(zip(self.metrics, axes.flat))
 
-    def _update_plot(self):
-        for ax in self.axes.flatten():
-            ax.clear()
+        for metric, ax in self.axes.items():
+            ax.set(xlabel='step', ylabel=metric)
+            ax.grid(alpha=0.25)
 
-        axes_flat = self.axes.flatten()
-        for i, key in enumerate(self.history):
-            ax = axes_flat[i]
-            for phase in ['train', 'val', 'test']:
-                data = self.history[key][phase]
-                if not data:
-                    continue
-                items = sorted(data.items(), key=lambda x: x[0])
-                steps = [s for s, _ in items]
-                means = [float(np.mean(v)) for _, v in items]
-                ax.plot(steps, means, label=phase)
-            ax.set_title(key)
+        if self.interactive:
+            import matplotlib.pyplot as plt
+            plt.show(block=False)
 
-        for ax in self.axes.flatten():
-            ax.set_xlabel('step')
-            ax.set_yscale('log')
-            ax.grid(True)
-            ax.legend()
+    def update_plot(self):
 
-        self.fig.canvas.draw()
-        self.fig.canvas.flush_events()
+        for (phase, metric), values in self.history.items():
+            ax = self.axes[metric]
 
-    def _save_plot(self):
-        out = self.output_dir / 'training_plot.png'
-        self.fig.savefig(out, bbox_inches='tight')
+            if (phase, metric) not in self.lines:
+                self.lines[phase, metric] = ax.plot([], [], label=phase)[0]
+                ax.legend()
+
+            self.lines[phase, metric].set_data(range(len(values)), values)
+            ax.relim()
+            ax.autoscale_view()
+
+        if self.interactive:
+            self.fig.canvas.draw()
+            self.fig.canvas.flush_events()
+
+    def save_plot(self):
+        path = self.output_dir / 'training_plot.png'
+        self.fig.savefig(path, bbox_inches='tight')
 
 
 class ViewerCallback(Callback):
 
-    def __init__(
-        self,
-        keys,
-        update_interval=10,
-        apply_mask=True,
-        shift_rgb=True,
-        scale_rgb=1.0,
-        n_labels=5,
-        output_dir='views',
-        **kwargs
-    ):
-        assert len(keys) > 0
-        self.update_interval = update_interval
-
-        self.apply_mask = apply_mask
-        self.shift_rgb = shift_rgb
-        self.scale_rgb = scale_rgb
+    def __init__(self, output_dir, keys):
 
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
-        self._init_viewers(keys, n_labels)
+        self.keys = list(keys)
 
-    def on_batch_end(self, epoch, phase, batch, step, outputs):
-        if batch % self.update_interval == 0:
-            self._update_viewers(outputs)
+        self.create_viewers()
 
-    def _init_viewers(self, keys, n_labels):
+    def on_batch_end(self, epoch, phase, batch_num, outputs):
+        self.update_viewers(outputs)
+
+    def create_viewers(self):
+        import matplotlib.pyplot as plt
+        from IPython.display import display
         from .visual.matplotlib import SliceViewer, get_color_kws
-        self.viewers = {}
-        for k in keys:
-            self.viewers[k] = SliceViewer(title=k, **get_color_kws(k, n_labels))
 
-    def _update_viewers(self, outputs, k=0):
-        if self.apply_mask:
-            mask = _to_numpy(outputs['mask'][k])
-            assert mask.ndim == 4 and mask.shape[0] == 1
+        self.viewers = {}
+        with plt.ioff():
+            for key in self.keys:
+                viewer = SliceViewer(title=key, **get_color_kws(key))
+                self.viewers[key] = viewer
+                display(viewer.fig.canvas)        
+
+    def update_viewers(self, outputs):
+
+        def _numpy(t):
+            return t.detach().cpu().numpy()
+
+        mask = _numpy(outputs['batch']['mask'][0,0])
 
         for key, viewer in self.viewers.items():
-            if key.startswith('mat_pred'):
-                outputs = ensure_material_preds(outputs)
 
-            if key not in outputs:
-                continue
-
-            array = _to_numpy(outputs[key][k])
-            assert array.ndim == 4, array.shape
-
-            if key in {'image', 'img_true', 'img_pred'} and array.shape[0] == 3: # RGB
-                if self.scale_rgb:
-                    array = array * self.scale_rgb
-                if self.shift_rgb: # map [-1, 1] -> [0, 1]
-                    array = (array + 1) / 2 
-                if self.apply_mask:
-                    array = array * mask
-                # array shape: (3, I, J, K)
+            if key.endswith('_true'):
+                tensor = outputs['batch'][key[:-5]]
+            elif key.endswith('_pred'):
+                tensor = outputs['preds'][key[:-5]]
             else:
-                if self.apply_mask:
-                    array = array * mask
-                array = array[0] # (I, J, K)
+                tensor = outputs['batch'][key]
+
+            array = _numpy(tensor[0,0]) * mask
 
             viewer.update_array(array)
 

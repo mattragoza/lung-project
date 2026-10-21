@@ -57,7 +57,6 @@ def get_trainer(examples, config, out_name='default'):
 
     model_cfg = config.get('model', {})
     model = models.build_model(task, config=model_cfg)
-    utils.log(model)
     utils.log(f'# params: {models.count_params(model)}')
 
     optimizer_kws = config.get('optimizer', {})
@@ -75,7 +74,16 @@ def get_trainer(examples, config, out_name='default'):
         test_loader=test_loader,
         val_loader=val_loader,
         evaluator=evaluation.Evaluator(),
-        callbacks=[callbacks.LoggingCallback()],
+        callbacks=[
+            callbacks.LoggingCallback(),
+            callbacks.PlotterCallback(
+                output_dir,
+                metrics=['loss', 'E_cell.nrmse', 'E_cell.pcorr']
+            ),
+            callbacks.ViewerCallback(
+                output_dir, keys=['image', 'E_pred', 'E_true']
+            )
+        ],
         output_dir=output_dir,
         bc_spec=bc_spec
     )
