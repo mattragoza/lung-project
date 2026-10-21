@@ -13,9 +13,9 @@ def _cpu_tensor(a, dtype):
     return torch.as_tensor(a, dtype=dtype, device='cpu')
 
 
-def _load_tensor(path, dtype=torch.float):
+def _load_tensor(path, dtype=torch.float, verbose=False):
     '''Load nifti as (C, I, J, K) cpu tensor.'''
-    array = fileio.load_nibabel(path).get_fdata()
+    array = fileio.load_nibabel(path, verbose).get_fdata()
     return _cpu_tensor(array, dtype).unsqueeze(0)
 
 
@@ -32,7 +32,8 @@ class TorchDataset(torch.utils.data.Dataset):
         rand_rotate:  bool = False,
         rand_reflect: bool = False,
         rand_translate: float = 0.,
-        use_cache: bool = False
+        use_cache: bool = False,
+        verbose: bool = False
     ):
         self.examples = examples
 
@@ -50,6 +51,8 @@ class TorchDataset(torch.utils.data.Dataset):
 
         self.use_cache = use_cache
         self._cache    = {}
+
+        self.verbose = verbose
 
     def __len__(self):
         return len(self.examples)
@@ -80,9 +83,9 @@ class TorchDataset(torch.utils.data.Dataset):
     def load_example(self, ex: Example) -> Dict[str, Any]:
 
         # load required assets
-        image = fileio.load_nibabel(ex.paths['input_image'])
-        mask = fileio.load_nibabel(ex.paths['domain_mask'])
-        mesh = fileio.load_meshio(ex.paths['target_mesh'])
+        image = fileio.load_nibabel(ex.paths['input_image'], self.verbose)
+        mask = fileio.load_nibabel(ex.paths['domain_mask'], self.verbose)
+        mesh = fileio.load_meshio(ex.paths['target_mesh'], self.verbose)
 
         # ----- shape validation -----
 
@@ -126,7 +129,8 @@ class TorchDataset(torch.utils.data.Dataset):
         # ----- load optional assets -----
 
         if 'material_dir' in ex.paths:
-            sample['E'] = _load_tensor(ex.paths['material_dir'] / 'youngs_modulus.nii.gz')
+            E_path = ex.paths['material_dir'] / 'youngs_modulus.nii.gz'
+            sample['E'] = _load_tensor(E_path, verbose=self.verbose)
 
         return sample
 

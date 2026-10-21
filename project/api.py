@@ -40,8 +40,8 @@ def run_optimize(examples: list, config: dict):
     utils.log(f'[Example {N}/{N}] Done')
 
 
-def run_training(examples: list, config: dict):
+def run_training(examples: list, config: dict, out_name: str):
     from . import training
-    training.run_training(examples, config)
+    training.run_training(examples, config, out_name)
     utils.log('Done')
 

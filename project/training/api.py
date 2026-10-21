@@ -1,16 +1,18 @@
 # training/api.py
 
+from pathlib import Path
+
 from ..common import utils, outputs
 
 from . import splits, tasks, trainer
 
 
-def run_training(examples, config, out_name='training'):
+def run_training(examples, config, out_name='default'):
     trainer = get_trainer(examples, config, out_name)
     return trainer.train(**config.get('trainer', {}))
 
 
-def get_trainer(examples, config, out_name='training'):
+def get_trainer(examples, config, out_name='default'):
     utils.check_keys(
         config,
         {'seed', 'split', 'transform', 'loaders'} |
@@ -65,7 +67,7 @@ def get_trainer(examples, config, out_name='training'):
     adapter = physics.get_adapter(solver, **config.get('physics_adapter', {}))
     bc_spec = physics.get_bc_spec(**config.get('boundary_condition', {}))
 
-    out = outputs.Outputs(stage='training')
+    output_dir = Path('outputs') / 'training' / out_name
 
     trainer_obj = trainer.Trainer(
         task, model, optimizer, adapter,
@@ -74,7 +76,7 @@ def get_trainer(examples, config, out_name='training'):
         val_loader=val_loader,
         evaluator=evaluation.Evaluator(),
         callbacks=[callbacks.LoggingCallback()],
-        csv_path=out.csv_path(name='metrics'),
+        output_dir=output_dir,
         bc_spec=bc_spec
     )
 

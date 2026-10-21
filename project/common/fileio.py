@@ -7,9 +7,9 @@ def make_dir_exist(path):
     path.mkdir(parents=True, exist_ok=True)
 
 
-def load_nibabel(path):
+def load_nibabel(path, verbose=None):
     import nibabel as nib
-    utils.log(f'Loading {path}')
+    utils.log(f'Loading {path}', verbose=verbose)
     return nib.load(path)
 
 
@@ -24,9 +24,9 @@ def save_nibabel(path, array, affine=None):
     nib.save(nifti, path)
 
 
-def load_simpleitk(path):
+def load_simpleitk(path, verbose=None):
     import SimpleITK as sitk
-    utils.log(f'Loading {path}')
+    utils.log(f'Loading {path}', verbose=verbose)
     return sitk.ReadImage(path)
 
 
@@ -37,9 +37,9 @@ def save_simpleitk(path, image):
     sitk.WriteImage(image, path)
 
 
-def load_meshio(path):
+def load_meshio(path, verbose=None):
     import meshio, os
-    utils.log(f'Loading {path}')
+    utils.log(f'Loading {path}', verbose=verbose)
     mesh = meshio.read(path)
     mesh.path = os.path.abspath(str(path))
     return mesh

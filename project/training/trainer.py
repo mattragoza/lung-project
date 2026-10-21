@@ -23,9 +23,8 @@ class Trainer:
         test_loader: torch.utils.data.DataLoader,
         val_loader: torch.utils.data.DataLoader,
         evaluator: evaluation.Evaluator,
-        csv_path: Path,
         callbacks: Optional[List['Callback']] = None,
-        output_dir: str = 'checkpoints',
+        output_dir: str = 'outputs/training/default',
         device: str = 'cuda',
         bc_spec: Any = None
     ):
@@ -46,9 +45,6 @@ class Trainer:
 
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True, parents=True)
-
-        self.csv_path = Path(csv_path)
-        self.csv_path.parent.mkdir(exist_ok=True, parents=True)
 
         self.device = device
 
@@ -121,53 +117,26 @@ class Trainer:
         for idx, batch in enumerate(data_loader):
             self.start_batch(phase, idx, batch)
 
-            if train_mode:
-                self.optimizer.zero_grad(set_to_none=True)
+            outputs = self.run_batch(batch, train_mode, eval_mode)
 
-            loss, outputs = self.run_batch(batch, eval_mode)
-
-            if train_mode:
-                if not torch.isfinite(loss):
-                    raise RuntimeError(f'Invalid training loss: {loss.item()}')
-
-                loss.backward()
-                grad_norm = _compute_grad_norm(self.model)
-
-                if not torch.isfinite(grad_norm):
-                    raise RuntimeError(f'Invalid gradient norm: {grad_norm.item()}')
-
-                outputs['grad_norm'] = grad_norm.detach().cpu()
-
-                self.optimizer.step()
-                self.step += 1
-
-            base = {
-                'epoch': self.epoch,
-                'phase': phase,
-                'batch': idx,
-                'loss': loss.item()
-            }
-            if train_mode:
-                base['grad_norm'] = grad_norm.item()
-
-            if eval_mode:
-                for vals in outputs['metrics']:
-                    self.metrics.append({**base, **vals})
-            else:
-                self.metrics.append(base)
+            for metrics in outputs.get('metrics', [{}]):
+                self.metrics.append({
+                    'epoch': self.epoch,
+                    'phase': phase,
+                    'batch': idx,
+                    'loss': outputs['loss'],
+                    'grad_norm': outputs.get('grad_norm', 0),
+                    **metrics
+                })
 
             self.end_batch(phase, idx, outputs)
 
-            del loss, outputs, batch
-
         self.end_phase(phase)
 
-    # ----- batch forward pipeline -----
+    def run_batch(self, batch, train_mode, eval_mode):
 
-    def run_example(self, ex):
-        raise NotImlementedError
-
-    def run_batch(self, batch, eval_mode: bool = False):
+        if train_mode:
+            self.optimizer.zero_grad(set_to_none=True)
 
         preds = self.run_model(batch)
         sim_loss, sims = self.run_physics(batch, preds, eval_mode)
@@ -177,13 +146,29 @@ class Trainer:
             'batch': batch,
             'preds': preds,
             'sims': sims,
-            'loss': loss.detach().cpu()
+            'loss': loss.item()
         }
 
-        if eval_mode and self.evaluator is not None:
-            outputs['metrics'] = self.evaluator.evaluate_batch(batch, preds, sims)
+        if train_mode:
+            if not torch.isfinite(loss):
+                raise RuntimeError(f'Invalid training loss: {loss.item()}')
 
-        return loss, outputs
+            loss.backward()
+            grad_norm = _compute_grad_norm(self.model)
+
+            if not torch.isfinite(grad_norm):
+                raise RuntimeError(f'Invalid gradient norm: {grad_norm.item()}')
+
+            outputs['grad_norm'] = grad_norm.item()
+
+            self.optimizer.step()
+            self.step += 1
+
+        if eval_mode:
+            metrics = self.evaluator.evaluate_batch(batch, preds, sims)
+            outputs['metrics'] = metrics
+
+        return outputs
 
     def run_model(self, batch):
         inputs = self._concat_inputs(batch)
@@ -258,10 +243,16 @@ class Trainer:
 
     # ----- saving / loading state -----
 
+    @property
+    def csv_path(self):
+        return self.output_dir / 'metrics.csv'
+
     def save_metrics(self):
         fileio.save_csv(self.csv_path, self.metrics, index=False)
 
     def load_metrics(self):
+        if not self.csv_path.is_file():
+            raise FileNotFoundError(f'No metrics found')
         self.metrics = fileio.load_csv(self.csv_path).to_dict('records')
 
     def save_checkpoint(self, path: Optional[Path] = None):

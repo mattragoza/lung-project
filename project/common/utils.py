@@ -19,14 +19,17 @@ def set_verbose(val: bool) -> None:
     VERBOSE = bool(val)
 
 
-def log(msg: str, end: str = '\n') -> None:
+def log(msg: str, end: str = '\n', verbose: Optional[bool] = None) -> None:
     is_worker = False
 
     if 'torch' in sys.modules:
         import torch
         is_worker = torch.utils.data.get_worker_info()
 
-    if VERBOSE and not is_worker:
+    if verbose is None:
+        verbose = VERBOSE
+
+    if verbose and not is_worker:
         print(msg, end=end, file=sys.stdout, flush=True)
 
 

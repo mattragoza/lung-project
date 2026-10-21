@@ -52,31 +52,32 @@ class LoggingCallback(Callback):
         self.timer.tick()
 
     def on_batch_start(self, epoch: int, phase: str, batch_idx: int, batch: dict):
-
         stats = self.timer.tick()
-        t_delta = stats['t_delta']
-        mem_used = stats['mem_used']
-
-        sid = batch['example'][0].subject
-        img_size = tuple(batch['image'][0,0].shape)
-        n_verts = len(batch['mesh'][0].points)
 
         utils.log(
             f'[Epoch {epoch} | {phase} batch {batch_idx} | load data]  '
-            f't_delta = {t_delta:.2g}s  mem_used = {mem_used:.2g} GiB  '
-            f'sid = {sid}  img_size = {img_size}  n_verts = {n_verts}'
+            f'dt = {stats["t_delta"]:.2g}s  '
+            f'mem_used = {stats["mem_used"]:.2g} GiB  '
+            #f'curr_alloc = {stats["curr_alloc"]:.2g} GiB  '
+            #f'curr_resvd = {stats["curr_resvd"]:.2g} GiB  '
+            #f'peak_alloc = {stats["peak_alloc"]:.2g} GiB  '
+            f'subject = {batch["example"][0].subject}  '
+            f'img_size = {tuple(batch["image"][0,0].shape)}  '
+            f'n_verts = {len(batch["mesh"][0].points)}'
         )
 
     def on_batch_end(self, epoch: int, phase: str, batch_idx: int, outputs: dict):
-
         stats = self.timer.tick()
-        t_delta = stats['t_delta']
-        mem_used = stats['mem_used']
 
         utils.log(
             f'[Epoch {epoch} | {phase} batch {batch_idx} | run batch]  '
-            f't_delta = {t_delta:.2g}s  mem_used = {mem_used:.2g} GiB  '
-            f'loss = {outputs["loss"].item():.4g}'
+            f'dt = {stats["t_delta"]:.2g}s  '
+            f'mem_used = {stats["mem_used"]:.2g} GiB  '
+            #f'curr_alloc = {stats["curr_alloc"]:.2g} GiB  '
+            #f'curr_resvd = {stats["curr_resvd"]:.2g} GiB  '
+            #f'peak_alloc = {stats["peak_alloc"]:.2g} GiB  '
+            f'loss = {float(outputs["loss"]):.4g}  '
+            f'grad_norm = {float(outputs.get("grad_norm", 0.)):.4g}'
         )
 
 
