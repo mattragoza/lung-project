@@ -158,7 +158,7 @@ class SliceViewer:
             **self.imshow_kws
         )
         if not self.rgb:
-            plt.colorbar(self.im_k, cax=self.cbar_ax)
+            self.fig.colorbar(self.im_k, cax=self.cbar_ax)
 
         # crosshair lines
         di, dj, dk = self._display_coords(i, j, k)
@@ -380,7 +380,7 @@ def get_label_cmap(
 def get_color_kws(key: str, n_labels: int = 5, include_bg: bool = True):
 
     if key in {'image', 'img_true', 'img_pred'}:
-        return dict(cmap='gray', clim=(-1, 1), line_color='rgb')
+        return dict(cmap='gray', clim=(-3, 3), line_color='rgb')
 
     elif key in {'E', 'E_true', 'E_pred'}:
         return dict(cmap='jet', clim=(0, 1e4), line_color='cmy')

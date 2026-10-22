@@ -33,7 +33,8 @@ class TorchDataset(torch.utils.data.Dataset):
         rand_reflect: bool = False,
         rand_translate: float = 0.,
         use_cache: bool = False,
-        verbose: bool = False
+        verbose: bool = False,
+        seed: int = None
     ):
         self.examples = examples
 
@@ -51,6 +52,10 @@ class TorchDataset(torch.utils.data.Dataset):
 
         self.use_cache = use_cache
         self._cache    = {}
+
+        self.rng = torch.Generator()
+        if seed is not None:
+            self.rng.manual_seed(seed)
 
         self.verbose = verbose
 

@@ -11,8 +11,8 @@ dataset:
         image_registration:  "gil"
         anatomical_regions:  "lung"
         material_properties: "bela"
-        mesh_generation:     "375"
-        field_interpolation: "int"
+        mesh_generation:     "rad" #"375"
+        field_interpolation: "fix" #"int"
         forward_simulation:  "LE"
 
 preprocessing:
@@ -89,13 +89,12 @@ preprocessing:
 
 optimization:
     parameters:
-        E: {
-            "mode": "log10",
-            "scale": 1.0,
-            "v_loc": 2.e3,
-            "v_min": 0.0,
-            "v_max": 1.e5
-        }
+        E:
+            mode: "log10"
+            scale: 1.0
+            v_loc: 1.5e3
+            v_min: 0.0
+            v_max: 1.0e5
     pde_solver:
         type: "warp"
         material_type: "linear"
@@ -115,45 +114,58 @@ optimization:
         line_search_fn: "strong_wolfe"
 
 training:
-    seed: 1234
     task:
         inputs: ["image"]
         targets: ["E"]
         losses: {"E": "sim"}
     split:
-        key: "category"
-        test_ratio: 0.2
+        method: "random"
+        test_ratio: 0.1
         val_ratio: 0.1
+        seed: 1234
     transform:
         normalize: true
-        image_mean: 0.0
-        image_std: 1.0
+        image_mean: -650.
+        image_std: 150.
         apply_mask: true
-        do_augment: true
-        rand_rotate: true
-        rand_reflect: true
-        rand_translate: 4.0
-    loader: {"batch_size": 1, "shuffle": true, "num_workers": 0}
+        do_augment: false
+        rand_rotate: false
+        rand_reflect: false
+        rand_translate: 0.0
+    loaders: {"batch_size": 1, "shuffle": true, "seed": 1234}
     model:
         backbone:
-            _class: UNet3Dv2
-            out_channels: 16
-            conv_channels: 16
+            type: UNet3D
+            out_channels: 8
             n_conv_units: 2
-            n_sub_levels: 2
+            n_unet_levels: 2
             kernel_size: 3
             relu_leak: 0.1
             norm_type: "group"
             num_groups: 4
-            pooling_type: "max"
+            downsample_fn: "max"
             upsample_mode: "trilinear"
+            do_downsample: true
         heads:
-            E: {"mode": "log10", "mean": 3.301, "std": 1.0}
+            E:
+                mode: "log10"
+                scale: 1.0
+                v_loc: 1.5e3
+                v_min: 0.0
+                v_max: 1.0e5
+    optimizer: {"type": "AdamW", "lr": 1.e-4}
     pde_solver:
-        type: "warp"
+        type: "warp.fem"
         material_type: "linear"
         g_vector: [0., -9.81, 0.]
         relative_loss: true
-        tv_reg_weight: 1.e-5
-    optimizer: {"type": "AdamW", "lr": 1.e-3}
-    trainer: {"num_epochs": 100}
+        tv_reg_weight: 1.e-4
+    boundary_condition:
+        type: "mesh_key"
+        value: "u_fwd"
+    trainer:
+        num_epochs: 10
+        val_interval: 1
+        test_interval: 1
+        save_interval: 1
+

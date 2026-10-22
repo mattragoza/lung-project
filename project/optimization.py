@@ -61,6 +61,7 @@ def optimize_example(ex, config, out_name='optimize'):
     utils.check_keys(
         config,
         valid={
+            'seed',
             'parameters',
             'pde_solver',
             'physics_adapter',
@@ -70,6 +71,10 @@ def optimize_example(ex, config, out_name='optimize'):
         },
         where='optimization'
     )
+
+    seed = config.get('seed')
+    if seed is not None:
+        torch.manual_seed(seed)
 
     sample = datasets.load_example(ex)
     mesh, unit_m = sample['mesh'], float(ex.metadata['unit'])

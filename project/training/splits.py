@@ -14,7 +14,7 @@ def split_data(examples, method, **kwargs):
 
 
 def random_split(examples, test_ratio, val_ratio, seed=0):
-    examples = list(examples)
+    examples = sorted(examples, key=lambda x: x.subject)
 
     n_total = len(examples)
     n_test = int(round(test_ratio * n_total))

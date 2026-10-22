@@ -22,6 +22,9 @@ def _resolve_subject_list(
         elif subjects.endswith('.txt'):
             return fileio.load_subject_list(subjects, key=0, header=None)
 
+        elif isinstance(subjects, str) and ',' in subjects:
+            return subjects.split(',')
+
     elif hasattr(subjects, '__iter__'):
         return [str(v) for v in subjects]
 

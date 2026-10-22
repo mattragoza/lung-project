@@ -58,8 +58,8 @@ class Trainer:
         self,
         num_epochs: int,
         val_interval: int = 1,
-        test_interval: int = 5,
-        save_interval: int = 5,
+        test_interval: int = 1,
+        save_interval: int = 1,
     ):
         self.start_train()
 
@@ -146,7 +146,8 @@ class Trainer:
             'batch': batch,
             'preds': preds,
             'sims': sims,
-            'loss': loss.item()
+            'loss': loss.item(),
+            'step': self.step
         }
 
         if train_mode:

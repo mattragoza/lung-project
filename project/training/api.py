@@ -25,28 +25,37 @@ def get_trainer(examples, config, out_name='default'):
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = False
 
-    seed = config.get('seed', 0)
-    torch.manual_seed(seed)
+    seed = config.get('seed')
+    if seed is not None:
+        torch.manual_seed(seed)
 
     from .. import datasets, models, optimization
     from .. import physics, evaluation, callbacks
 
-    split_kws = config.get('split', {})
-    train_ex, test_ex, val_ex = splits.split_data(examples, seed=seed, **split_kws)
+    split_kws = config.get('split', {}).copy()
+    split_kws.setdefault('seed', seed)
+
+    train_ex, test_ex, val_ex = splits.split_data(examples, **split_kws)
 
     transform_kws = config.get('transform', {}).copy()
-    train_set = datasets.TorchDataset(train_ex, **transform_kws)
+    transform_kws.setdefault('seed', seed)
+    aug = transform_kws.pop('do_augment')
 
-    transform_kws['do_augment'] = False
-    test_set  = datasets.TorchDataset(test_ex, **transform_kws)
-    val_set   = datasets.TorchDataset(val_ex, **transform_kws)
+    train_set = datasets.TorchDataset(train_ex, do_augment=aug, **transform_kws)
+    test_set  = datasets.TorchDataset(test_ex, do_augment=False, **transform_kws)
+    val_set   = datasets.TorchDataset(val_ex, do_augment=False, **transform_kws)
 
-    def _get_data_loader(dataset, **kwargs):
+    def _get_data_loader(dataset, seed=None, **kwargs):
+        rng = torch.Generator()
+        if seed is not None:
+            rng.manual_seed(seed)
         if len(dataset) > 0:
-            return torch.utils.data.DataLoader(dataset, **kwargs)
+            return torch.utils.data.DataLoader(
+                dataset, collate_fn=datasets.collate_fn, generator=rng, **kwargs
+            )
 
     loader_kws = config.get('loaders', {}).copy()
-    loader_kws['collate_fn'] = datasets.collate_fn
+    loader_kws.setdefault('seed', seed)
 
     train_loader = _get_data_loader(train_set, **loader_kws)
     test_loader  = _get_data_loader(test_set, **loader_kws)
@@ -55,9 +64,9 @@ def get_trainer(examples, config, out_name='default'):
     task_kws = config.get('task', {})
     task = tasks.TaskSpec(**task_kws)
 
-    model_cfg = config.get('model', {})
-    model = models.build_model(task, config=model_cfg)
-    utils.log(f'# params: {models.count_params(model)}')
+    model_config = config.get('model', {})
+    model = models.build_model(task, config=model_config)
+    utils.log(f'total params: {models.count_params(model)}')
 
     optimizer_kws = config.get('optimizer', {})
     optimizer = optimization.get_optimizer(model, **optimizer_kws)
@@ -77,8 +86,7 @@ def get_trainer(examples, config, out_name='default'):
         callbacks=[
             callbacks.LoggingCallback(),
             callbacks.PlotterCallback(
-                output_dir,
-                metrics=['loss', 'E_cell.nrmse', 'E_cell.pcorr']
+                output_dir, metrics=['loss', 'E_cell.nrmse', 'E_cell.pcorr']
             ),
             callbacks.ViewerCallback(
                 output_dir, keys=['image', 'E_pred', 'E_true']
@@ -88,11 +96,12 @@ def get_trainer(examples, config, out_name='default'):
         bc_spec=bc_spec
     )
 
+    import pandas as pd
     try:
         trainer_obj.load_checkpoint(by_mtime=True)
         trainer_obj.load_metrics()
 
-    except FileNotFoundError as e:
+    except (FileNotFoundError, pd.errors.EmptyDataError) as e:
         utils.warn(f'WARNING: {e}')
 
     return trainer_obj

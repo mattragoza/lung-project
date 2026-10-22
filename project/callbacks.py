@@ -2,6 +2,7 @@
 
 from typing import List, Dict, Optional
 from pathlib import Path
+import numpy as np
 
 from .common import utils, fileio
 
@@ -57,10 +58,11 @@ class LoggingCallback(Callback):
         utils.log(
             f'[Epoch {epoch} | {phase} batch {batch_num} | load data]  '
             f'dt = {stats["t_delta"]:.2g}s  '
-            f'mem_used = {stats["mem_used"]:.2g} GiB  '
-            #f'curr_alloc = {stats["curr_alloc"]:.2g} GiB  '
-            #f'curr_resvd = {stats["curr_resvd"]:.2g} GiB  '
+            f'curr_alloc = {stats["curr_alloc"]:.2g} GiB  '
+            f'curr_resvd = {stats["curr_resvd"]:.2g} GiB  '
             #f'peak_alloc = {stats["peak_alloc"]:.2g} GiB  '
+            #f'peak_resvd = {stats["peak_resvd"]:.2g} GiB  '
+            f'mem_usage = {stats["mem_used"]:.2g}/{stats["mem_total"]:.2g} GiB  '
             f'subject = {batch["example"][0].subject}  '
             f'img_size = {tuple(batch["image"][0,0].shape)}  '
             f'n_verts = {len(batch["mesh"][0].points)}'
@@ -72,10 +74,11 @@ class LoggingCallback(Callback):
         utils.log(
             f'[Epoch {epoch} | {phase} batch {batch_num} | run batch]  '
             f'dt = {stats["t_delta"]:.2g}s  '
-            f'mem_used = {stats["mem_used"]:.2g} GiB  '
-            #f'curr_alloc = {stats["curr_alloc"]:.2g} GiB  '
-            #f'curr_resvd = {stats["curr_resvd"]:.2g} GiB  '
+            f'curr_alloc = {stats["curr_alloc"]:.2g} GiB  '
+            f'curr_resvd = {stats["curr_resvd"]:.2g} GiB  '
             #f'peak_alloc = {stats["peak_alloc"]:.2g} GiB  '
+            #f'peak_resvd = {stats["peak_resvd"]:.2g} GiB  '
+            f'mem_usage = {stats["mem_used"]:.2g}/{stats["mem_total"]:.2g} GiB  '
             f'loss = {float(outputs["loss"]):.4g}  '
             f'grad_norm = {float(outputs.get("grad_norm", 0.)):.4g}'
         )
@@ -83,7 +86,13 @@ class LoggingCallback(Callback):
 
 class PlotterCallback(Callback):
 
-    def __init__(self, output_dir, metrics=('loss',), interactive=True):
+    def __init__(
+        self,
+        output_dir,
+        metrics=('loss',), 
+        interactive=True,
+        exclude_test=True
+    ):
         from collections import defaultdict
 
         self.output_dir = Path(output_dir)
@@ -91,40 +100,21 @@ class PlotterCallback(Callback):
 
         self.metrics = list(metrics)
         self.interactive = interactive
+        self.exclude_test = exclude_test
 
-        self.history = defaultdict(list)
+        self.x_history = defaultdict(list)
+        self.y_history = defaultdict(list)
+
         self.lines = {}
 
-        self.create_plot()
+        self.create_plots()
 
-    def on_batch_end(self, epoch, phase, batch_num, outputs):
-        import numpy as np
-
-        def _scalar(x):
-            if hasattr(x, 'detach'):
-                return float(x.detach().item())
-            return float(x)
-
-        for metric in self.metrics:
-            if metric in outputs:
-                value = _scalar(outputs[metric])
-            else:
-                value = np.mean([
-                    _scalar(x[metric]) for x in outputs['metrics']
-                ])
-
-            self.history[phase, metric].append(value)
-
-        self.update_plot()
-
-    def on_phase_end(self, epoch: int, phase: str):
-        self.save_plot()
-
-    def create_plot(self):
+    def create_plots(self):
         from .visual.matplotlib import subplot_grid
 
         self.fig, axes = subplot_grid(
-            1, len(self.metrics),
+            n_rows=1,
+            n_cols=len(self.metrics),
             ax_height=3,
             ax_width=2,
             spacing=(1.0, 1.0),
@@ -133,24 +123,59 @@ class PlotterCallback(Callback):
 
         self.axes = dict(zip(self.metrics, axes.flat))
 
+        expected_phases = ['train', 'val']
+        if not self.exclude_test:
+            expected_phases.append('test')
+
         for metric, ax in self.axes.items():
+            for phase in expected_phases:
+                self.lines[phase, metric] = ax.plot([], [], label=phase)[0]
             ax.set(xlabel='step', ylabel=metric)
             ax.grid(alpha=0.25)
+            ax.legend()
 
         if self.interactive:
             import matplotlib.pyplot as plt
             plt.show(block=False)
 
-    def update_plot(self):
+    def on_batch_end(self, epoch, phase, batch_num, outputs):
+        if phase == 'test' and self.exclude_test:
+            return
+        self.append_metrics(phase, outputs)
+        self.update_plots()
 
-        for (phase, metric), values in self.history.items():
+    def append_metrics(self, phase, outputs):
+
+        def _scalar(x):
+            if hasattr(x, 'detach'):
+                x = x.detach().item()
+            return float(x)
+
+        self.x_history[phase].append(outputs['step'])
+
+        for metric in self.metrics:
+            if metric in outputs:
+                value = _scalar(outputs[metric])
+            elif metric in outputs.get('metrics', {}):
+                value = np.mean([
+                    _scalar(x[metric]) for x in outputs['metrics']
+                ])
+            else:
+                continue
+
+            self.y_history[phase, metric].append(value)
+
+    def update_plots(self):
+
+        for phase, metric in self.y_history:
+            x_vals = self.x_history[phase]
+            y_vals = self.y_history[phase, metric]
+
+            x_unique, groups = np.unique(x_vals, return_inverse=True)
+            y_mean = np.bincount(groups, weights=y_vals) / np.bincount(groups)
+
+            self.lines[phase, metric].set_data(x_unique, y_mean)
             ax = self.axes[metric]
-
-            if (phase, metric) not in self.lines:
-                self.lines[phase, metric] = ax.plot([], [], label=phase)[0]
-                ax.legend()
-
-            self.lines[phase, metric].set_data(range(len(values)), values)
             ax.relim()
             ax.autoscale_view()
 
@@ -158,7 +183,10 @@ class PlotterCallback(Callback):
             self.fig.canvas.draw()
             self.fig.canvas.flush_events()
 
-    def save_plot(self):
+    def on_phase_end(self, epoch: int, phase: str):
+        self.save_plots()
+
+    def save_plots(self):
         path = self.output_dir / 'training_plot.png'
         self.fig.savefig(path, bbox_inches='tight')
 
