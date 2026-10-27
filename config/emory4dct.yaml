@@ -6,9 +6,12 @@ dataset:
     state_pairs:
         - ["T50", "T00"]
     pipeline_tags:
-        image_resampling:   "iso"
-        image_segmentation: "v3d"
-        image_registration: "lung"
+        image_resampling:    "iso"
+        image_segmentation:  "v3d"
+        image_registration:  "gil"
+        anatomical_regions:  "lung"
+        mesh_generation:     "rad"
+        field_interpolation: "fix"
 
 preprocessing:
     image_resampling: {"spacing": [1.0, 1.0, 1.0], "interpolator": "bspline", "default_value": -1024.}
