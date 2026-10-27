@@ -208,18 +208,19 @@ class Emory4DCTDataset(Dataset):
 
                     paths['init_state']['segment_dir'] = self.derived_path(sid, variant, 'mask_dir', f'{sid}_{init_state}_{img_tag}_{seg_tag}')
                     paths['init_state']['combined_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{init_state}_{img_tag}_{seg_tag}_combined')
-                    paths['init_state']['region_map'] = self.derived_path(sid, variant, 'mask',  f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}')
+                    paths['init_state']['anatomical_map'] = self.derived_path(sid, variant, 'mask',  f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}')
 
                     paths['curr_state']['segment_dir'] = self.derived_path(sid, variant, 'mask_dir', f'{sid}_{curr_state}_{img_tag}_{seg_tag}')
                     paths['curr_state']['combined_mask'] = self.derived_path(sid, variant, 'mask', f'{sid}_{curr_state}_{img_tag}_{seg_tag}_combined')
-                    paths['curr_state']['region_map'] = self.derived_path(sid, variant, 'mask',  f'{sid}_{curr_state}_{img_tag}_{seg_tag}_{map_tag}')
+                    paths['curr_state']['anatomical_map'] = self.derived_path(sid, variant, 'mask',  f'{sid}_{curr_state}_{img_tag}_{seg_tag}_{map_tag}')
 
                     paths['disp_field'] = self.derived_path(sid, variant, 'field', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{reg_tag}_{curr_state}')
-                    paths['region_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}')
+                    paths['anatomical_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}')
                     paths['interp_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}_{reg_tag}_{curr_state}_{int_tag}')
 
                     paths['input_image'] = paths['init_state']['resampled_image']
-                    paths['region_map'] = paths['init_state']['region_map']
+                    paths['domain_mask'] = paths['init_state']['anatomical_map']
+                    paths['target_mesh'] = paths['interp_mesh']
 
                 yield Example(
                     dataset='Emory-4DCT',

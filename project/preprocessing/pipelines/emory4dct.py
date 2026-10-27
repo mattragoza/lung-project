@@ -8,8 +8,8 @@ from ..runner import run_stage
 def preprocess(ex, config):
     utils.check_keys(
         config,
-        {'image_resampling', 'image_segmentation', 'region_labeling'} |
-        {'image_registration', 'mesh_generation', 'field_interpolation'},
+        {'image_resampling', 'image_segmentation', 'image_registration'} |
+        {'anatomical_regions', 'mesh_generation', 'field_interpolation'},
         where='preprocessing[emory4dct]'
     )
 
@@ -29,7 +29,6 @@ def preprocess(ex, config):
             reference_path=ex.paths['ref_state']['converted_image'],
             config=config.get('image_resampling', {})
         )
-
         run_stage(
             stages.create_segmentation_masks,
             image_path=ex.paths[state]['resampled_image'],
@@ -37,34 +36,31 @@ def preprocess(ex, config):
             output_path=ex.paths[state]['combined_mask'],
             config=config.get('image_segmentation', {})
         )
-
         run_stage(
             stages.label_anatomical_regions,
             input_dir=ex.paths[state]['segment_dir'],
-            output_path=ex.paths[state]['region_map'],
-            config=config.get('region_labeling', {})
+            output_path=ex.paths[state]['anatomical_map'],
+            config=config.get('anatomical_regions', {})
         )
 
     run_stage(
         stages.estimate_displacement_field,
         fixed_image=ex.paths['init_state']['resampled_image'],
-        moving_image=ex.paths['curr_state']['resampled_image'],
         fixed_mask=ex.paths['init_state']['combined_mask'],
+        moving_image=ex.paths['curr_state']['resampled_image'],
         moving_mask=ex.paths['curr_state']['combined_mask'],
         output_path=ex.paths['disp_field'],
         config=config.get('image_registration', {})
     )
-
     run_stage(
         stages.generate_tetrahedral_mesh,
-        mask_path=ex.paths['init_state']['region_map'],
-        output_path=ex.paths['region_mesh'],
+        mask_path=ex.paths['init_state']['anatomical_map'],
+        output_path=ex.paths['anatomical_mesh'],
         config=config.get('mesh_generation', {})
     )
-
     run_stage(
         stages.interpolate_mesh_fields,
-        mesh_path=ex.paths['region_mesh'],
+        mesh_path=ex.paths['anatomical_mesh'],
         image_path=ex.paths['input_image'],
         disp_path=ex.paths['disp_field'],
         output_path=ex.paths['interp_mesh'],

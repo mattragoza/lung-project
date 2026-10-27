@@ -9,7 +9,8 @@ def preprocess(ex, config):
     utils.check_keys(
         config,
         {'image_resampling', 'image_segmentation', 'image_registration'} |
-        {'anatomical_regions', 'mesh_generation', 'field_interpolation'}
+        {'anatomical_regions', 'mesh_generation', 'field_interpolation'},
+        where='preprocessing[bmc4dct]'
     )
 
     for state in ['init_state', 'curr_state']:
@@ -56,7 +57,6 @@ def preprocess(ex, config):
         image_path=ex.paths['input_image'],
         mask_path=ex.paths['domain_mask'],
         disp_path=ex.paths['disp_field'],
-        fields_dir=ex.paths['material_dir'],
         output_path=ex.paths['interp_mesh'],
         validate_fn=fileio.load_meshio,
         config=config.get('field_interpolation', {})
