@@ -1,152 +1,131 @@
 dataset:
     name: "Emory-4DCT"
     root: "data/Emory-4DCT"
-    examples:
-        subjects: ["case1", "case2", "case3", "case4", "case5", "case6", "case7", "case8", "case9", "case10"]
-        variant: "TEST"
-        state_pairs:
-            - ["T50", "T00"]
-        pipeline_tags:
-            image_segmentation: "tseg"
-            image_registration: "lung"
+    subjects: ["case1", "case2", "case3", "case4", "case5", "case6", "case7", "case8", "case9", "case10"]
+    variant: "TEST"
+    state_pairs:
+        - ["T50", "T00"]
+    pipeline_tags:
+        image_resampling:   "iso"
+        image_segmentation: "v3d"
+        image_registration: "lung"
 
 preprocessing:
-    image_resampling:
-        spacing: [1.0, 1.0, 2.5]
-        interpolation: "linear"
-        default_value: -1024.0
+    image_resampling: {"spacing": [1.0, 1.0, 1.0], "interpolator": "bspline", "default_value": -1024.}
     image_segmentation:
         tasks:
-            - task_name: "total"
-              roi_subset:
-                - "lung_upper_lobe_right"
-                - "lung_middle_lobe_right"
-                - "lung_lower_lobe_right"
-                - "lung_upper_lobe_left"
-                - "lung_lower_lobe_left"
-        combine: true
+          - method: "TotalSegmentator"
+            kwargs:
+                task: "total"
+                roi_subset: ["lung_upper_lobe_right", "lung_middle_lobe_right", "lung_lower_lobe_right", "lung_upper_lobe_left", "lung_lower_lobe_left"]
+          - method: "TotalSegmentator"
+            kwargs:
+                task: "lung_vessels"
+          - method: "VisionFeature"
+            kwargs:
+                model: "vista3d"
+                results_dir: "/restricted/projectnb/batmanlab/haozhe/Lung_Mesh_Segment/data/nnUNetv2/nnUNet_results"
+          - method: "HU_threshold"
+            kwargs:
+                thresholds:
+                    lt-950: {"operator": "<", "value": -950}
+                    lt-910: {"operator": "<", "value": -910}
+                    lt-850: {"operator": "<", "value": -850}
+                    gt-500: {"operator": ">", "value": -500}
+                    gt-200: {"operator": ">", "value": -200}
     image_registration:
         method: "unigradicon"
-        args:
+        kwargs:
             model: "gradiconlung"
-            io_sim: "lncc2"
-            io_iterations: 50
-            io_sigma: 1
+            similarity: "lncc2"
+            sigma: 1
+            iterations: 50
             loss_function_masking: true
             intensity_conservation: true
-    region_labeling:
-        roi_order:
-            - "lung_upper_lobe_right"
-            - "lung_middle_lobe_right"
-            - "lung_lower_lobe_right"
-            - "lung_upper_lobe_left"
-            - "lung_lower_lobe_left"
-        region_filter:
-            min_voxels: 30
-            keep_largest: true
+            weights_root: "/projectnb/batmanlab/mragoza/lung-project/network_weights"
+    anatomical_regions:
+        roi_order: ["lung_upper_lobe_right", "lung_middle_lobe_right", "lung_lower_lobe_right", "lung_upper_lobe_left", "lung_lower_lobe_left"]
+        filter_kws: {"min_voxels": 30, "keep_largest": true}
     mesh_generation:
-        use_affine_spacing: true
-        mesh_parameters:
-            max_facet_distance: 0.75
-            max_cell_circumradius: 5.0
+        use_search: True
+        pygalmesh_kws:
+            max_cell_circumradius: 3.75
+            max_facet_distance: 1.0
             lloyd: true
             odt: true
+    field_interpolation:
+        displacement_key: "u_reg"
 
 optimization:
-    targets: ["E"]
-    param_specs:
-    E:
-        mode: "log10"
-        mean: 3.4863
-        std: 0.3271
-    nu:
-        mode: "logit"
-        min: 0.0001
-        max: 0.4999
-    rho:
-        mode: "log10"
-        mean: 2.4
-        std: 0.1
-    physics_adapter:
-        default_nu: 0.4
-        default_rho: 250
+    parameters:
+        E: {"mode": "log10", "v_loc": 3000., "scale": 0.3271}
+        nu: {"mode": "logit", "v_min": 0.0001, "v_max": 0.4999}
+        rho: {"mode": "log10", "v_loc": 250., "scale": 0.1}
     pde_solver:
-        _class: WarpFEMSolver
+        type: "warp.fem"
+        material_type: "linear"
+        g_vector: [0., -9.81, 0.]
         relative_loss: true
-        tv_reg_weight: 0.0001
-        scalar_degree: 1
-        vector_degree: 1
-    optimizer:
-        _class: LBFGS
-        lr: 1.0
+        tv_reg_weight: 1.0e-4
+    boundary_condition: {"type": "mesh_key", "value": "u_reg"}
+    optimization_kws:
+        type: "LBFGS"
+        num_trials: 10
+        init_scale: 0.1
+        global_steps: 10
+        local_steps: 100
+        rtol: 1.e-5
         max_iter: 1
-        history_size: 10
+        max_eval: 20
         line_search_fn: "strong_wolfe"
-        global_steps: 1
-        local_steps: 1
 
 training:
-    random_seed: 0
-    task:
-        inputs: ["image"]
-        targets: ["E"]
-        losses:
-            E: "sim"
     split:
-        key: "category"
-        test_ratio: 0.2
+        key: "random"
+        test_ratio: 0.1
         val_ratio: 0.1
         seed: 0
     transform:
         normalize: true
-        image_mean: 0.0
-        image_std: 1.0
+        image_mean: -650.
+        image_std: 150.
         apply_mask: true
-        do_augment: true
-        rand_rotate: true
-        rand_reflect: true
-        sigma_trans: 4.0
-    loader:
-        batch_size: 1
-        shuffle: true
-        num_workers: 0
+        do_augment: false
+        rand_rotate: false
+        rand_reflect: false
+        sigma_trans: 0.0
+    loader: {"batch_size": 1, "shuffle": true, "seed": 1234}
+    task:
+        inputs: ["image"]
+        targets: ["E"]
+        losses: {"E": "sim"}
     model:
         backbone:
-            _class: UNet3Dv2
+            type: UNet3D
             out_channels: 16
-            conv_channels: 16
             n_conv_units: 2
-            n_sub_levels: 2
+            n_unet_levels: 2
             kernel_size: 3
             relu_leak: 0.1
             norm_type: "group"
             num_groups: 4
             pooling_type: "max"
             upsample_mode: "trilinear"
-        param_specs:
-            E:
-                mode: "log10"
-                mean: 3.4863
-                std: 0.3271
-            nu:
-                mode: "logit"
-                min: 0.0001
-                max: 0.4999
-            rho:
-                mode: "log10"
-                mean: 2.4
-                std: 0.1
-    physics_adapter:
-        default_nu: 0.4
-        default_rho: 250
-        scalar_degree: 1
-        vector_degree: 1
+        heads:
+            E: {"mode": "log10", "v_loc": 3000., "scale": 0.3271}
+            nu: {"mode": "logit", "v_min": 0.0001, "v_max": 0.4999}
+            rho: {"mode": "log10", "v_loc": 250., "scale": 0.1}
+    optimizer: {"type": "AdamW", "lr": 1.0e-4}
     pde_solver:
-        _class: WarpFEMSolver
+        type: "warp.fem"
+        material_type: "linear"
+        g_vector: [0., -9.81, 0.]
         relative_loss: true
-        tv_reg_weight: 0.0001
-    optimizer:
-        _class: AdamW
-        lr: 0.001
+        tv_reg_weight: 1.0e-4
+    boundary_condition: {"type": "mesh_key", "value": "u_reg"}
     trainer:
-        num_epochs: 100
+        num_epochs: 10
+        val_interval: 1
+        test_interval: 1
+        save_interval: 1
+
