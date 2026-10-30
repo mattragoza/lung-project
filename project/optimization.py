@@ -1,6 +1,7 @@
 # optimization.py
 
 from typing import List, Dict, Tuple, Callable, Any
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -57,7 +58,7 @@ class ParameterDict(torch.nn.Module):
 # ----- public entry point -----
 
 
-def optimize_example(ex, config, out_name='optimize'):
+def optimize_example(ex, config, out_name='default'):
     utils.check_keys(
         config,
         valid={
@@ -67,6 +68,7 @@ def optimize_example(ex, config, out_name='optimize'):
             'physics_adapter',
             'boundary_condition',
             'optimization_kws',
+            'rasterization',
             'output_name'
         },
         where='optimization'
@@ -76,7 +78,7 @@ def optimize_example(ex, config, out_name='optimize'):
     if seed is not None:
         torch.manual_seed(seed)
 
-    sample = datasets.load_example(ex)
+    sample = datasets.load_example(ex, verbose=True)
     mesh, unit_m = sample['mesh'], float(ex.metadata['unit'])
 
     solver = physics.get_solver(**config.get('pde_solver', {}))
@@ -98,14 +100,25 @@ def optimize_example(ex, config, out_name='optimize'):
     with torch.no_grad(): # get final simulation outputs using optimized params
         sim = adapter.mesh_simulation_loss(mesh, unit_m, params, bc_spec, True)[1]
 
-    rasters = {}
-    for name, param in params.items():
-        utils.log(f'Rasterizing parameter: {name}')
-        rasters[name] = adapter.rasterize_scalar_field(
-            mesh, unit_m, param, sample['mask'].shape[1:], sample['affine']
-        )
+    raster_cfg = config.get('rasterization', {}).copy()
+    skip_raster = raster_cfg.pop('skip_raster', False)
 
-    save_optimization_results(ex, sample, rasters, sim, out_name)
+    rasters = {}
+    if not skip_raster:
+        for name, param in params.items():
+            utils.log(f'Rasterizing parameter: {name}')
+            rasters[name] = adapter.rasterize_scalar_field(
+                mesh=mesh,
+                unit_m=unit_m,
+                dofs=param,
+                shape=sample['mask'].shape[1:],
+                affine=sample['affine'],
+                mask=sample['mask'][0]
+            )
+
+    output_dir = Path('outputs') / 'optimize' / out_name
+
+    save_optimization_results(ex, sample, rasters, sim, output_dir)
 
 
 def run_optimization_trials(
@@ -197,8 +210,6 @@ def run_optimization_steps(
         loss.backward()
 
         grad_norm = _compute_grad_norm(param_dict.parameters())
-        utils.log(f'  grad_norm = {grad_norm:.8e}')
-
         if not np.isfinite(grad_norm):
             raise RuntimeError(f'Non-finite loss gradient: {grad_norm}')
 
@@ -255,18 +266,25 @@ def _compute_grad_norm(params: List[torch.nn.Parameter]) -> float:
     return np.sqrt(total)
 
 
-def save_optimization_results(ex, sample, rasters, sim_outputs, outname='optimize'):
-    out = outputs.Outputs(stage=outname)
+def save_optimization_results(ex, sample, rasters, sim_outputs, output_dir):
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True, parents=True)
 
     mesh = sample['mesh'].copy()
-    for name, param in sim_outputs['params'].items():
-        mesh.point_data[name] = param.node_values.detach().cpu().numpy()
-        mesh.cell_data[name] = [param.cell_values.detach().cpu().numpy()]
 
-    mesh_path = out.mesh_path(ex, name='output')
+    for name in ['u_bc', 'u_obs', 'u_sim', 'residual']:
+        field = sim_outputs[name]
+        mesh.point_data[name] = field.node_values.detach().cpu().numpy()
+        mesh.cell_data[name] = [field.cell_values.detach().cpu().numpy()]
+
+    for name, field in sim_outputs['params'].items():
+        mesh.point_data[name] = field.node_values.detach().cpu().numpy()
+        mesh.cell_data[name] = [field.cell_values.detach().cpu().numpy()]
+
+    mesh_path = output_dir / ex.subject / 'output.xdmf'
     fileio.save_meshio(mesh_path, mesh)
 
-    raster_dir = out.raster_dir(ex)
+    raster_dir = output_dir / ex.subject / 'rasters'
     for name, raster in rasters.items():
         raster = raster.detach().cpu().numpy()[0]
         fileio.save_nibabel(raster_dir / f'{name}_pred.nii.gz', raster, sample['affine'])
@@ -274,7 +292,7 @@ def save_optimization_results(ex, sample, rasters, sim_outputs, outname='optimiz
     evaluator = evaluation.Evaluator()
     metrics = evaluator.evaluate_sample(sample, rasters, sim_outputs, groupby=None)
 
-    csv_path = out.csv_path(name='metrics')
+    csv_path = output_dir / 'eval_metrics.csv'
     fileio.save_csv(csv_path, metrics)
 
 

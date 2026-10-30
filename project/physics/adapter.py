@@ -129,9 +129,9 @@ class PhysicsAdapter:
                 key: _as_mesh_field(ctx, val, self.scalar_degree)
                     for key, val in params.items()
             },
-            'u_bc': _as_mesh_field(ctx, u_bc, self.vector_degree),
-            'u_obs': _as_mesh_field(ctx, u_obs, self.vector_degree),
-            'u_sim': _as_mesh_field(ctx, u_sim, self.vector_degree),
+            'u_bc': _as_mesh_field(ctx, u_bc / unit_m, self.vector_degree),
+            'u_obs': _as_mesh_field(ctx, u_obs / unit_m, self.vector_degree),
+            'u_sim': _as_mesh_field(ctx, u_sim / unit_m, self.vector_degree),
             'residual': _as_mesh_field(ctx, res, self.vector_degree),
         }
 
@@ -151,7 +151,8 @@ class PhysicsAdapter:
         unit_m: float,
         dofs: torch.Tensor,
         shape: Tuple[int, int, int],
-        affine: torch.Tensor
+        affine: torch.Tensor,
+        mask: torch.Tensor = None
     ) -> torch.Tensor:
 
         ctx = self.get_physics_context(mesh, unit_m)
@@ -159,14 +160,18 @@ class PhysicsAdapter:
         lo, hi = transforms.get_grid_bounds(shape, affine)
         bounds = (lo * unit_m, hi * unit_m)
 
-        self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
-        raster = self.pde_solver.rasterize_scalar_field(dofs, shape, bounds).cpu()
-
-        # warp only handles spacing, not the full affine
+        # warp only handles spacing, not the full affine;
         #   we handle affine orientation by flipping dims
-        dims_to_flip = [i + 1 for i, v in enumerate(torch.diag(affine)) if v < 0]
 
-        return torch.flip(raster, dims=dims_to_flip)
+        spatial_flips = [i for i in range(3) if affine[i, i] < 0]
+
+        if mask is not None:
+            mask = torch.flip(mask, dims=spatial_flips)
+
+        self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
+        raster = self.pde_solver.rasterize_scalar_field(dofs, shape, bounds, mask).cpu()
+
+        return torch.flip(raster, dims=[i + 1 for i in spatial_flips])
 
     def simulate_displacement(
         self,
@@ -184,7 +189,7 @@ class PhysicsAdapter:
         self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
         u_sim = self.pde_solver.solve_forward(mu, lam, rho, u_bc)
 
-        return _as_mesh_field(ctx, u_sim, self.vector_degree)
+        return _as_mesh_field(ctx, u_sim / unit_m, self.vector_degree)
 
     # ----- context lifecycle -----
 

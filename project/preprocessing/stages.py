@@ -439,14 +439,14 @@ def simulate_displacement_field(
     adapter = physics.get_adapter(solver, **config.get('physics_adapter', {}))
     bc_spec = physics.get_bc_spec(**config.get('boundary_condition', {}))
 
-    u_sim = adapter.simulate_displacement(mesh, unit_m, bc_spec) # meters
+    u_sim = adapter.simulate_displacement(mesh, unit_m, bc_spec)
 
     def _to_numpy(t):
         return t.detach().cpu().numpy()
 
     output_key = config.get('output_key', 'u')
-    mesh.cell_data[output_key] = [_to_numpy(u_sim.cell_values) / unit_m]
-    mesh.point_data[output_key] = _to_numpy(u_sim.node_values) / unit_m
+    mesh.cell_data[output_key] = [_to_numpy(u_sim.cell_values)]
+    mesh.point_data[output_key] = _to_numpy(u_sim.node_values)
 
     fileio.save_meshio(output_path, mesh)
 

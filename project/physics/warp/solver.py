@@ -661,16 +661,28 @@ class WarpFEMSolver(PDESolver):
 
     # ----- rasterization helpers -----
 
-    def rasterize_scalar_field(self, values, shape, bounds):
+    def rasterize_scalar_field(self, values, shape, bounds, mask=None):
         field = self.init_scalar_field(values)
-        return rasterize_field(field, shape, bounds)
+        return rasterize_field(field, shape, bounds, mask=mask)
 
-    def rasterize_vector_field(self, values, shape, bounds):
+    def rasterize_vector_field(self, values, shape, bounds, mask=None):
         field = self.init_vector_field(values)
-        return rasterize_field(field, shape, bounds)
+        return rasterize_field(field, shape, bounds, mask=mask)
 
 
-def rasterize_field(src: wp.fem.Field, shape, bounds, background=0.0):
+@wp.fem.integrand
+def masked_field(
+    x: wp.fem.Sample,
+    src: wp.fem.Field,
+    mask: wp.fem.Field,
+    bg: wp.fem.Field
+):
+    if mask(x) > 0.0:
+        return src(x)
+    return bg(x)
+
+
+def rasterize_field(src: wp.fem.Field, shape, bounds, background=0.0, mask=None):
     '''
     Args:
         src: Warp FEM field to rasterize on voxel grid
@@ -679,8 +691,11 @@ def rasterize_field(src: wp.fem.Field, shape, bounds, background=0.0):
     Returns:
         (C, I, J, K) rasterized field tensor
     '''
+    wp.synchronize()
+
     I, J, K = shape
     C = getattr(src.dtype, '_length_', 1)
+    device = str(src.dof_values.device)
 
     grid = wp.fem.Grid3D(
         res=wp.vec3i(shape),
@@ -693,7 +708,18 @@ def rasterize_field(src: wp.fem.Field, shape, bounds, background=0.0):
     dst = dst_space.make_field()
 
     src_nc = wp.fem.NonconformingField(dst_domain, src, background)
-    wp.fem.interpolate(src_nc, dest=dst)
+
+    if mask is None:
+        wp.fem.interpolate(src_nc, dest=dst)
+    else:
+        mask_space = wp.fem.make_polynomial_space(grid, degree=0, dtype=wp.float32)
+        mask_field = mask_space.make_field()
+        mask_tensor = torch.as_tensor(mask, dtype=torch.float32, device=device)
+        wp.to_torch(mask_field.dof_values).copy_(mask_tensor.reshape(-1))
+        bg_field = wp.fem.UniformField(dst_domain, background)
+        wp.fem.interpolate(masked_field, dest=dst, fields={
+            'src': src_nc, 'mask': mask_field, 'bg': bg_field
+        })
 
     return wp.to_torch(dst.dof_values).reshape(I, J, K, C).permute(3,0,1,2)
 
