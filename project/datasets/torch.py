@@ -36,7 +36,8 @@ class TorchDataset(torch.utils.data.Dataset):
         verbose: bool = False,
         seed: int = None
     ):
-        self.examples = examples
+        self.examples = [ex for ex in examples if ex.paths['target_mesh'].exists()]
+        print(len(self.examples))
 
         # image preprocessing
         self.normalize  = normalize

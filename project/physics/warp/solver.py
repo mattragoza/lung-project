@@ -7,6 +7,7 @@ import warp as wp
 import warp.fem
 import warp.optim.linear
 
+from ...common import utils
 from ..solvers import PDESolver
 from . import materials, forms
 
@@ -384,7 +385,7 @@ class WarpFEMSolver(PDESolver):
             relative_norm = curr_norm / init_norm
 
             if curr_norm < max(self.newton_atol, self.newton_rtol * init_norm):
-                print(f'Newton solver converged (PDE ares = {curr_norm:.4e}, det_F = {det_F:.4f})')
+                utils.log(f'Newton solver converged (iter = {it}, PDE ares = {curr_norm:.4e}, det_F = {det_F:.4f})')
                 return J, M
 
             # solve linear system for state update direction
@@ -424,7 +425,8 @@ class WarpFEMSolver(PDESolver):
 
             u.dof_values += alpha * du.dof_values
 
-        _fail(f'Newton solver failed to converge in {self.newton_iters} iterations')
+        utils.warn(f'WARNING: Newton solver failed to converge (iter = {it}, PDE ares = {curr_norm:.4e}, det_F = {det_F:.4f})')
+        return J, M
 
     def adaptive_step_size(self, mu, lam, rho, u, du, init_norm):
         curr_alpha = self.newton_alpha

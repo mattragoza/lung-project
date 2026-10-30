@@ -91,7 +91,7 @@ class OutputHead(nn.Module):
             mode='fan_in'
         )
         with torch.no_grad():
-            self.conv.weight.mul_(0.01)
+            self.conv.weight.mul_(0.1)
         nn.init.zeros_(self.conv.bias)
 
     def forward(self, x):
