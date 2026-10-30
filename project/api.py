@@ -29,19 +29,19 @@ def run_preprocess(examples: list, config: dict):
     utils.log(f'[Example {N}/{N}] Done')
 
 
-def run_optimize(examples: list, config: dict):
+def run_optimize(examples: list, config: dict, run_name: str = 'default'):
     from . import optimization
 
     N = len(examples)
     for idx, ex in enumerate(examples):
         utils.log(f'[Example {idx}/{N}] Optimizing example: {ex.subject}')
-        optimization.optimize_example(ex, config)
+        optimization.optimize_example(ex, config, run_name)
 
     utils.log(f'[Example {N}/{N}] Done')
 
 
-def run_training(examples: list, config: dict, out_name: str = 'default'):
+def run_training(examples: list, config: dict, run_name: str = 'default'):
     from . import training
-    training.run_training(examples, config, out_name)
+    training.run_training(examples, config, run_name)
     utils.log('Done')
 

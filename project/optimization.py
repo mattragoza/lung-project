@@ -58,7 +58,7 @@ class ParameterDict(torch.nn.Module):
 # ----- public entry point -----
 
 
-def optimize_example(ex, config, out_name='default'):
+def optimize_example(ex, config, run_name='default'):
     utils.check_keys(
         config,
         valid={
@@ -116,7 +116,7 @@ def optimize_example(ex, config, out_name='default'):
                 mask=sample['mask'][0]
             )
 
-    output_dir = Path('outputs') / 'optimize' / out_name
+    output_dir = Path('outputs') / 'optimize' / run_name
 
     save_optimization_results(ex, sample, rasters, sim, output_dir)
 
