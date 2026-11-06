@@ -66,6 +66,7 @@ class WarpFEMSolver(PDESolver):
         newton_evals: int = 32,    # backtracking attempts
         newton_alpha: float = 1.0, # initial step size
         newton_beta: float = 0.5,  # backtracking factor
+        incremental: bool = False,
         cg_maxiter: int = 0,
         cg_rtol: float = 1e-5,
         scalar_degree: int = 1,
@@ -85,6 +86,8 @@ class WarpFEMSolver(PDESolver):
 
         self.eps_reg = float(eps_reg)
         self.eps_div = float(eps_div)
+
+        self.incremental = bool(incremental)
 
         # Newton's method settings
         self.newton_iters = int(newton_iters)
@@ -256,6 +259,8 @@ class WarpFEMSolver(PDESolver):
     # ----- solving systems of equations -----
 
     def solve_forward_system(self, mu, lam, rho, u_bc, u_sim):
+        if self.incremental:
+            return self.solve_incremental(mu, lam, rho, u_bc, u_sim)
         J, M = self.solve_linear_system(mu, lam, rho, u_sim)
         if not self.material.is_linear:
             J, M = self.solve_newton_method(mu, lam, rho, u_sim)

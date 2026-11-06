@@ -18,6 +18,9 @@ def _resolve_material_type(name: str):
     elif key in {'neohookean', 'neoh', 'nh'}:
         return CiarletNeoHookeanMaterial
 
+    elif key in {'exponentialneohookean', 'expon', 'xn'}:
+        return ExponentialNeoHookeanMaterial
+
     elif key in {'decoupledneohookean', 'decoup', 'dn'}:
         return DecoupledNeoHookeanMaterial
 
@@ -60,6 +63,14 @@ class CiarletNeoHookeanMaterial(WarpMaterial):
     is_linear = False
 
     stress_func = forms.ciarlet_neohookean_stress
+    residual_form = forms.build_residual_form(stress_func)
+    jacobian_form = forms.build_jacobian_form(stress_func)
+
+
+class ExponentialNeoHookeanMaterial(WarpMaterial):
+    is_linear = False
+
+    stress_func = forms.exponential_neohookean_stress
     residual_form = forms.build_residual_form(stress_func)
     jacobian_form = forms.build_jacobian_form(stress_func)
 

@@ -131,6 +131,21 @@ def ciarlet_neohookean_stress(F: wp.mat33, mu: float, lam: float):
 
 
 @wp.func
+def exponential_neohookean_stress(
+    F: wp.mat33,
+    mu: float,
+    lam: float,
+    delta: float = 0.5 # ref: https://pubmed.ncbi.nlm.nih.gov/35072891/
+):
+    J = wp.determinant(F)
+    F_inv_T = wp.transpose(wp.inverse(F))
+
+    exp_term = wp.exp(delta * (J*J - 1. - 2. * wp.log(J)))
+
+    return mu * (F - F_inv_T) + 0.5 * lam * exp_term * (J*J - 1.) * F_inv_T
+
+
+@wp.func
 def decoupled_neohookean_stress(F: wp.mat33, mu: float, lam: float):
 
     # strain energy density:
@@ -165,7 +180,7 @@ def decoupled_neohookean_stress(F: wp.mat33, mu: float, lam: float):
     return P_iso + P_vol
 
 
-# ----- Yeoh hyperelastic model -----
+# ----- Yeoh polynomial model(s) -----
 
 
 @wp.func
