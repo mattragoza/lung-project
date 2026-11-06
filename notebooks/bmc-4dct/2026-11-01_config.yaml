@@ -1,0 +1,151 @@
+dataset:
+    name: "BMC-4DCT"
+    root: "/restricted/projectnb/batmanlab/mragoza/data/BMC-4DCT"
+    subjects: ["4DCT_1_1", "4DCT_2_1", "4DCT_2_2", "4DCT_4_1", "4DCT_6_1", "4DCT_7_3", "4DCT_8_1", "4DCT_8_2", "4DCT_10_1"]
+    state_pairs:
+        - [50, 0]
+        - [50, 10]
+        - [50, 20]
+        - [50, 30]
+        - [50, 40]
+        - [50, 60]
+        - [50, 70]
+        - [50, 80]
+        - [50, 90]
+    variant: "2026-11-01"
+    pipeline_tags:
+        image_resampling:    "iso"
+        image_segmentation:  "v3d"
+        image_registration:  "gil"
+        anatomical_regions:  "lung"
+        mesh_generation:     "rad"
+        field_interpolation: "fix"
+
+preprocessing:
+    image_resampling: {"spacing": [1.0, 1.0, 1.0], "interpolator": "bspline", "default_value": -1000.}
+    image_segmentation:
+        tasks:
+          - method: "TotalSegmentator"
+            kwargs:
+                task: "total"
+                roi_subset: ["lung_upper_lobe_right", "lung_middle_lobe_right", "lung_lower_lobe_right", "lung_upper_lobe_left", "lung_lower_lobe_left"]
+          - method: "TotalSegmentator"
+            kwargs:
+                task: "lung_vessels"
+          - method: "VisionFeature"
+            kwargs:
+                model: "vista3d"
+                results_dir: "/restricted/projectnb/batmanlab/haozhe/Lung_Mesh_Segment/data/nnUNetv2/nnUNet_results"
+          - method: "HU_threshold"
+            kwargs:
+                thresholds:
+                    lt-950: {"operator": "<", "value": -950}
+                    lt-910: {"operator": "<", "value": -910}
+                    lt-850: {"operator": "<", "value": -850}
+                    gt-500: {"operator": ">", "value": -500}
+                    gt-200: {"operator": ">", "value": -200}
+    image_registration:
+        method: "unigradicon"
+        kwargs:
+            model: "gradiconlung"
+            similarity: "lncc2"
+            sigma: 1
+            iterations: 50
+            loss_function_masking: true
+            intensity_conservation: true
+            weights_root: "/projectnb/batmanlab/mragoza/lung-project/network_weights"
+    anatomical_regions:
+        roi_order: ["lung_upper_lobe_right", "lung_middle_lobe_right", "lung_lower_lobe_right", "lung_upper_lobe_left", "lung_lower_lobe_left"]
+        filter_kws: {"min_voxels": 30, "keep_largest": true}
+    mesh_generation:
+        use_search: True
+        pygalmesh_kws:
+            max_cell_circumradius: 3.75
+            max_facet_distance: 1.0
+            lloyd: true
+            odt: true
+    field_interpolation:
+        displacement_key: "u_reg"
+
+optimization:
+    parameters:
+        E:
+            mode: "log10"
+            scale: 1.0
+            v_loc: 1.5e3
+            v_min: 0.0
+            v_max: 1.0e5
+    pde_solver:
+        type: "warp"
+        material_type: "linear"
+        g_vector: [0., -9.81, 0.]
+        relative_loss: true
+        tv_reg_weight: 1.e-4
+    boundary_condition: {"type": "mesh_key", "value": "u_fwd"}
+    optimization_kws:
+        type: "LBFGS"
+        num_trials: 10
+        init_scale: 0.1
+        global_steps: 10
+        local_steps: 100
+        rtol: 1.e-5
+        max_iter: 1
+        max_eval: 20
+        line_search_fn: "strong_wolfe"
+
+training:
+    task:
+        inputs: ["image"]
+        targets: ["E"]
+        losses: {"E": "sim"}
+    split:
+        method: "random"
+        test_ratio: 0.1
+        val_ratio: 0.1
+        seed: 1234
+    transform:
+        normalize: true
+        image_mean: -650.
+        image_std: 150.
+        apply_mask: true
+        do_augment: false
+        rand_rotate: false
+        rand_reflect: false
+        rand_translate: 0.0
+    loaders: {"batch_size": 1, "shuffle": true, "seed": 1234}
+    model:
+        backbone:
+            type: UNet3D
+            out_channels: 8
+            n_conv_units: 2
+            n_unet_levels: 2
+            kernel_size: 3
+            relu_leak: 0.1
+            norm_type: "group"
+            num_groups: 4
+            downsample_fn: "max"
+            upsample_mode: "trilinear"
+            do_downsample: true
+        heads:
+            E:
+                mode: "log10"
+                scale: 1.0
+                v_loc: 1.5e3
+                v_min: 0.0
+                v_max: 1.0e5
+    optimizer: {"type": "AdamW", "lr": 1.e-4}
+    pde_solver:
+        type: "warp.fem"
+        material_type: "linear"
+        g_vector: [0., -9.81, 0.]
+        relative_loss: true
+        tv_reg_weight: 1.e-4
+    boundary_condition:
+        type: "mesh_key"
+        value: "u_fwd"
+    trainer:
+        num_epochs: 10
+        val_interval: 1
+        test_interval: 1
+        save_interval: 1
+
