@@ -6,7 +6,9 @@ from ..common import utils
 
 def split_data(examples, method, **kwargs):
     utils.log('Splitting data examples')
-    if method == 'random':
+    if method is None:
+        return examples, [], []
+    elif method == 'random':
         return random_split(examples, **kwargs)
     elif method == 'metadata':
         return metadata_split(examples, **kwargs)
