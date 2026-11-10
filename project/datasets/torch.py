@@ -26,18 +26,17 @@ class TorchDataset(torch.utils.data.Dataset):
         examples: List[Example],
         normalize: bool = False,
         image_mean: float = 0.0,
-        image_std:  float = 1.0,
+        image_std: float = 1.0,
         apply_mask: bool = False,
         do_augment: bool = False,
-        rand_rotate:  bool = False,
+        rand_rotate: bool = False,
         rand_reflect: bool = False,
-        rand_translate: float = 0.,
+        rand_translate: float = 0.0,
         use_cache: bool = False,
         verbose: bool = False,
         seed: int = None
     ):
-        self.examples = [ex for ex in examples if ex.paths['target_mesh'].exists()]
-        print(len(self.examples))
+        self.examples = list(examples)
 
         # image preprocessing
         self.normalize  = normalize
@@ -132,8 +131,8 @@ class TorchDataset(torch.utils.data.Dataset):
 
         # ----- load optional assets -----
 
-        if 'material_dir' in ex.paths:
-            E_path = ex.paths['material_dir'] / 'youngs_modulus.nii.gz'
+        E_path = ex.paths['material_dir'] / 'youngs_modulus.nii.gz'
+        if E_path.exists():
             sample['E'] = _load_tensor(E_path, verbose=self.verbose)
 
         return sample

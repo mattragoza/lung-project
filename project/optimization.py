@@ -210,6 +210,8 @@ def run_optimization_steps(
         loss.backward()
 
         grad_norm = _compute_grad_norm(param_dict.parameters())
+        #print(f'grad_norm = {grad_norm:.4e}')
+
         if not np.isfinite(grad_norm):
             raise RuntimeError(f'Non-finite loss gradient: {grad_norm}')
 

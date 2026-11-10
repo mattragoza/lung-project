@@ -67,7 +67,7 @@ class BMC4DCTDataset(Dataset):
     INDEX_COLUMNS = ('case_id', 'resp_phase')
     EI_RESP_STATE = 0
     EE_RESP_STATE = 50
-    DEFAULT_STUDY_NUM = 1
+    DEFAULT_UNIT = 1e-3
 
     def load_metadata(self):
         import pandas as pd
@@ -114,6 +114,8 @@ class BMC4DCTDataset(Dataset):
             return base_dir / 'meshes' /  f'{asset_name}.xdmf'
         elif asset_type == 'field':
             return base_dir / 'fields' / f'{asset_name}.nii.gz'
+        elif asset_type == 'field_dir':
+            return base_dir / 'fields' / f'{asset_name}'
 
         raise RuntimeError(f'Invalid derived asset type: {asset_type!r}')
 
@@ -139,6 +141,7 @@ class BMC4DCTDataset(Dataset):
             'image_segmentation',
             'image_registration',
             'anatomical_regions',
+            'material_properties',
             'mesh_generation',
             'field_interpolation',
         }
@@ -150,6 +153,7 @@ class BMC4DCTDataset(Dataset):
         seg_tag = pipeline_tags.get('image_segmentation',  'seg')
         reg_tag = pipeline_tags.get('image_registration',  'reg')
         map_tag = pipeline_tags.get('anatomical_regions', 'anat')
+        mat_tag = pipeline_tags.get('material_properties', 'mat')
         gen_tag = pipeline_tags.get('mesh_generation',     'gen')
         int_tag = pipeline_tags.get('field_interpolation', 'int')
 
@@ -162,6 +166,7 @@ class BMC4DCTDataset(Dataset):
                 meta['ref_state'] = ref_state
                 meta['init_state'] = init_state
                 meta['curr_state'] = curr_state
+                meta['unit'] = self.DEFAULT_UNIT
 
                 paths = {'ref_state': {}, 'init_state': {}, 'curr_state': {}}
                 paths['ref_state']['source_image'] = self.source_path(sid, ref_state, asset_type='image')
@@ -181,8 +186,11 @@ class BMC4DCTDataset(Dataset):
                     paths['anatomical_map'] = self.derived_path(sid, variant, 'mask',  f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}')
                     paths['anatomical_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{map_tag}_{gen_tag}')
 
+                    paths['material_map'] = self.derived_path(sid, variant, 'field', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{mat_tag}_label')
+                    paths['material_dir'] = self.derived_path(sid, variant, 'field_dir', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{mat_tag}')
+
                     paths['disp_field'] = self.derived_path(sid, variant, 'field', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{reg_tag}_{curr_state}')
-                    paths['interp_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{reg_tag}_{curr_state}_{map_tag}_{gen_tag}_{int_tag}')
+                    paths['interp_mesh'] = self.derived_path(sid, variant, 'mesh', f'{sid}_{init_state}_{img_tag}_{seg_tag}_{reg_tag}_{curr_state}_{map_tag}_{gen_tag}_{mat_tag}_{int_tag}')
 
                     # required training paths
                     paths['input_image'] = paths['init_state']['resampled_image']

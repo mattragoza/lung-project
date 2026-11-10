@@ -73,15 +73,15 @@ optimization:
             mode: "log10"
             scale: 1.0
             v_loc: 1.5e3
-            v_min: 0.0
+            v_min: 1.0
             v_max: 1.0e5
     pde_solver:
-        type: "warp"
+        type: "warp.fem"
         material_type: "linear"
         g_vector: [0., -9.81, 0.]
         relative_loss: true
         tv_reg_weight: 1.e-4
-    boundary_condition: {"type": "mesh_key", "value": "u_fwd"}
+    boundary_condition: {"type": "mesh_key", "value": "u_reg"}
     optimization_kws:
         type: "LBFGS"
         num_trials: 10
@@ -131,7 +131,7 @@ training:
                 mode: "log10"
                 scale: 1.0
                 v_loc: 1.5e3
-                v_min: 0.0
+                v_min: 1.0
                 v_max: 1.0e5
     optimizer: {"type": "AdamW", "lr": 1.e-4}
     pde_solver:
@@ -142,7 +142,7 @@ training:
         tv_reg_weight: 1.e-4
     boundary_condition:
         type: "mesh_key"
-        value: "u_fwd"
+        value: "u_reg"
     trainer:
         num_epochs: 10
         val_interval: 1

@@ -208,6 +208,7 @@ def assign_material_properties(
     domain = fileio.load_nibabel(domain_path).get_fdata() > 0
 
     inputs = {'image': nifti.get_fdata(), 'domain': domain}
+
     for name in material_properties.get_referenced_names(config) - inputs.keys():
         mask = fileio.load_nibabel(segment_dir / f'{name}.nii.gz').get_fdata() > 0
         inputs[name] = mask & domain
@@ -351,11 +352,12 @@ def interpolate_mesh_fields(
     }
 
     if fields_dir is not None:
-        fields.update({
-            'E': fileio.load_nibabel(fields_dir / 'youngs_modulus.nii.gz').get_fdata(),
-            'nu': fileio.load_nibabel(fields_dir / 'poisson_ratio.nii.gz').get_fdata(),
-            'rho': fileio.load_nibabel(fields_dir / 'density.nii.gz').get_fdata(),
-        })
+        try:
+            fields['E'] = fileio.load_nibabel(fields_dir / 'youngs_modulus.nii.gz').get_fdata()
+        except FileNotFoundError:
+            utils.warn('WARNING: No Young\'s modulus field was found')
+        fields['nu'] = fileio.load_nibabel(fields_dir / 'poisson_ratio.nii.gz').get_fdata()
+        fields['rho'] = fileio.load_nibabel(fields_dir / 'density.nii.gz').get_fdata()
 
     utils.log('Interpolating voxel fields onto mesh')
     mesh = field_interpolation.interpolate_mesh_fields(

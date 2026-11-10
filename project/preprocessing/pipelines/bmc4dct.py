@@ -9,7 +9,8 @@ def preprocess(ex, config):
     utils.check_keys(
         config,
         {'image_resampling', 'image_segmentation', 'image_registration'} |
-        {'anatomical_regions', 'mesh_generation', 'field_interpolation'},
+        {'anatomical_regions', 'mesh_generation', 'material_properties'} |
+        {'field_interpolation'},
         where='preprocessing[bmc4dct]'
     )
 
@@ -45,6 +46,15 @@ def preprocess(ex, config):
         config=config.get('anatomical_regions', {})
     )
     run_stage(
+        stages.assign_material_properties,
+        image_path=ex.paths['init_state']['resampled_image'],
+        domain_path=ex.paths['init_state']['combined_mask'],
+        segment_dir=ex.paths['init_state']['segment_dir'],
+        output_path=ex.paths['material_map'],
+        fields_dir=ex.paths['material_dir'],
+        config=config.get('material_properties', {})
+    )
+    run_stage(
         stages.generate_tetrahedral_mesh,
         mask_path=ex.paths['anatomical_map'],
         output_path=ex.paths['anatomical_mesh'],
@@ -57,6 +67,7 @@ def preprocess(ex, config):
         image_path=ex.paths['input_image'],
         mask_path=ex.paths['domain_mask'],
         disp_path=ex.paths['disp_field'],
+        fields_dir=ex.paths['material_dir'],
         output_path=ex.paths['interp_mesh'],
         validate_fn=fileio.load_meshio,
         config=config.get('field_interpolation', {})
