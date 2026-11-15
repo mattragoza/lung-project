@@ -139,6 +139,8 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
 
         preds = self.run_model(batch)
+
+        torch.cuda.empty_cache()
         sim_loss, sims = self.run_physics(batch, preds, eval_mode)
         loss = self.compute_loss(batch, preds, sim_loss)
 
@@ -155,7 +157,7 @@ class Trainer:
                 raise RuntimeError(f'Invalid training loss: {loss.item()}')
 
             loss.backward()
-            grad_norm = _compute_grad_norm(self.model)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
 
             if not torch.isfinite(grad_norm):
                 raise RuntimeError(f'Invalid gradient norm: {grad_norm.item()}')

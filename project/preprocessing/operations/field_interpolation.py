@@ -57,8 +57,11 @@ def interpolate_mesh_fields(
                 raise ValueError(f'Invalid mesh deformation: {det_F.min():.4f}')
 
         else:
-            mesh.point_data[name] = interpolate_masked(array, mask, node_voxels, **interp_kws)
-            mesh.cell_data[name] = [interpolate_masked(array, mask, cell_voxels, **interp_kws)]
+            mesh.point_data[name] = interpolate_array(array, node_voxels, **interp_kws)
+            mesh.cell_data[name] = [interpolate_array(array, cell_voxels, **interp_kws)]
+
+        f = mesh.point_data[name]
+        utils.log(f'{name} | min = {f.min()}  max = {f.max()}  mean = {f.mean()}  std = {f.std()}')
 
     return mesh
 

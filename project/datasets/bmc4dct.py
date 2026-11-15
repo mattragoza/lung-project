@@ -71,8 +71,11 @@ class BMC4DCTDataset(Dataset):
 
     def load_metadata(self):
         import pandas as pd
-        self._metadata = pd.read_csv(self.root / 'metadata' / 'phase_manifest.csv')
-        self._metadata.set_index(list(self.INDEX_COLUMNS), inplace=True)
+        metadata = pd.read_csv(self.root / 'metadata' / 'phase_manifest.csv')
+        self._metadata = (
+            metadata[metadata.case_valid]
+            .set_index(list(self.INDEX_COLUMNS), verify_integrity=True)
+        )
         self._metadata_loaded = True
 
     def subjects(self):
@@ -82,16 +85,11 @@ class BMC4DCTDataset(Dataset):
     def source_path(self, subject, state, asset_type='image') -> Path:
         self.require_metadata()
 
-        meta = self._metadata.loc[(subject, state)]
-        if len(meta) > 1:
-            raise ValueError(f'Multiple rows for subject/state:\n{meta})')
-
-        row = meta.iloc[0]
-
+        meta = self._metadata.loc[subject, state]
         if asset_type == 'image':
-            return self.root / row.image_path
+            return self.root / meta.image_path
         elif asset_type == 'json':
-            return self.root / row.json_path
+            return self.root / meta.json_path
 
         raise RuntimeError(f'Invalid source asset type: {asset_type!r}')
 
@@ -127,6 +125,8 @@ class BMC4DCTDataset(Dataset):
         state_pairs: Optional[List[Tuple[str, str]]] = None,
         pipeline_tags: Dict[str, str] = None
     ):
+        self.require_metadata()
+
         subject_list = list(subjects or self.subjects())
 
         if variant is not None:
@@ -162,7 +162,15 @@ class BMC4DCTDataset(Dataset):
             for init_state, curr_state in state_pairs:
                 ref_state = self.EI_RESP_STATE
 
+                m = self._metadata.loc[sid, init_state]
+
                 meta = {}
+                meta['scan_role'] = str(m['scan_role'])
+                meta['subject_num'] = int(m['subject_num'])
+                meta['study_num'] = int(m['study_num'])
+                meta['series_description'] = str(m['series_description'])
+                meta['case_valid'] = bool(m['case_valid'])
+
                 meta['ref_state'] = ref_state
                 meta['init_state'] = init_state
                 meta['curr_state'] = curr_state

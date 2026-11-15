@@ -73,8 +73,10 @@ class MetricRegistry:
         names: Optional[List[str]] = None
     ) -> Dict[str, float]:
 
-        if names is None:
-            names = self._metrics.keys()
+        names = list(self._metrics if names is None else names)
+        missing = [n for n in names if n not in self._metrics]
+        if missing:
+            raise KeyError(f'Metrics not in registry: {missing}')
 
         outputs = {}
         for name in names:
@@ -115,69 +117,37 @@ evaluate_profile = REGISTRY.evaluate_profile
 
 
 def _sum(values: np.ndarray, weights: Optional[np.ndarray] = None) -> float:
-
-    values = np.asarray(values, dtype=float)
-
-    if values.ndim != 1:
-        raise ValueError('values must be 1-d')
-    if not np.isfinite(values).all():
-        raise ValueError('values must be finite')
-
     if weights is None:
         return float(np.sum(values))
-
-    weights = np.asarray(weights, dtype=float)
-
-    if weights.ndim != 1:
-        raise ValueError('weights must be 1-d')
     if weights.shape != values.shape:
-        raise ValueError('invalid weights shape')
-    if not np.isfinite(weights).all():
-        raise ValueError('weights must be finite')
-    if not np.all(weights >= 0):
-        raise ValueError('weights must be non-negative')
-    if not np.sum(weights) > 0:
-        raise ValueError('total weight must be positive')
-
+        raise ValueError(f'shape mismatch: {weights.shape} vs. {values.shape}')
     return float(np.sum(values * weights))
 
 
 def _divide(numer: float, denom: float) -> float:
-
-    if not np.isfinite(numer):
-        raise ValueError('numerator must be finite')
-    if not np.isfinite(denom):
-        raise ValueError('denominator must be finite')
-
     if abs(denom) < EPS:
         utils.warn('WARNING: division by zero')
         return float(np.nan)
-
     return float(numer / denom)
 
 
-def _mean(values: np.ndarray, weight: Optional[np.ndarray] = None) -> float:
-
-    values = np.asarray(values, dtype=float)
-
-    if values.ndim != 1:
-        raise ValueError('values must be 1-d')
-    if not np.isfinite(values).all():
-        raise ValueError('values must be finite')
-
-    if weight is None:
+def _mean(values: np.ndarray, weights: Optional[np.ndarray] = None) -> float:
+    if weights is None:
         return float(np.mean(values))
-
-    return float(_divide(_sum(values, weight), _sum(weight)))
-
-
-def _rms(values: np.ndarray, weight: Optional[np.ndarray] = None) -> float:
-    return float(np.sqrt(_mean(values**2, weight)))
+    weighted_sum = _sum(values, weights)
+    total_weight = _sum(weights)
+    return _divide(weighted_sum, total_weight)
 
 
-def _std(values: np.ndarray, weight: Optional[np.ndarray] = None) -> float:
-    deviation = values - _mean(values, weight)
-    return float(_rms(deviation, weight))
+def _rms(values: np.ndarray, weights: Optional[np.ndarray] = None) -> float:
+    mean_squared_value = _mean(values * values, weights)
+    return float(np.sqrt(mean_squared_value))
+
+
+def _std(values: np.ndarray, weights: Optional[np.ndarray] = None) -> float:
+    mean_value = _mean(values, weights)
+    deviations = values - mean_value
+    return _rms(deviations, weights)
 
 
 # ----- metric definitions -----
@@ -225,7 +195,7 @@ def normalized_rmse(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
 def pearson_corr(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
     '''Pearson's correlation coefficient'''
 
-    pred, target = pred.flatten(), target.flatten()
+    pred, target = pred.ravel(), target.ravel()
 
     if weight is not None:
         weight = np.repeat(weight, pred.size // weight.size)
@@ -254,7 +224,7 @@ def spearman_corr(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
 
     NOTE: Implemented as weighted Pearson correlation of ordinal ranks.
     '''
-    pred, target = pred.flatten(), target.flatten()
+    pred, target = pred.ravel(), target.ravel()
 
     rank_p = scipy.stats.rankdata(pred)
     rank_t = scipy.stats.rankdata(target)
@@ -265,7 +235,7 @@ def spearman_corr(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
 def dice_score(pred: np.ndarray, target: np.ndarray, weight=None) -> float:
     '''Dice coefficient: 2*|A & B| / (|A| + |B|)'''
 
-    A, B = (pred > 0).flatten(), (target > 0).flatten()
+    A, B = (pred > 0).ravel(), (target > 0).ravel()
 
     numer = 2 * _sum(A & B, weight)
     denom = _sum(A, weight) + _sum(B, weight)

@@ -7,25 +7,37 @@ from ..common import utils, outputs
 from . import splits, tasks, trainer
 
 
-def run_inference(examples, config, output_dir='outputs'):
+def run_inference(examples, config, output_dir='outputs', run_name='default'):
     import copy
     config = copy.deepcopy(config)
+
     config['split']['method'] = None
     config['loaders']['batch_size'] = 1
     config['loaders']['shuffle'] = False
-    trainer = get_trainer(examples, config, output_dir, use_callbacks=False)
+
+    trainer = get_trainer(
+        examples, config, output_dir, run_name, use_callbacks=False
+    )
+
     return trainer.run_phase(
         trainer.train_loader, phase='infer', train_mode=False
     )
 
 
-def run_training(examples, config, outputs_dir='outputs', run_name='default'):
+def run_training(examples, config, output_dir='outputs', run_name='default'):
+    import pandas as pd
+
     trainer = get_trainer(
-        examples, config,
-        output_dir=output_dir,
-        run_name=run_name,
-        use_callbacks=True
+        examples, config, output_dir, run_name, use_callbacks=True
     )
+
+    try:
+        trainer.load_checkpoint(by_mtime=True)
+        trainer.load_metrics()
+
+    except (FileNotFoundError, pd.errors.EmptyDataError) as e:
+        utils.warn(f'WARNING: {e}')
+
     return trainer.train(**config.get('trainer', {}))
 
 
@@ -43,8 +55,8 @@ def get_trainer(
         {'pde_solver', 'physics_adapter', 'boundary_condition'},
         where='training'
     )
-    import torch
 
+    import torch
     torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = False
 
@@ -105,19 +117,24 @@ def get_trainer(
     output_dir = Path(output_dir) / 'training' / run_name
 
     if use_callbacks:
+        has_labels = examples[0].dataset == 'COPDGene'
+
+        if has_labels:
+            metrics = ['loss', 'E_cell.nrmse', 'E_cell.pcorr']
+            viewers = ['image', 'E_pred', 'E_true']
+        else:
+            metrics = ['loss']
+            viewers = ['image', 'E_pred']
+
         callback_list = [
             callbacks.LoggingCallback(),
-            callbacks.PlotterCallback(
-                output_dir, metrics=['loss', 'E_cell.nrmse', 'E_cell.pcorr']
-            ),
-            callbacks.ViewerCallback(
-                output_dir, keys=['image', 'E_pred', 'E_true']
-            )
+            callbacks.PlotterCallback(output_dir, metrics=metrics),
+            callbacks.ViewerCallback(output_dir, keys=viewers)
         ]
     else:
         callback_list = []
 
-    trainer_obj = trainer.Trainer(
+    return trainer.Trainer(
         task, model, optimizer, adapter,
         train_loader=train_loader,
         test_loader=test_loader,
@@ -127,14 +144,4 @@ def get_trainer(
         output_dir=output_dir,
         bc_spec=bc_spec
     )
-
-    import pandas as pd
-    try:
-        trainer_obj.load_checkpoint(by_mtime=True)
-        trainer_obj.load_metrics()
-
-    except (FileNotFoundError, pd.errors.EmptyDataError) as e:
-        utils.warn(f'WARNING: {e}')
-
-    return trainer_obj
 

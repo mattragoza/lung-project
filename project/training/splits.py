@@ -53,60 +53,54 @@ def random_split(examples, test_ratio, val_ratio, seed=0):
 
 
 def metadata_split(examples, key, test_ratio, val_ratio, seed=0):
-    examples = list(examples)
+    examples = sorted(examples, key=lambda x: x.subject)
 
-    cats_by_sid = defaultdict(set)
-    sids_by_cat = defaultdict(set)
+    levels = sorted(set(ex.metadata[key] for ex in examples))
+    n_total = len(levels)
 
-    for ex in examples:
-        sid = ex.subject
-        for cat in ex.metadata[key]:
-            if str(cat).startswith('_'):
-                continue
-            cats_by_sid[sid].add(cat)
-            sids_by_cat[cat].add(sid)
+    utils.log(f'All {key} levels: {n_total} {levels}')
+    utils.log(f'Test ratio: {test_ratio:.2f}')
+    utils.log(f'Val ratio:  {val_ratio:.2f}')
 
-    subjects = list(sorted(cats_by_sid.keys()))
-    categories = list(sorted(sids_by_cat.keys()))
+    n_test = int(round(test_ratio * n_total))
+    n_val = int(round(val_ratio * n_total))
+    n_train = n_total - n_test - n_val
 
-    n_subjects = len(subjects)
-    target_test = int(round(test_ratio * n_subjects))
+    if not (0 < n_train <= n_total):
+        raise ValueError(f'Invalid num train levels: {n_train}')
+
+    if not (0 <= n_test < n_total):
+        raise ValueError(f'Invalid num test levels: {n_test}')
+
+    if not (0 <= n_val < n_total):
+        raise ValueError(f'Invalid num val levels: {n_val}')
+
+    if n_test == 0:
+        utils.warn('WARNING: No test levels')
+
+    if n_val == 0:
+        utils.warn('WARNING: No val levels')
+
+    utils.log(f'Split seed: {seed}')
 
     rng = np.random.default_rng(seed)
-    rng.shuffle(categories)
+    rng.shuffle(levels)
 
-    test_cats = set()
-    test_sids = set()
+    train_levels = levels[:n_train]
+    test_levels = levels[n_train:n_train+n_test]
+    val_levels = levels[n_train+n_test:]
 
-    for cat in categories:
-        if len(test_sids) >= target_test:
-            break
-        eligible = {
-            sid for sid, c in cats_by_sid.items()
-                if c.issubset(test_cats | {cat})
-        }
-        if eligible:
-            test_cats.add(cat)
-            test_sids |= eligible
+    utils.log(f'Train {key} levels: {n_train} {train_levels}')
+    utils.log(f'Test {key} levels:  {n_test} {test_levels}')
+    utils.log(f'Val {key} levels:   {n_val} {val_levels}')
 
-    utils.log(f'Test categories: {test_cats}')
-    utils.log(f'Test subjects:   {test_sids}')
+    train_ex = [ex for ex in examples if ex.metadata[key] in train_levels]
+    test_ex  = [ex for ex in examples if ex.metadata[key] in test_levels]
+    val_ex   = [ex for ex in examples if ex.metadata[key] in val_levels]
 
-    train_sids = set(subjects) - test_sids
-    train_list = list(train_sids)
-    rng.shuffle(train_list)
-
-    n_val = int(round(val_ratio * n_subjects))
-
-    val_subj = set(train_list[:n_val])
-    train_subj = set(train_list[n_val:])
-
-    utils.log(f'Train subjects: {train_subj}')
-    utils.log(f'Val subjects:   {val_subj}')
-
-    train_ex = [ex for ex in examples if ex.subject in train_subj]
-    test_ex  = [ex for ex in examples if ex.subject in test_subj]
-    val_ex   = [ex for ex in examples if ex.subject in val_subj]
+    utils.log(f'Train examples: {len(train_ex)} {[ex.subject for ex in train_ex]}')
+    utils.log(f'Test examples:  {len(test_ex)} {[ex.subject for ex in test_ex]}')
+    utils.log(f'Val examples:   {len(val_ex)} {[ex.subject for ex in val_ex]}')
 
     return train_ex, test_ex, val_ex
 
