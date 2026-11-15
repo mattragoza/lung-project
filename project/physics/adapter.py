@@ -116,7 +116,7 @@ class PhysicsAdapter:
             mask = torch.ones(u_obs.shape[0], dtype=torch.float)
 
         self.pde_solver.bind_geometry(ctx.verts, ctx.cells)
-        loss, u_sim, res = self.pde_solver.simulate_loss(
+        loss, outputs = self.pde_solver.simulate_loss(
             mu, lam, rho, u_bc, u_obs, mask
         )
 
@@ -131,8 +131,14 @@ class PhysicsAdapter:
             },
             'u_bc': _as_mesh_field(ctx, u_bc / unit_m, self.vector_degree),
             'u_obs': _as_mesh_field(ctx, u_obs / unit_m, self.vector_degree),
-            'u_sim': _as_mesh_field(ctx, u_sim / unit_m, self.vector_degree),
-            'residual': _as_mesh_field(ctx, res, self.vector_degree),
+            'u_sim': _as_mesh_field(ctx, outputs['u_sim'] / unit_m, self.vector_degree),
+            'residual': _as_mesh_field(ctx, outputs['residual'], self.vector_degree),
+            'loss_parts': {
+                'num': outputs['loss_num'],
+                'den': outputs['loss_den'],
+                'err': outputs['loss_err'],
+                'reg': outputs['loss_reg']
+            }
         }
 
         return loss, outputs

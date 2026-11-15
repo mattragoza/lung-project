@@ -54,7 +54,7 @@ class PDESolver:
         Args:
             mu, lam, rho, u_bc, u_obs: torch.Tensors
         Returns:
-            outputs, context: dicts
+            loss, outputs, context
         '''
         raise NotImplementedError
 
@@ -93,8 +93,8 @@ class PDELossFn(torch.autograd.Function):
     ):
         ctx.solver = solver
         ctx.inputs = (mu, lam, rho, u_bc, u_obs)
-        outputs, ctx.context = solver.loss_forward(mu, lam, rho, u_bc, u_obs, mask)
-        return outputs['loss'], outputs['u_sim'], outputs['residual']
+        loss, outputs, ctx.context = solver.loss_forward(mu, lam, rho, u_bc, u_obs, mask)
+        return loss, outputs
 
     @staticmethod
     def backward(

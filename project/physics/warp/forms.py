@@ -119,10 +119,12 @@ def ciarlet_neohookean_stress(F: wp.mat33, mu: float, lam: float):
 
     # first Piola-Kirchoff stress:
     # P = mu (F - F⁻ᵀ) + lam/2 (J² - 1) F⁻ᵀ
+    # P = mu (FFᵀ - I) F⁻ᵀ + lam/2 (J² - 1) F⁻ᵀ
     # P = FS
 
     # second Piola-Kirchoff stress:
-    # S = mu (I - C⁻¹) + lam/2 (J² - 1) C⁻¹
+    # S = F⁻¹P
+    # S = mu F⁻¹(FFᵀ - I)F⁻ᵀ + lam/2 (J² - 1) F⁻¹F⁻ᵀ
 
     J = wp.determinant(F)
     F_inv_T = wp.transpose(wp.inverse(F))

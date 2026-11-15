@@ -223,13 +223,18 @@ class WarpFEMSolver(PDESolver):
 
             u_obs, mask = self.init_target_fields(u_obs, mask)
             with tape:
-                loss = self.evaluate_loss(mu, lam, rho, u_sim, u_obs, mask)
+                loss, loss_parts = self.evaluate_loss(mu, lam, rho, u_sim, u_obs, mask)
+
+        loss = wp.to_torch(loss)
 
         # torch tensors returned to caller
         outputs = {
-            'loss': wp.to_torch(loss),
             'u_sim': wp.to_torch(u_sim.dof_values),
-            'residual': wp.to_torch(res.dof_values)
+            'residual': wp.to_torch(res.dof_values),
+            'loss_num': wp.to_torch(loss_parts['num']).item(),
+            'loss_den': wp.to_torch(loss_parts['den']).item(),
+            'loss_err': wp.to_torch(loss_parts['err']).item(),
+            'loss_reg': wp.to_torch(loss_parts['reg']).item()
         }
 
         # warp objects needed for backward pass
@@ -239,7 +244,7 @@ class WarpFEMSolver(PDESolver):
             'tape': tape
         }
 
-        return outputs, context
+        return loss, outputs, context
 
     def loss_backward(self, loss_grad, context):
         input_grads = {}
@@ -661,10 +666,11 @@ class WarpFEMSolver(PDESolver):
             add=True
         )
 
-        loss = num / (den + self.eps_div) + self.tv_reg_weight * reg
+        err = num / (den + self.eps_div)
+        loss = err + self.tv_reg_weight * reg
         loss.requires_grad = True
 
-        return loss
+        return loss, {'num': num, 'den': den, 'err': err, 'reg': reg}
 
     # ----- rasterization helpers -----
 
