@@ -58,8 +58,9 @@ class WarpFEMSolver(PDESolver):
         g_vector: tuple = (0., 0., -9.81), # m/s^2
         relative_loss: bool = True,
         tv_reg_weight: float = 1e-4,
-        eps_reg: float = 1e-3,  # avoids non-diffability
-        eps_div: float = 1e-6,  # avoids division by zero
+        eps_err: float = 1e-12, # relative error divisor
+        eps_div: float = 1e-6,  # regularization divisor
+        eps_reg: float = 1e-3,  # ensures differentiable
         newton_iters: int = 100,
         newton_atol: float = 1e-5,
         newton_rtol: float = 1e-5,
@@ -84,6 +85,7 @@ class WarpFEMSolver(PDESolver):
         self.relative_loss = bool(relative_loss)
         self.tv_reg_weight = float(tv_reg_weight)
 
+        self.eps_err = float(eps_err)
         self.eps_reg = float(eps_reg)
         self.eps_div = float(eps_div)
 
@@ -225,8 +227,6 @@ class WarpFEMSolver(PDESolver):
             with tape:
                 loss, loss_parts = self.evaluate_loss(mu, lam, rho, u_sim, u_obs, mask)
 
-        loss = wp.to_torch(loss)
-
         # torch tensors returned to caller
         outputs = {
             'u_sim': wp.to_torch(u_sim.dof_values),
@@ -244,7 +244,7 @@ class WarpFEMSolver(PDESolver):
             'tape': tape
         }
 
-        return loss, outputs, context
+        return wp.to_torch(loss), outputs, context
 
     def loss_backward(self, loss_grad, context):
         input_grads = {}
@@ -666,7 +666,7 @@ class WarpFEMSolver(PDESolver):
             add=True
         )
 
-        err = num / (den + self.eps_div)
+        err = num / (den + self.eps_err)
         loss = err + self.tv_reg_weight * reg
         loss.requires_grad = True
 

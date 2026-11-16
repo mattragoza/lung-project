@@ -11,6 +11,8 @@ def get_param_spec(**kwargs):
 
 
 def maybe_float(value):
+    if isinstance(value, str) and value.lower() == 'none':
+        return None
     if value is not None:
         return float(value)
 
@@ -52,7 +54,7 @@ class ParameterSpec:
             raise ValueError(f'beta must be positive')
 
         self.mode  = mode
-        self.scale = scale # NOTE: this also scales the gradient!
+        self.scale = scale # this also scales the gradient
         self.v_loc = v_loc
         self.v_min = v_min
         self.v_max = v_max
@@ -85,7 +87,6 @@ class ParameterSpec:
         s = _invert_transform(v, self.mode)
         q = _invert_bounds(s, self.s_min, self.s_max, self.beta)
         return _invert_affine(q, self.shift, self.scale)
-
 
 
 def _apply_affine(z, shift, scale):
