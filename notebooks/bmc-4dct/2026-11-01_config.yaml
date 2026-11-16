@@ -57,6 +57,11 @@ preprocessing:
     anatomical_regions:
         roi_order: ["lung_upper_lobe_right", "lung_middle_lobe_right", "lung_lower_lobe_right", "lung_upper_lobe_left", "lung_lower_lobe_left"]
         filter_kws: {"min_voxels": 30, "keep_largest": true}
+    material_properties:
+        poisson_ratio:
+            base_value: 0.42
+        density:
+            base_value: 350.
     mesh_generation:
         use_search: True
         pygalmesh_kws:
@@ -99,10 +104,11 @@ training:
         targets: ["E"]
         losses: {"E": "sim"}
     split:
-        method: "random"
-        test_ratio: 0.1
-        val_ratio: 0.1
-        seed: 1234
+        method: "metadata"
+        key: "subject_num"
+        test_ratio: 0.2
+        val_ratio: 0.2
+        seed: 11
     transform:
         normalize: true
         image_mean: -650.
@@ -144,7 +150,7 @@ training:
         type: "mesh_key"
         value: "u_reg"
     trainer:
-        num_epochs: 10
+        num_epochs: 25
         val_interval: 1
         test_interval: 1
         save_interval: 1
