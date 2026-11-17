@@ -46,7 +46,8 @@ def get_trainer(
     config,
     output_dir='outputs',
     run_name='default',
-    use_callbacks=False
+    use_callbacks=False,
+    device='cuda'
 ):
     utils.check_keys(
         config,
@@ -110,7 +111,7 @@ def get_trainer(
     optimizer_kws = config.get('optimizer', {})
     optimizer = optimization.get_optimizer(model, **optimizer_kws)
 
-    solver  = physics.get_solver(**config.get('pde_solver', {}))
+    solver  = physics.get_solver(device=device, **config.get('pde_solver', {}))
     adapter = physics.get_adapter(solver, **config.get('physics_adapter', {}))
     bc_spec = physics.get_bc_spec(**config.get('boundary_condition', {}))
 
@@ -142,6 +143,7 @@ def get_trainer(
         evaluator=evaluation.Evaluator(),
         callbacks=callback_list,
         output_dir=output_dir,
-        bc_spec=bc_spec
+        bc_spec=bc_spec,
+        device=device
     )
 
