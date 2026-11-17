@@ -231,10 +231,9 @@ class WarpFEMSolver(PDESolver):
         outputs = {
             'u_sim': wp.to_torch(u_sim.dof_values),
             'residual': wp.to_torch(res.dof_values),
-            'loss_num': wp.to_torch(loss_parts['num']).item(),
-            'loss_den': wp.to_torch(loss_parts['den']).item(),
-            'loss_err': wp.to_torch(loss_parts['err']).item(),
-            'loss_reg': wp.to_torch(loss_parts['reg']).item()
+            'loss_parts': {
+                k: wp.to_torch(v).item() for k, v in loss_parts.items()
+            }
         }
 
         # warp objects needed for backward pass
@@ -613,16 +612,16 @@ class WarpFEMSolver(PDESolver):
 
     def evaluate_loss(self, mu, lam, rho, u_sim, u_obs, mask):
 
-        # loss numerator, denominator, and regularization term
-        num = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
-        den = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
-        reg = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
+        # relative error numerator and denominator
+        error_num = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
+        error_den = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
+        tv_reg_val = wp.empty(1, dtype=self.scalar_dtype, requires_grad=True)
 
         wp.fem.integrate(
             forms.squared_error_form,
             fields={'u': u_sim, 'v': u_obs, 'w': mask},
             domain=self.interior,
-            output=num
+            output=error_num
         )
 
         if self.relative_loss:
@@ -630,47 +629,37 @@ class WarpFEMSolver(PDESolver):
                 forms.squared_norm_form,
                 fields={'u': u_obs, 'w': mask},
                 domain=self.interior,
-                output=den
+                output=error_den
             )
         else:
             wp.fem.integrate(
                 forms.volume_form,
                 fields={'w': mask},
                 domain=self.interior,
-                output=den
+                output=error_den
             )
 
         wp.fem.integrate(
-            forms.TV_reg_form,
-            fields={'f': mu},
+            forms.TV_reg_mu_form,
+            fields={'mu': mu},
             values={'eps_div': self.eps_div, 'eps_reg': self.eps_reg},
             domain=self.interior,
-            output=reg
+            output=tv_reg_val
         )
 
-        wp.fem.integrate(
-            forms.TV_reg_form,
-            fields={'f': lam},
-            values={'eps_div': self.eps_div, 'eps_reg': self.eps_reg},
-            domain=self.interior,
-            output=reg,
-            add=True
-        )
+        error_term = error_num / (error_den + self.eps_err)
+        tv_reg_term = self.tv_reg_weight * tv_reg_val
 
-        wp.fem.integrate(
-            forms.TV_reg_form,
-            fields={'f': rho},
-            values={'eps_div': self.eps_div, 'eps_reg': self.eps_reg},
-            domain=self.interior,
-            output=reg,
-            add=True
-        )
-
-        err = num / (den + self.eps_err)
-        loss = err + self.tv_reg_weight * reg
+        loss = error_term + tv_reg_term
         loss.requires_grad = True
 
-        return loss, {'num': num, 'den': den, 'err': err, 'reg': reg}
+        return loss, {
+            'error_num': error_num,
+            'error_den': error_den,
+            'error_term': error_term,
+            'tv_reg_val': tv_reg_val,
+            'tv_reg_term': tv_reg_term
+        }
 
     # ----- rasterization helpers -----
 

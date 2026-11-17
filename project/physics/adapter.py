@@ -133,12 +133,7 @@ class PhysicsAdapter:
             'u_obs': _as_mesh_field(ctx, u_obs / unit_m, self.vector_degree),
             'u_sim': _as_mesh_field(ctx, outputs['u_sim'] / unit_m, self.vector_degree),
             'residual': _as_mesh_field(ctx, outputs['residual'], self.vector_degree),
-            'loss_parts': {
-                'num': outputs['loss_num'],
-                'den': outputs['loss_den'],
-                'err': outputs['loss_err'],
-                'reg': outputs['loss_reg']
-            }
+            'loss_parts': outputs['loss_parts']
         }
 
         return loss, outputs

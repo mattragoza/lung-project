@@ -262,20 +262,36 @@ def volume_form(x: wp.fem.Sample, w: wp.fem.Field):
 
 
 @wp.fem.integrand
-def TV_reg_form(
+def TV_reg_mu_form(
     x: wp.fem.Sample,
-    f: wp.fem.Field,
+    mu: wp.fem.Field,
+    eps_reg: float,
+    eps_div: float,
+):
+    g = wp.fem.grad(mu, x) / (mu(x) + eps_div)
+    return wp.sqrt(wp.dot(g, g) + eps_reg * eps_reg)
+
+
+@wp.fem.integrand
+def TV_reg_lam_form(
+    x: wp.fem.Sample,
+    lam: wp.fem.Field,
     eps_reg: float,
     eps_div: float
 ):
-    '''
-    Smooth penalty on L2 norm of log-parameter gradient.
-    '''
-    grad_log_f = wp.fem.grad(f, x) / (f(x) + eps_div)
+    g = wp.fem.grad(lam, x) / (lam(x) + eps_div)
+    return wp.sqrt(wp.dot(g, g) + eps_reg * eps_reg)
 
-    return wp.sqrt(
-        wp.dot(grad_log_f, grad_log_f) + eps_reg * eps_reg
-    )
+
+@wp.fem.integrand
+def TV_reg_rho_form(
+    x: wp.fem.Sample,
+    rho: wp.fem.Field,
+    eps_reg: float,
+    eps_div: float
+):
+    g = wp.fem.grad(rho, x) / (rho(x) + eps_div)
+    return wp.sqrt(wp.dot(g, g) + eps_reg * eps_reg)
 
 
 @wp.fem.integrand
