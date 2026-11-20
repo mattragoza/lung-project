@@ -3,6 +3,7 @@
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 import ipywidgets
 
 from ..common import utils, transforms
@@ -383,10 +384,7 @@ def get_color_kws(key: str, n_labels: int = 5, include_bg: bool = True):
         return dict(cmap='gray', clim=(-3, 3), line_color='rgb')
 
     elif key in {'E', 'E_true', 'E_pred'}:
-        return dict(cmap='jet', clim=(0, 1e4), line_color='cmy')
-
-    elif key in {'logE', 'logE_true', 'logE_pred'}:
-        return dict(cmap='jet', clim=(2, 6), line_color='cmy')
+        return dict(cmap='turbo', norm=LogNorm(vmin=1e2, vmax=1e5), line_color='cmy')
 
     elif key in {'nu', 'nu_true', 'nu_pred'}:
         return dict(cmap='gray', clim=(0, 0.5), line_color='cmy')

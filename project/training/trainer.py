@@ -134,6 +134,7 @@ class Trainer:
         self.end_phase(phase)
 
     def run_batch(self, batch, train_mode=False, eval_mode=False):
+        batch_size = len(batch['example'])
 
         if train_mode:
             self.optimizer.zero_grad(set_to_none=True)
@@ -172,8 +173,18 @@ class Trainer:
 
         if eval_mode:
             metrics = self.evaluator.evaluate_batch(batch, preds, sims)
-            outputs['metrics'] = metrics
+        else:
+            metrics = [{} for _ in range(batch_size)]
 
+        for idx, row in enumerate(metrics):
+            row['subject'] = batch['example'][idx].subject
+            if sims is not None and sims[idx] is not None:
+                loss_parts = sims[idx]['loss_parts']
+                row.update({
+                    f'loss_parts.{k}': v for k, v in loss_parts.items()
+                })
+
+        outputs['metrics'] = metrics
         return outputs
 
     def run_model(self, batch):
@@ -316,7 +327,9 @@ class Trainer:
         if by_mtime:
             sort_key = lambda path: path.stat().st_mtime
         else:
-            sort_key = lambda path: path.name
+            sort_key = lambda path: int(
+                name_regex.match(path.name).group(1)
+            )
         return sorted(found, key=sort_key)
 
     # ----- callback hooks -----

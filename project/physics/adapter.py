@@ -121,7 +121,7 @@ class PhysicsAdapter:
         )
 
         if not ret_outputs:
-            return loss, None
+            return loss, {'loss_parts': outputs['loss_parts']}
 
         outputs = {
             'ctx': ctx,
